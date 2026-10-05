@@ -1,0 +1,26 @@
+My Pace Starter 0.1.0
+Created: 2026-10-05
+Repository target: my-pace (no Git metadata or remote operations included)
+Runtime dependencies: none
+Runtime: Node.js 20+ for local server and checks; modern browser for ES Modules/dialog
+
+Entry: index.html
+App controller: src/app.js
+Dialogs: src/dialogs.js
+Views: src/views/{dashboard,wake,running,habits,settings}.js
+Data and rules: src/lib/{domain,storage,gpx}.js
+Rendering helpers: src/lib/{ui,charts}.js
+Styling: src/style.css
+Icon: favicon.svg
+Commands: package.json and scripts/
+Safe WSL copy: scripts/install-wsl.sh
+Tests: tests/*.test.js (56 tests)
+User guide: README.md
+Test status: TEST-REPORT.md
+Manual browser acceptance: qa/ACCEPTANCE.md
+Actual verification transcript: qa/verification.log
+Integrity: SOURCE-MANIFEST.sha256 (all distributed files except itself)
+
+Excluded from ZIP: .git, node_modules, dist, temporary files, user data, credentials.
+No screenshots are included because real-browser rendering was blocked.
+External authentication, Google Drive, LINE, GPS tracking, maps and sync are unimplemented.

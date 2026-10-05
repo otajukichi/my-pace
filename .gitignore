@@ -1,0 +1,12 @@
+node_modules/
+dist/
+qa/screenshots/
+*.log
+.DS_Store
+.env
+.env.*
+
+rhythm-backup-*.json
+rhythm-recovery-*.json
+my-pace-backup-*.json
+my-pace-recovery-*.json
