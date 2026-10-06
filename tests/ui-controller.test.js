@@ -9,7 +9,7 @@ import {STORAGE_KEY} from '../src/lib/storage.js';
 
 let instance=0;
 class EventNode {
-  constructor(){this.handlers=new Map();this.innerHTML='';this.hidden=true;this.open=false;this.fields=new Map();this.focused=false;}
+  constructor(){this.dataset={};this.handlers=new Map();this.innerHTML='';this.hidden=true;this.open=false;this.fields=new Map();this.focused=false;}
   addEventListener(type,handle){this.handlers.set(type,[...(this.handlers.get(type)||[]),handle]);}
   async emit(type,event={}){for(const handle of this.handlers.get(type)||[]) await handle(event);}
   showModal(){this.open=true;}
@@ -22,6 +22,7 @@ async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home
   const originals=new Map(), app=new EventNode(), editor=new EventNode(), notice=new EventNode(), main=new EventNode();
   const document=new EventNode(), window=new EventNode(), created=[];
   const location={hash}; let raw=initialRaw===undefined?serializeBackup(initial):initialRaw, deniedRead=denyRead, deniedWrite=false, writes=0;
+  document.documentElement = {dataset: {}};
   document.querySelector=selector=>({'#app':app,'#editor':editor,'#notice':notice,main}[selector]||null);
   document.createElement=tag=>{const node=new EventNode();node.tag=tag;created.push(node);return node;};
   const localStorage={getItem(key){assert.equal(key,STORAGE_KEY);if(deniedRead)throw new Error('Storage denied');return raw;},setItem(key,value){assert.equal(key,STORAGE_KEY);if(deniedWrite)throw new Error('Quota exceeded');raw=value;writes++;}};

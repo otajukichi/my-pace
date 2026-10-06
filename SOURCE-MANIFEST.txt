@@ -1,23 +1,19 @@
-My Pace Workspace 0.2 — local-only upgrade
-Verified baseline: otajukichi/my-pace main c2f594f79a7bb8ac59da609dd63cee9732055bb9
-Baseline tree: 227a283783713bdf8528183532733ea66be516b9
-Verified on: 2026-10-06
+My Pace Workspace 0.2 — page palette and contrast refinement
+Verified baseline: otajukichi/my-pace main 9fa95aa047f2aaa752c44e16fb2017ab3a12a5fe
+Baseline tree: 923eb74e461fc5cc6d9bafc795eec0de5dbbf813
+Verified on: 2026-10-06; all source Git blob hashes matched
 
 Entry: index.html
-UI controller: src/app.js
-Record dialogs: src/dialogs.js, src/journal-dialogs.js
-Viewport shell: src/style.css
-Primary views: home, running, wake, habits
-Secondary views: calendar, diary, garden, settings
-Data: src/lib/domain.js (v1 migration, v2 validation)
-Persistence: src/lib/storage.js (unchanged rhythm.personal.v1 key)
-Garden: src/lib/garden.js (deterministic one reward per day)
-Navigation: src/lib/sidebar.js (preserved behavior)
-Pagination: src/lib/workspace.js, src/lib/journal-ui.js
-Checks: package.json; scripts/check.mjs; scripts/build.mjs
-Tests: tests/*.test.js (153 tests)
+Viewport shell: src/style.css (unchanged)
+Palette layer: src/palette.css
+Theme hooks: src/app.js, src/views/dashboard.js
+Primary themes: home blue, running green, wake orange, habits purple
+Secondary themes: calendar blue, diary purple, garden green, settings slate
+Data: src/lib/domain.js and src/lib/storage.js unchanged; version2; rhythm.personal.v1
+Checks: package.json; scripts/check.mjs; scripts/build.mjs (unchanged)
+Tests: tests/*.test.js (177 tests)
 Guides: README.md; TEST-REPORT.md; qa/ACCEPTANCE.md
 Integrity: SOURCE-MANIFEST.sha256, excluding itself and generated dist
 
-No dependencies, credentials, user data, network calls, external integrations, Git writes, or deployments.
-No real-browser screenshot or pixel-layout verification is claimed.
+No dependencies, credentials, browser data access, Git writes or deployments.
+Real-browser visual QA remains unperformed. Contrast checks are source-level.

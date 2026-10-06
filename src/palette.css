@@ -1,0 +1,288 @@
+/* My Pace color system. Loaded after the viewport stylesheet.
+ * Presentation only: no dimensions, navigation, record logic, or storage changes.
+ * Solid surfaces make every tested contrast pair deterministic.
+ */
+:root {
+  color-scheme: light;
+  --canvas: #edf1f5;
+  --surface: #ffffff;
+  --surface-soft: #f3f6fa;
+  --ink: #182638;
+  --muted: #46566a;
+  --line: #c7d2df;
+  --control-line: #6b7f94;
+  --focus: #174fbd;
+  --disabled-ink: #526174;
+  --disabled-bg: #e3e8ee;
+  --danger: #9b2f2c;
+  --danger-soft: #fff0ee;
+  --warning: #805015;
+  --warning-soft: #fff3dc;
+  --accent: #214f88;
+  --accent-dark: #163a68;
+  --accent-soft: #e9f0fa;
+  --accent-hover: #d9e6f7;
+  --accent-ink: #1b3e6b;
+  color: var(--ink);
+  background: var(--canvas);
+}
+
+/* Home is deep blue. The same page tokens also color the matching Home card. */
+:root[data-page="home"], [data-theme="home"],
+:root[data-page="calendar"], [data-theme="calendar"] {
+  --accent: #214f88;
+  --accent-dark: #163a68;
+  --accent-soft: #e9f0fa;
+  --accent-hover: #d9e6f7;
+  --accent-ink: #1b3e6b;
+}
+:root[data-page="running"], [data-theme="running"],
+:root[data-page="garden"], [data-theme="garden"] {
+  --accent: #17634a;
+  --accent-dark: #104a37;
+  --accent-soft: #e7f3ed;
+  --accent-hover: #d4eadd;
+  --accent-ink: #124d39;
+}
+:root[data-page="wake"], [data-theme="wake"] {
+  --accent: #93430f;
+  --accent-dark: #733209;
+  --accent-soft: #fff0df;
+  --accent-hover: #f6dfc5;
+  --accent-ink: #73390f;
+}
+:root[data-page="habits"], [data-theme="habits"],
+:root[data-page="diary"], [data-theme="diary"] {
+  --accent: #694198;
+  --accent-dark: #4f2d79;
+  --accent-soft: #f2ebfa;
+  --accent-hover: #e5d9f2;
+  --accent-ink: #50316f;
+}
+:root[data-page="settings"], [data-theme="settings"] {
+  --accent: #465a72;
+  --accent-dark: #314257;
+  --accent-soft: #edf1f6;
+  --accent-hover: #dce4ee;
+  --accent-ink: #314257;
+}
+
+/* Shared shell: a clear canvas, white cards, and high-contrast navigation. */
+body { color: var(--ink); background: var(--canvas); }
+.topbar, .sidebar { background: #f8fafc; border-color: var(--line); }
+.topbar { box-shadow: inset 0 -2px 0 var(--accent); }
+.desktop-breadcrumb, .desktop-breadcrumb b, .local-indicator,
+.brand small, .sidebar-caption, .nav-divider, .sidebar-bottom,
+.sidebar-bottom p, .app-footer { color: var(--muted); }
+.local-indicator i { background: #17634a; }
+.navigation > a { color: var(--muted); }
+.navigation > a:hover { color: var(--accent-ink); background: var(--accent-soft); }
+.navigation > a[aria-current] { color: #ffffff; background: var(--accent); }
+.navigation > a[aria-current] i { background: #ffffff; }
+.page-heading h1, .brand, .mobile-brand { color: var(--ink); }
+.page-overline, .eyebrow { color: var(--accent); }
+.page-heading > div > p:last-child { color: var(--muted); }
+.view-tabs { border-color: var(--line); }
+.view-tabs button { color: var(--muted); }
+.view-tabs button:hover { color: var(--accent-ink); background: var(--accent-soft); }
+.view-tabs button[aria-pressed=true] {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-bottom-color: var(--accent);
+}
+.card { background: var(--surface); border-color: var(--line); box-shadow: 0 3px 12px #1826380a; }
+.card-eyebrow, .text-link, .btn.ghost { color: var(--accent); }
+.home-today > .card, .wake-focus, .running-focus {
+  background: var(--accent-soft);
+  box-shadow: inset 0 4px 0 var(--accent), 0 3px 12px #1826380a;
+}
+.home-today > .home-note { background: var(--surface); }
+.home-time, .home-number, .hero-time, .target-time, .quiet-summary,
+.record-number, .stat > strong, .garden-total { color: var(--accent-ink); }
+.home-morning, .wake-focus, .running-focus { isolation: isolate; }
+.home-sun, .sun-illustration, .trail-art { z-index: -1; pointer-events: none; }
+.home-sun { background: #f6c57b; opacity: .55; }
+.sun-illustration, .sun-illustration:before { border-color: #cf995b; }
+.sun-illustration { opacity: .3; }
+.sun-illustration:after { background: #f6c57b; }
+.trail-art { opacity: .16; }
+.trail-art svg { fill: var(--accent); stroke: var(--accent); }
+
+/* Reading hierarchy. This intentionally supersedes older hard-coded greens. */
+.muted, .hint, .hero-caption, .hero-note, .hero-time small,
+.section-head p, .week-footnote, .quiet-card > .hint,
+.quiet-summary small, .fact-pair, .stat > span, .stat small,
+.record-label > small, .pagination, .habit-line-label p,
+.habit-line-bottom, .habit-line-bottom > span, .habit-line-bottom .text-link,
+.settings-panel > p, .settings-panel > .hint, .storage-info p, .info-note,
+.diary-heading p, .diary-footer, .diary-history-date,
+.diary-history-copy span, .diary-history-copy p,
+.garden-scene-caption, .garden-total small, .garden-total span,
+.garden-help, .garden-next, .garden-status, .garden-rules p,
+.garden-guide-row p, .garden-guide > .hint,
+.calendar-legend, .calendar-weekdays, .calendar-diary-peek,
+.event-date, .event-body p, .event-note, .day-record-summary,
+.calendar-event-peek > .muted, .calendar-toolbar h2 > span,
+.calendar-peek-button > span, .dialog-description, .dialog-top p,
+.home-number small, .home-number > span, .note-shortcuts strong small,
+.home-garden > p, .diary-paper-label, .diary-paper-empty p,
+.garden-theme-header > span, .route-map > span, .chart-note {
+  color: var(--muted);
+}
+.section-head h2, .habit-name, .diary-history-copy strong,
+.diary-text, .garden-guide-row h3, .garden-rules h3,
+.garden-theme-header h3, .garden-collection-card > h3,
+.diary-paper-empty h3 { color: var(--ink); }
+.note-shortcuts > a > span, .note-shortcuts strong { color: var(--accent-ink); }
+.note-shortcuts > a { border-color: var(--line); }
+.note-shortcuts > a:hover { background: var(--accent-hover); }
+.empty { color: var(--muted); }
+.empty p { color: var(--ink); }
+.empty-icon, .diary-empty-mark { color: var(--accent); }
+.empty-icon { background: var(--accent-soft); }
+
+/* Controls retain their geometry; filled/outlined states are easy to tell apart. */
+.btn.primary { color: #ffffff; background: var(--accent); }
+.btn.primary:hover { background: var(--accent-dark); }
+.btn.secondary { color: var(--accent-ink); background: var(--surface); border-color: var(--accent); }
+.btn.secondary:hover { background: var(--accent-hover); }
+.btn.ghost:hover, .icon-button:hover { color: var(--accent-ink); background: var(--accent-hover); }
+.date-picker { background: var(--surface); border-color: var(--control-line); }
+.date-picker label:focus-within { outline-color: var(--focus); }
+.segmented { background: var(--surface-soft); box-shadow: inset 0 0 0 1px var(--control-line); }
+.segmented button { color: var(--muted); }
+.segmented button:hover { color: var(--accent-ink); background: var(--accent-hover); }
+.segmented button[aria-pressed=true] { color: #ffffff; background: var(--accent); }
+.pagination button:not(.icon-button) { color: var(--accent-ink); background: var(--accent-soft); }
+.pagination button:not(.icon-button):hover { background: var(--accent-hover); }
+.record-row, .habit-line, .stats-grid, .stat { border-color: var(--line); }
+.record-row:hover, .diary-history-row:hover { background: var(--accent-soft); }
+.record-icon { color: var(--accent); background: var(--accent-soft); }
+.habit-toggle { color: var(--accent); background: var(--surface); border-color: var(--accent); }
+.habit-toggle:hover { background: var(--accent-hover); }
+.habit-toggle.done { color: #ffffff; background: var(--accent); border-color: var(--accent); }
+.habit-toggle.done:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+.habit-value { color: var(--accent-ink); background: var(--accent-soft); }
+.habit-week span { color: var(--muted); background: var(--surface-soft); }
+.habit-week .filled { color: #ffffff; background: var(--accent); }
+.week-day { color: var(--muted); background: var(--surface-soft); }
+.week-day strong { color: var(--ink); }
+.week-day:hover { background: var(--accent-hover); }
+.week-day.selected { background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+.week-day i { border-color: var(--control-line); }
+.week-day.has-record i { color: #ffffff; background: var(--accent); border-color: var(--accent); }
+
+/* Native progress needs explicit WebKit and Firefox colors. */
+.completion-track, .garden-progress-track,
+progress.completion-track, progress.garden-progress-track {
+  color: var(--accent);
+  accent-color: var(--accent);
+  background: #d6dfe9;
+}
+.home-habits .completion-track { accent-color: var(--accent); }
+.completion-track i, .garden-progress-track span, .garden-progress-track i { background: var(--accent); }
+progress::-webkit-progress-bar { background: #d6dfe9; }
+progress::-webkit-progress-value { background: var(--accent); }
+progress::-moz-progress-bar { background: var(--accent); }
+
+/* Charts: actual values are solid; the target stays a distinct dashed slate line. */
+.chart-wrap text, .chart-label, .chart-empty { fill: var(--muted); }
+.chart-grid { stroke: var(--line); }
+.chart-line, .route-line { stroke: var(--accent); }
+.chart-dot { fill: var(--accent); stroke: var(--surface); }
+.chart-bar, .run-bar { fill: var(--accent); }
+.run-bar-empty { fill: var(--control-line); }
+.chart-target { stroke: #465a72; stroke-width: 2; stroke-dasharray: 5 5; }
+.chart-target-label { fill: #465a72; }
+.route-map { background: var(--surface-soft); }
+
+/* Secondary pages share the same neutral structure, retaining category shapes. */
+.calendar-day { color: var(--ink); background: var(--surface-soft); }
+.calendar-day.outside-month { color: var(--muted); background: var(--surface); }
+.calendar-day:hover { background: var(--accent-hover); }
+.calendar-day.is-today { border-color: var(--accent); }
+.calendar-day.is-selected, .calendar-day.is-selected.outside-month { color: #ffffff; background: var(--accent); }
+.calendar-day.is-selected:hover { background: var(--accent-dark); }
+.event-marker { background: #93430f !important; }
+.diary-marker { background: #694198 !important; }
+.record-marker { background: #17634a !important; }
+.calendar-day.is-selected .calendar-markers .event-marker { background: #ffd18a !important; }
+.calendar-day.is-selected .calendar-markers .diary-marker { background: #e2cafa !important; }
+.calendar-day.is-selected .calendar-markers .record-marker { background: #a8e4c8 !important; }
+.calendar-day.is-selected .calendar-markers i { outline: none; }
+.day-record-summary, .calendar-event-peek button { background: var(--surface-soft); }
+.calendar-event-peek button:hover { background: var(--accent-hover); }
+.diary-paper { background: #fafbfd; border-color: var(--line); }
+.mood-pill, .diary-history-copy > .mood-pill, .status-pill {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+.planned { color: var(--muted); background: var(--surface-soft); }
+.home-garden, .garden-scene-card { background: #edf5ef; }
+.plant-choice, .theme-choices button { color: var(--accent-ink); background: var(--surface-soft); border-color: var(--control-line); }
+.plant-choice small, .plant-choice span { color: var(--muted); }
+.plant-choice:hover, .theme-choices button:hover { background: var(--accent-hover); }
+.plant-choice[aria-pressed=true], .theme-choices button[aria-pressed=true] {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.garden-guide-row > span { color: var(--accent-ink); background: var(--accent-soft); }
+.storage-info { background: var(--surface-soft); }
+.storage-icon { color: var(--accent); }
+.info-note { background: var(--surface-soft); border-color: var(--accent); }
+
+/* Forms, status, and keyboard focus use the same readable foundation. */
+dialog { color: var(--ink); background: var(--surface); border-color: var(--control-line); }
+dialog::backdrop { background: #18263866; }
+.field { color: var(--ink); }
+.field input, .field select, .field textarea {
+  color: var(--ink);
+  background: var(--surface);
+  border-color: var(--control-line);
+}
+.field input::placeholder, .field textarea::placeholder { color: var(--muted); opacity: 1; }
+.field input:focus, .field select:focus, .field textarea:focus { border-color: var(--focus); }
+.field input[readonly] { background: var(--surface-soft); }
+.danger { color: var(--danger) !important; }
+.form-error, .error-banner { color: var(--danger); background: var(--danger-soft); border-color: var(--danger); }
+.warning, .hint.warning { color: var(--warning); }
+.toast { color: #ffffff; background: #182638; }
+.toast-undo, .toast-close { color: #ffffff; }
+button:focus-visible, a:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 3px;
+}
+.toast button:focus-visible { outline-color: #ffffff; }
+/* Disabled still means disabled; opaque colors keep labels readable. */
+button:disabled, button:disabled:hover,
+button.btn:disabled, button.btn:disabled:hover,
+button.habit-toggle:disabled, button.habit-toggle:disabled:hover,
+button.plant-choice:disabled, button.plant-choice:disabled:hover,
+button.theme-choice:disabled, button.theme-choice:disabled:hover,
+.pagination button:disabled, .pagination button:disabled:hover,
+.field input:disabled,
+.field select:disabled, .field textarea:disabled {
+  opacity: 1;
+  color: var(--disabled-ink);
+  -webkit-text-fill-color: var(--disabled-ink);
+  background: var(--disabled-bg);
+  border-color: var(--control-line);
+  box-shadow: none;
+}
+.plant-choice:disabled strong, .plant-choice:disabled small, .plant-choice:disabled span { color: var(--disabled-ink); }
+
+@media (forced-colors: active) {
+  .navigation > a[aria-current], .view-tabs button[aria-pressed=true],
+  .segmented button[aria-pressed=true], .calendar-day.is-selected,
+  .habit-toggle.done, .week-day.selected, .plant-choice[aria-pressed=true],
+  .theme-choices button[aria-pressed=true] { outline: 2px solid Highlight; outline-offset: -2px; }
+  .btn, .habit-toggle, .field input, .field select, .field textarea { border-color: ButtonText; }
+  progress.completion-track, progress.garden-progress-track { border: 1px solid CanvasText; }
+  .chart-line, .chart-target, .route-line { stroke: CanvasText; }
+  .chart-dot, .chart-bar, .run-bar, .run-bar-empty { fill: CanvasText; }
+  .chart-wrap text { fill: CanvasText; }
+  button:disabled, .field select:disabled { color: GrayText; -webkit-text-fill-color: GrayText; }
+}

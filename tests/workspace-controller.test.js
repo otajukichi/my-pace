@@ -13,7 +13,7 @@ import {pageCapacity} from '../src/lib/workspace.js';
 
 let instance = 0;
 class EventNode {
-  constructor() { this.handlers = new Map(); this.innerHTML = ''; this.hidden = true; this.open = false; this.fields = new Map(); this.focused = false; }
+  constructor() { this.dataset={}; this.handlers = new Map(); this.innerHTML = ''; this.hidden = true; this.open = false; this.fields = new Map(); this.focused = false; }
   addEventListener(type, handler) { this.handlers.set(type, [...(this.handlers.get(type) || []), handler]); }
   async emit(type, event = {}) { for (const handler of this.handlers.get(type) || []) await handler(event); }
   showModal() { this.open = true; }
@@ -27,6 +27,7 @@ async function launch(t, {initial = createInitialState(), raw: initialRaw, hash 
   const document = new EventNode(), window = new EventNode(), created = [], location = {hash};
   window.innerWidth = width; window.innerHeight = height;
   let raw = initialRaw === undefined ? serializeBackup(initial) : initialRaw, writes = 0, deniedWrite = false, disposed = false;
+  document.documentElement = {dataset: {}};
   document.querySelector = selector => ({'#app':app, '#editor':editor, '#notice':notice, main}[selector] || null);
   document.createElement = tag => { const node = new EventNode(); node.tag = tag; created.push(node); return node; };
   const localStorage = {
@@ -63,6 +64,42 @@ const eventRecord = (id, date, patch = {}) => ({id, date, time:null, title:`予�
 const selectedDate = ui => /id="selected-date"[^>]*value="([^"]+)"/.exec(ui.app.innerHTML)?.[1];
 const calendarMonth = ui => /aria-label="(\d{4})年(\d+)月の日付"/.exec(ui.app.innerHTML)?.slice(1).map((part, index) => index ? part.padStart(2, '0') : part).join('-');
 const currentTab = (ui, tab) => new RegExp(`data-action="view-tab" data-tab="${tab}" aria-pressed="true"`).test(ui.app.innerHTML);
+
+test('page palette follows direct entry, every route, invalid hashes and repeated renders without data writes',async t=>{
+  const ui=await launch(t,{hash:'#wake'});
+  assert.equal(ui.document.documentElement.dataset.page,'wake');
+  for(const route of ['running','habits','home','calendar','diary','garden','settings','wake']){
+    await ui.changeHash(`#${route}`);
+    assert.equal(ui.document.documentElement.dataset.page,route);
+  }
+  await ui.changeHash('#not-a-page');
+  assert.equal(ui.document.documentElement.dataset.page,'home');
+  await ui.click('view-tab',{tab:'rhythm'});
+  assert.equal(ui.document.documentElement.dataset.page,'home');
+  assert.equal(ui.writes,0);
+});
+
+test('Home record dialogs use entity palettes; nested confirmation retains it and later dialogs reset it',async t=>{
+  const ui=await launch(t,{hash:'#home'});
+  for(const [action,theme] of [['wake-edit','wake'],['run-add','running'],['habit-add','habits'],['event-add','calendar'],['diary-edit','diary']]){
+    await ui.click(action);
+    assert.equal(ui.editor.dataset.theme,theme);
+    assert.equal(ui.document.documentElement.dataset.page,'home');
+    await ui.click('dialog-close');
+  }
+  await ui.click('run-add');
+  await ui.submit('run',{id:'',date:todayKey(),distance:'5',minutes:'30',seconds:'0',note:''});
+  assert.equal(ui.document.documentElement.dataset.page,'home');
+  await ui.click('run-edit',{id:ui.state().runs[0].id});
+  await ui.click('run-delete');
+  assert.equal(ui.editor.dataset.theme,'running');
+  await ui.click('dialog-close');
+  await ui.click('wake-edit');
+  assert.equal(ui.editor.dataset.theme,'wake');
+  await ui.changeHash('#habits');
+  assert.equal(ui.editor.open,false);
+  assert.equal(ui.document.documentElement.dataset.page,'habits');
+});
 
 // Calendar events: actual delegated click/submit handlers and serialized storage.
 test('calendar creates independent same-day and future events, edits one stable ID, and preserves escaped content', async t => {

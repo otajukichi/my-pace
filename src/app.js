@@ -74,6 +74,7 @@ function render({focus=false}={}) {
   const futureAllowed=['calendar','diary'].includes(current),dateVisible=!['settings','garden'].includes(current);
   if(!futureAllowed&&selectedDate>today)selectedDate=today;
   document.title=`${route.label} · マイペース`;
+  document.documentElement.dataset.page=current;
   const nav=keys=>keys.map(key=>`<a href="#${key}" ${current===key?'aria-current="page"':''}>${icon(routes[key].icon,20)}<span>${routes[key].label}</span><i></i></a>`).join('');
   app.innerHTML=`<aside id="app-sidebar" class="sidebar" aria-label="メインメニュー"><div class="sidebar-tools"><button type="button" class="icon-button" data-sidebar="close" aria-label="メニューを閉じる">${icon('close',20)}</button></div><a href="#home" class="brand" aria-label="マイペース ホーム"><img src="./favicon.svg" width="38" height="38" alt=""><span>マイペース<small>My Pace</small></span></a><p class="sidebar-caption">日々を、整える。</p><nav class="navigation" aria-label="メインナビゲーション">${nav(['home','running','wake','habits'])}<span class="nav-divider">日々の余白</span>${nav(['calendar','diary','garden'])}<span class="nav-divider line-only"></span>${nav(['settings'])}</nav><div class="sidebar-bottom"><span>${icon('lock',13)} このブラウザーに保存</span><p>続けることを、心地よく。</p></div></aside><button type="button" id="sidebar-backdrop" class="sidebar-backdrop" data-sidebar="close" tabindex="-1" aria-hidden="true" hidden></button>
   <div class="workspace"><header class="topbar"><button type="button" id="sidebar-toggle" class="icon-button sidebar-toggle" data-sidebar="toggle" aria-controls="app-sidebar" aria-expanded="true" aria-label="メニューを閉じる">${icon('menu',22)}</button><a href="#home" class="mobile-brand"><img src="./favicon.svg" width="28" height="28" alt="">マイペース</a><span class="desktop-breadcrumb">My Pace <b>/</b> ${route.label}</span><span class="local-indicator"><i></i> ブラウザー保存</span></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="page-overline">${current==='home'?'A LITTLE, EVERY DAY':'YOUR OWN PACE'}</p><h1>${route.title}</h1><p>${route.subtitle}</p></div>${dateVisible?`<div class="date-picker"><button class="icon-button" data-action="previous-day" aria-label="前の日" ${selectedDate==='1900-01-01'?'disabled':''}>${icon('left',17)}</button><label><span>${selectedDate===today?'今日':dayLabel(selectedDate,true)}</span><input id="selected-date" type="date" value="${selectedDate}" min="1900-01-01" max="${futureAllowed?'2200-12-31':today}" aria-label="表示する日付"></label><button class="icon-button" data-action="next-day" aria-label="次の日" ${selectedDate>=(futureAllowed?'2200-12-31':today)?'disabled':''}>${icon('right',17)}</button></div>`:''}</div>
@@ -117,7 +118,9 @@ function commit(candidate,message, {
 }
 function showDialog(markup,context = {}) {
   ++fileSequence;
+  const previousTheme=editor.open?editor.dataset.theme:routeKey();
   if(editor.open)editor.close();
+  editor.dataset.theme=({wake:'wake',target:'wake',run:'running',habit:'habits','habit-log':'habits',event:'calendar','event-delete':'calendar',diary:'diary','diary-delete':'diary'})[context.type]||previousTheme;
   dialogContext=context;
   editorNeedsFocus=false;
   editor.innerHTML=markup;
