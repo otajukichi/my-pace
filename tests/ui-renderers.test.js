@@ -70,7 +70,7 @@ test('selected historical days do not offer current-time recording', () => {
 test('archived habits are excluded from dashboard and can be resumed on habit page', () => {
   const state=fixture();
   assert.doesNotMatch(renderDashboard(context(state)),/お休み中/);
-  assert.match(renderHabits(context(state)),/data-action="habit-restore" data-id="rest"/);
+  assert.match(renderHabits({...context(state),tab:'archived'}),/data-action="habit-restore" data-id="rest"/);
   assert.doesNotMatch(renderHabits(context(state)),/data-action="habit-log" data-id="rest"/);
 });
 
@@ -95,7 +95,7 @@ test('zero-distance GPX import permits manual distance entry, nonzero computed d
 });
 
 test('run pace labels show the /km unit exactly once per displayed pace', () => {
-  const html=renderRunning(context(fixture()));
+  const html=renderRunning({...context(fixture()),tab:'trends'})+renderRunning({...context(fixture()),tab:'history'});
   assert.equal((html.match(/\/km/g)||[]).length,2);
   assert.doesNotMatch(html,/\/km\s*\/km/);
 });
@@ -121,10 +121,10 @@ test('charts and route preview include accessible summaries, no fake background 
 });
 
 test('settings disclose local-only persistence, backup privacy and unimplemented integrations', () => {
-  const html=renderSettings(context());
+  const html=renderSettings(context())+renderSettings({...context(),tab:'about'});
   assert.match(html,/自動で同期されません/); assert.match(html,/位置情報/);
   assert.match(html,/Google Drive/); assert.match(html,/Google ログイン/); assert.match(html,/LINE/);
-  assert.equal((html.match(/class="planned">未実装/g)||[]).length,3);
+  assert.equal((html.match(/class="planned">未実装/g)||[]).length,1);
   assert.match(html,/外部への送信、通知は行っていません/);
   assert.doesNotMatch(html,/data-action="(?:login|connect|sync)/);
 });

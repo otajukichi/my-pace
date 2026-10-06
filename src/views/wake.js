@@ -1,24 +1,14 @@
-import  {
-  e,icon,sectionHead,empty,dayLabel
+import {e,icon,sectionHead,empty,dayLabel} from '../lib/ui.js';
+import {wakeChart} from '../lib/charts.js';
+import {wakeStats} from '../lib/domain.js';
+import {paginate,pager,summaryStat} from '../lib/workspace.js';
+export function renderWake({state,date,today,period=7,tab='record',page=0,pageSize=4}) {
+  const value=state.wake[date],stats=wakeStats(state,period,date);
+  if(tab==='history') {
+    const rows=paginate(Object.entries(state.wake).sort((a,b)=>b[0].localeCompare(a[0])),page,pageSize);
+    return `<section class="card list-panel">${sectionHead('これまでの朝','すべての記録。日付を選ぶと編集できます。')}<div class="record-list">${rows.items.length?rows.items.map(([day,time])=>`<button class="record-row" data-action="wake-history" data-date="${day}"><span class="record-icon">${icon('sun')}</span><span class="record-label"><strong>${dayLabel(day)}</strong><small>${day.slice(0,4)}年</small></span><strong class="record-number">${e(time)}</strong>${icon('right',17)}</button>`).join(''):empty('まだ記録はありません。','最初の朝から、少しずつ。','sun')}</div>${pager(rows,'起床記録')}</section>`;
+  }
+  if(tab==='trends') return `<section class="card trend-panel">${sectionHead('朝のリズム','未記録の日には、点を描きません。',periodToggle(period))}<div class="stats-grid">${summaryStat('平均の起床時間',stats.averageTime||'--:--')}${summaryStat('記録した朝',stats.count,'日',`過去${period}日間`)}${summaryStat('いちばん早い朝',stats.earliest||'--:--')}</div><div class="chart-space">${wakeChart(state,period,date)}</div><p class="hint">平均は0:00〜23:59の分数の平均です。未記録日は含みません。</p></section>`;
+  return `<div class="record-layout"><section class="card wake-focus"><div class="card-eyebrow">${icon('sun')} <span>WAKE UP, AT YOUR PACE</span></div><div class="sun-illustration" aria-hidden="true"><i></i></div><p class="hero-caption">${date===today?'今日':'選んだ日'}の起床時間</p><div class="hero-time">${value?e(value):'--:--'}</div><p class="hero-note">${value?'記録できた朝。それだけで、ひとつ。':'目が覚めたら、一日をここから。'}</p><div class="hero-actions">${!value&&date===today?`<button class="btn primary" data-action="wake-now">${icon('sun',18)} 今起きた</button>`:''}<button class="btn ${value?'primary':'secondary'}" data-action="wake-edit">${icon('edit',17)} ${value?'時間を編集':'時間を入力'}</button></div></section><section class="card quiet-card">${sectionHead('朝の目安','早さを競わず、自分に合う時間を。')}<div class="target-time">${state.settings.wakeTarget?e(state.settings.wakeTarget):'自由に'}</div><button class="btn secondary" data-action="target-edit">${icon('edit',17)} 目安を${state.settings.wakeTarget?'変更':'設定'}</button><p class="hint">目安は任意です。設定していなくても、記録を続けられます。</p><div class="quiet-divider"></div><span class="eyebrow">LAST ${period} DAYS</span><p class="quiet-summary">${stats.count}<small>日分の朝を記録</small></p><button class="text-link" data-action="view-tab" data-tab="trends">推移を見る ${icon('arrow',16)}</button></section></div>`;
 }
-from '../lib/ui.js';
-import  {
-  wakeChart
-}
-from '../lib/charts.js';
-import  {
-  wakeStats
-}
-from '../lib/domain.js';
-export function renderWake( {
-  state,date,today,period
-}
-)  {
-  const value=state.wake[date], stats=wakeStats(state,period,date);
-  const history=Object.entries(state.wake).sort((a,b)=>b[0].localeCompare(a[0])).slice(0,30);
-  return `<section class="card wake-today"><div><span class="eyebrow">WAKE UP</span><h2>${value?'今日の朝':'朝の始まりを、記録する。'}</h2><p class="muted">毎日の入力は、起きた時間だけ。</p></div><div class="wake-today-time">${value?e(value):'--:--'}</div><div class="stack-actions">${!value&&date===today?`<button class="btn primary" data-action="wake-now">${icon('sun',18)} 今起きた</button>`:''}<button class="btn ${value?'primary':'secondary'}" data-action="wake-edit">${icon('edit',17)} ${value?'時間を編集':'時間を入力'}</button></div></section>
-  <div class="stats-grid"><div class="stat card"><span>平均の起床時間</span><strong>${stats.averageTime||'--:--'}</strong><small>過去${period}日の記録から</small></div><div class="stat card"><span>記録した朝</span><strong>${stats.count}<em>日</em></strong><small>過去${period}日間</small></div><div class="stat card"><span>起床の目安</span><strong>${state.settings.wakeTarget?e(state.settings.wakeTarget):'自由に'}</strong><button class="text-link" data-action="target-edit">目安を${state.settings.wakeTarget?'変更':'設定'} ${icon('edit',14)}</button></div></div>
-  <section class="card chart-card">${sectionHead('朝のリズム','起きる時間を、ゆるやかに眺める。',periodToggle(period))}${wakeChart(state,period,date)}</section>
-  <section class="card history-card">${sectionHead('これまでの朝', '直近30件。日付を選ぶと編集できます。')}${history.length?`<div class="wake-history">${history.map(([day,time])=>`<button class="history-row" data-action="wake-history" data-date="${day}"><span>${dayLabel(day)}<small>${day.slice(0,4)}年</small></span><strong>${e(time)}</strong>${icon('right',18)}</button>`).join('')}</div>`:empty('まだ記録はありません。','最初の記録を楽しみにしています。','sun')}</section>`;
-}
-export const periodToggle = period => `<div class="segmented" aria-label="集計期間"><button data-action="period" data-days="7" aria-pressed="${period===7}">7日</button><button data-action="period" data-days="30" aria-pressed="${period===30}">30日</button></div>`;
+export const periodToggle=period=>`<div class="segmented" aria-label="集計期間"><button data-action="period" data-days="7" aria-pressed="${period===7}">7日</button><button data-action="period" data-days="30" aria-pressed="${period===30}">30日</button></div>`;

@@ -1,5 +1,5 @@
 import  {
-  createInitialState,todayKey,addDays,validateState,parseBackup,serializeBackup,makeId,upsertWake,upsertHabitLog
+  createInitialState,todayKey,addDays,isDateKey,validateState,parseBackup,serializeBackup,makeId,upsertWake,upsertHabitLog,upsertEvent,removeEvent,upsertDiary,removeDiary
 }
 from './lib/domain.js';
 import  {
@@ -39,38 +39,49 @@ import  {
 }
 from './dialogs.js';
 import {createSidebarController} from './lib/sidebar.js';
+import {renderCalendar} from './views/calendar.js';
+import {renderDiary} from './views/diary.js';
+import {renderGarden} from './views/garden.js';
+import {eventDialog,diaryDialog} from './journal-dialogs.js';
+import {pageCapacity} from './lib/workspace.js';
+import {gardenProgress,GARDEN_THEMES} from './lib/garden.js';
 const app=document.querySelector('#app'), editor=document.querySelector('#editor'), notice=document.querySelector('#notice');
 const sidebar=createSidebarController({document,window,editor});
 const loaded=loadState();
 let state=loaded.state||createInitialState(), storageBlocked=!loaded.ok;
-let selectedDate=todayKey(), previousToday=todayKey(), period=7, undoState=null, dialogContext=null, fileSequence=0;
-const routes= {
-  home: {
-    label:'今日',title:'今日の記録',subtitle:'自分のペースで、少しずつ。',icon:'home',render:renderDashboard
-  }
-  ,wake: {
-    label:'早起き',title:'朝の記録',subtitle:'一日の始まりを、心地よく。',icon:'sun',render:renderWake
-  }
-  ,running: {
-    label:'ランニング',title:'ランニング',subtitle:'歩幅も、ペースも、自分らしく。',icon:'run',render:renderRunning
-  }
-  ,habits: {
-    label:'習慣',title:'習慣',subtitle:'小さな積み重ねが、日常になる。',icon:'habits',render:renderHabits
-  }
-  ,settings: {
-    label:'設定',title:'設定',subtitle:'大切な記録を、これからも。',icon:'settings',render:renderSettings
-  }
+let selectedDate=todayKey(), previousToday=todayKey(), period=7, undoState=null, dialogContext=null, fileSequence=0, editorNeedsFocus=false;
+const viewState={};
+let calendarMonth=selectedDate.slice(0,7),pageSize=pageCapacity(window.innerWidth,window.innerHeight);
+const routes={
+  home:{label:'ホーム',title:'今日の記録',subtitle:'自分のペースで、少しずつ。',icon:'home',render:renderDashboard,tabs:[['today','今日'],['rhythm','つづける']]},
+  running:{label:'ランニング',title:'ランニング',subtitle:'歩幅も、ペースも、自分らしく。',icon:'run',render:renderRunning,tabs:[['record','記録する'],['trends','推移'],['history','履歴']]},
+  wake:{label:'早起き',title:'朝の記録',subtitle:'一日の始まりを、心地よく。',icon:'sun',render:renderWake,tabs:[['record','記録する'],['trends','推移'],['history','履歴']]},
+  habits:{label:'習慣',title:'習慣',subtitle:'小さな積み重ねが、日常になる。',icon:'habits',render:renderHabits,tabs:[['active','今日の習慣'],['archived','お休み中']]},
+  calendar:{label:'カレンダー',title:'カレンダー',subtitle:'予定も、記録も。日々をひと目に。',icon:'calendar',render:renderCalendar,tabs:[['month','月のながめ'],['agenda','予定一覧']]},
+  diary:{label:'日記',title:'日記',subtitle:'何気ない一日を、言葉に。',icon:'book',render:renderDiary,tabs:[['entry','この日の日記'],['history','振り返る']]},
+  garden:{label:'暮らしの庭',title:'暮らしの庭',subtitle:'記録した日が、小さな庭を育てる。',icon:'leaf',render:renderGarden,tabs:[['garden','庭をながめる'],['collection','模様替え'],['guide','育つしくみ']]},
+  settings:{label:'設定',title:'設定',subtitle:'大切な記録を、これからも。',icon:'settings',render:renderSettings,tabs:[['backup','保存と復元'],['about','このアプリ']]}
 };
 const routeKey=()=>Object.hasOwn(routes,location.hash.slice(1))?location.hash.slice(1):'home';
-function render()  {
-  const current=routeKey(), route=routes[current], today=todayKey();
+function activeView() {
+  const key=routeKey();
+  return viewState[key]||(viewState[key]={tab:routes[key].tabs[0][0],page:0});
+}
+function render({focus=false}={}) {
+  const restoreFocus=Boolean(app.contains?.(document.activeElement));
+  if(editor.open)editorNeedsFocus=true;
+  const current=routeKey(),route=routes[current],today=todayKey(),view=activeView();
+  const futureAllowed=['calendar','diary'].includes(current),dateVisible=!['settings','garden'].includes(current);
+  if(!futureAllowed&&selectedDate>today)selectedDate=today;
   document.title=`${route.label} · マイペース`;
-  app.innerHTML=`<aside id="app-sidebar" class="sidebar" aria-label="メインメニュー"><div class="sidebar-tools"><button type="button" class="icon-button" data-sidebar="close" aria-label="メニューを閉じる">${icon('close',20)}</button></div><a href="#home" class="brand" aria-label="マイペース ホーム"><img src="./favicon.svg" width="42" height="42" alt=""><span>マイペース<small>My Pace</small></span></a><div class="sidebar-caption">日々を、整える。</div><nav class="navigation" aria-label="メインナビゲーション">${Object.entries(routes).map(([key,item])=>`<a href="#${key}" ${current===key?'aria-current="page"':''}>${icon(item.icon)}<span>${item.label}</span>${key!=='settings'?'<i></i>':''}</a>`).join('')}</nav><div class="sidebar-bottom"><div class="side-art" aria-hidden="true"><i></i><i></i><i></i><i></i></div><p>続けることを、<br>心地よいことに。</p><span>${icon('lock',13)} このブラウザーに保存</span></div></aside><button type="button" id="sidebar-backdrop" class="sidebar-backdrop" data-sidebar="close" tabindex="-1" aria-hidden="true" hidden></button>
-  <div class="workspace"><header class="topbar"><button type="button" id="sidebar-toggle" class="icon-button sidebar-toggle" data-sidebar="toggle" aria-controls="app-sidebar" aria-expanded="true" aria-label="メニューを閉じる">${icon('menu',22)}</button><a href="#home" class="mobile-brand"><img src="./favicon.svg" width="30" height="30" alt="">マイペース</a><span class="desktop-breadcrumb">My Pace <b>/</b> ${route.label}</span><span class="local-indicator"><i></i> ブラウザー保存</span></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="page-overline">${current==='home'?'A LITTLE, EVERY DAY':'YOUR OWN PACE'}</p><h1>${route.title}</h1><p>${route.subtitle}</p></div>${current!=='settings'?`<div class="date-picker"><button class="icon-button" data-action="previous-day" aria-label="前の日" ${selectedDate==='1900-01-01'?'disabled':''}>${icon('left',18)}</button><label><span>${selectedDate===today?'今日':dayLabel(selectedDate,true)}</span><input id="selected-date" type="date" value="${selectedDate}" min="1900-01-01" max="${today}" aria-label="表示する日付"></label><button class="icon-button" data-action="next-day" aria-label="次の日" ${selectedDate>=today?'disabled':''}>${icon('right',18)}</button></div>`:''}</div>
-  ${selectedDate!==today&&current!=='settings'?`<div class="date-notice">${dayLabel(selectedDate)}の記録を表示中 <button class="text-link" data-action="today">今日に戻る</button></div>`:''}
-  ${storageBlocked?`<div class="error-banner" role="alert">保存データを読み込めないか、ブラウザー保存を利用できません。記録の変更を止めています。<button class="text-link" data-action="backup-raw">既存データを退避</button> 設定から正常な JSON を復元するか、ブラウザーの保存設定を確認してください。</div>`:''}
-  ${route.render({state,date:selectedDate,today,period})}<footer class="app-footer"><span>マイペース</span> 自分のペースで、少しずつ。</footer></main></div>`;
+  const nav=keys=>keys.map(key=>`<a href="#${key}" ${current===key?'aria-current="page"':''}>${icon(routes[key].icon,20)}<span>${routes[key].label}</span><i></i></a>`).join('');
+  app.innerHTML=`<aside id="app-sidebar" class="sidebar" aria-label="メインメニュー"><div class="sidebar-tools"><button type="button" class="icon-button" data-sidebar="close" aria-label="メニューを閉じる">${icon('close',20)}</button></div><a href="#home" class="brand" aria-label="マイペース ホーム"><img src="./favicon.svg" width="38" height="38" alt=""><span>マイペース<small>My Pace</small></span></a><p class="sidebar-caption">日々を、整える。</p><nav class="navigation" aria-label="メインナビゲーション">${nav(['home','running','wake','habits'])}<span class="nav-divider">日々の余白</span>${nav(['calendar','diary','garden'])}<span class="nav-divider line-only"></span>${nav(['settings'])}</nav><div class="sidebar-bottom"><span>${icon('lock',13)} このブラウザーに保存</span><p>続けることを、心地よく。</p></div></aside><button type="button" id="sidebar-backdrop" class="sidebar-backdrop" data-sidebar="close" tabindex="-1" aria-hidden="true" hidden></button>
+  <div class="workspace"><header class="topbar"><button type="button" id="sidebar-toggle" class="icon-button sidebar-toggle" data-sidebar="toggle" aria-controls="app-sidebar" aria-expanded="true" aria-label="メニューを閉じる">${icon('menu',22)}</button><a href="#home" class="mobile-brand"><img src="./favicon.svg" width="28" height="28" alt="">マイペース</a><span class="desktop-breadcrumb">My Pace <b>/</b> ${route.label}</span><span class="local-indicator"><i></i> ブラウザー保存</span></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="page-overline">${current==='home'?'A LITTLE, EVERY DAY':'YOUR OWN PACE'}</p><h1>${route.title}</h1><p>${route.subtitle}</p></div>${dateVisible?`<div class="date-picker"><button class="icon-button" data-action="previous-day" aria-label="前の日" ${selectedDate==='1900-01-01'?'disabled':''}>${icon('left',17)}</button><label><span>${selectedDate===today?'今日':dayLabel(selectedDate,true)}</span><input id="selected-date" type="date" value="${selectedDate}" min="1900-01-01" max="${futureAllowed?'2200-12-31':today}" aria-label="表示する日付"></label><button class="icon-button" data-action="next-day" aria-label="次の日" ${selectedDate>=(futureAllowed?'2200-12-31':today)?'disabled':''}>${icon('right',17)}</button></div>`:''}</div>
+  <div class="view-bar"><nav class="view-tabs" aria-label="${route.label}の表示">${route.tabs.map(([key,label])=>`<button type="button" data-action="view-tab" data-tab="${key}" aria-pressed="${view.tab===key}">${label}</button>`).join('')}</nav>${dateVisible&&selectedDate!==today?'<button class="text-link return-today" data-action="today">今日に戻る</button>':''}</div>
+  ${storageBlocked?`<div class="error-banner" role="alert">保存データを読み込めません。記録の変更を止めています。<button class="text-link" data-action="backup-raw">既存データを退避</button><a href="#settings">設定で復元</a></div>`:''}
+  <div class="view-stage" role="region" aria-label="${route.label}の内容" tabindex="0">${route.render({state,date:selectedDate,today,period,tab:view.tab,page:view.page,pageSize:current==='habits'?Math.max(1,Math.min(3,Math.floor(((window.innerHeight||768)-390)/110))):pageSize,month:calendarMonth})}</div><footer class="app-footer"><span>マイペース</span><span>日々の小さなことを、大切に。</span></footer></main></div>`;
   sidebar.sync();
+  if((focus||restoreFocus)&&!editor.open)document.querySelector('main')?.focus();
 }
 function toast(text,undo=false)  {
   notice.innerHTML=`<span>${e(text)}</span>${undo?'<button class="toast-undo" data-action="undo">元に戻す</button>':''}<button class="toast-close" data-action="notice-close" aria-label="通知を閉じる">${icon('close',16)}</button>`;
@@ -108,6 +119,7 @@ function showDialog(markup,context = {}) {
   ++fileSequence;
   if(editor.open)editor.close();
   dialogContext=context;
+  editorNeedsFocus=false;
   editor.innerHTML=markup;
   editor.showModal();
   requestAnimationFrame(()=>editor.querySelector('[autofocus],input:not([type=hidden]),button')?.focus());
@@ -116,6 +128,7 @@ function closeDialog() {
   ++fileSequence;
   editor.close();
   dialogContext=null;
+  if(editorNeedsFocus){editorNeedsFocus=false;document.querySelector('main')?.focus();}
 }
 function formError(text) {
   const target=editor.open?editor.querySelector('#form-error'):null;
@@ -140,6 +153,7 @@ function chooseFile(accept,handle)  {
       handle(text,file);
     }
     catch(error) {
+      if(seq!==fileSequence||startRoute!==routeKey())return;
       toast(error.message);
     }
   }
@@ -176,27 +190,49 @@ function openHabitLog(id) {
   );
 }
 const actions= {
+  'view-tab':el=>{const view=activeView();if(!routes[routeKey()].tabs.some(([key])=>key===el.dataset.tab))return;view.tab=el.dataset.tab;view.page=0;render({focus:true});},
+  'view-page':el=>{const page=Number(el.dataset.page);if(!Number.isInteger(page)||page<0)return;activeView().page=page;render({focus:true});},
+  'calendar-month':el=>{const offset=Number(el.dataset.offset);if(![-1,1].includes(offset))return;const [year,month]=calendarMonth.split('-').map(Number);const value=new Date(year,month-1+offset,1,12);const key=`${value.getFullYear()}-${String(value.getMonth()+1).padStart(2,'0')}`;if(key<'1900-01'||key>'2200-12')return;calendarMonth=key;activeView().page=0;render({focus:true});},
+  'calendar-today':()=>{selectedDate=todayKey();calendarMonth=selectedDate.slice(0,7);activeView().page=0;render({focus:true});},
+  'calendar-day':el=>{if(!isDateKey(el.dataset.date))return;selectedDate=el.dataset.date;calendarMonth=selectedDate.slice(0,7);activeView().page=0;render({focus:true});},
+  'diary-day':el=>{if(!isDateKey(el.dataset.date))return;selectedDate=el.dataset.date;calendarMonth=selectedDate.slice(0,7);viewState.diary={tab:'entry',page:0};if(routeKey()!=='diary')location.hash='#diary';render({focus:true});},
+  'event-add':()=>showDialog(eventDialog(null,selectedDate),{type:'event'}),
+  'event-edit':el=>{const event=state.events.find(item=>item.id===el.dataset.id);if(event)showDialog(eventDialog(event,selectedDate),{type:'event',id:event.id});},
+  'event-delete':()=>{if(dialogContext?.type!=='event'||!dialogContext.id)return;showDialog(confirmDialog('予定を削除','この予定とメモを削除します。直後に元に戻せます。','削除する','event-delete-confirm'),{type:'event-delete',id:dialogContext.id});},
+  'event-delete-confirm':()=>{if(dialogContext?.type==='event-delete'&&dialogContext.id&&commit(removeEvent(state,dialogContext.id),'予定を削除しました'))closeDialog();},
+  'diary-edit':()=>showDialog(diaryDialog(state.diary[selectedDate],selectedDate),{type:'diary',date:selectedDate}),
+  'diary-delete':()=>{if(dialogContext?.type!=='diary'||!state.diary[dialogContext.date])return;showDialog(confirmDialog('日記を削除','この日の日記を削除します。直後に元に戻せます。','削除する','diary-delete-confirm'),{type:'diary-delete',date:dialogContext.date});},
+  'diary-delete-confirm':()=>{if(dialogContext?.type==='diary-delete'&&dialogContext.date&&commit(removeDiary(state,dialogContext.date),'日記を削除しました'))closeDialog();},
+  'garden-plant':el=>{const plant=el.dataset.plant;if(!gardenProgress(state,todayKey()).unlockedPlants.includes(plant))return;if(state.garden.plant===plant)return;commit({...state,garden:{...state.garden,plant}},'庭の植物を変えました');},
+  'garden-theme':el=>{const theme=el.dataset.theme;if(!GARDEN_THEMES.some(item=>item.id===theme)||state.garden.theme===theme)return;commit({...state,garden:{...state.garden,theme}},'庭の空を変えました');},
   'dialog-close':closeDialog,'notice-close':()=>notice.hidden=true,   'previous-day':()=> {
     if(selectedDate>'1900-01-01') {
       selectedDate=addDays(selectedDate,-1);
+      calendarMonth=selectedDate.slice(0,7);activeView().page=0;
       render();
     }
   }
   ,   'next-day':()=> {
-    if(selectedDate<todayKey()) {
+    if(selectedDate<(['calendar','diary'].includes(routeKey())?'2200-12-31':todayKey())) {
       selectedDate=addDays(selectedDate,1);
+      calendarMonth=selectedDate.slice(0,7);activeView().page=0;
       render();
     }
   }
   ,   today:()=> {
     selectedDate=todayKey();
+    calendarMonth=selectedDate.slice(0,7);activeView().page=0;
     render();
   }
   ,   'select-date':el=> {
+    if(!isDateKey(el.dataset.date)||el.dataset.date>todayKey())return;
     selectedDate=el.dataset.date;
-    render();
+    calendarMonth=selectedDate.slice(0,7);
+    activeView().page=0;
+    render({focus:true});
   }
   ,   period:el=> {
+    if(!['7','30'].includes(el.dataset.days))return;
     period=Number(el.dataset.days);
     render();
   }
@@ -302,7 +338,7 @@ const actions= {
   ,   'backup-import':()=>chooseFile('.json,application/json',(text)=> {
     const pending=parseBackup(text);
     const count=Object.keys(pending.wake).length+pending.runs.length+Object.values(pending.habitLogs).reduce((n,logs)=>n+Object.keys(logs).length,0);
-    showDialog(confirmDialog('バックアップを復元',`${pending.habits.length}個の習慣と${count}件の記録で、現在の全データを置き換えます。必要なら先に現在の JSON を保存してください。${storageBlocked?'現在の保存データが読み取れないため、この復元は取り消せません。':'復元直後は「元に戻す」で取り消せます。'}`,'置き換えて復元','backup-restore-confirm'), {
+    showDialog(confirmDialog('バックアップを復元',`${pending.habits.length}個の習慣・${count}件の記録・${pending.events.length}件の予定・${Object.keys(pending.diary).length}日の日記で、現在の全データを置き換えます。必要なら先に現在の JSON を保存してください。${storageBlocked?'現在の保存データが読み取れないため、この復元は取り消せません。':'復元直後は「元に戻す」で取り消せます。'}`,'置き換えて復元','backup-restore-confirm'), {
       pending
     }
     );
@@ -341,9 +377,11 @@ document.addEventListener('click',onClick);
 document.addEventListener('change',event=> {
   if(event.target.id==='selected-date') {
     const value=event.target.value;
-    if(value&&value<=todayKey()&&value>='1900-01-01') {
+    if(isDateKey(value)&&value<=(['calendar','diary'].includes(routeKey())?'2200-12-31':todayKey())) {
       selectedDate=value;
-      render();
+      calendarMonth=value.slice(0,7);
+      activeView().page=0;
+      render({focus:true});
     }
   }
   if(event.target.name==='type'&&editor.open) {
@@ -361,9 +399,11 @@ editor.addEventListener('submit',event=> {
   if(!form.reportValidity())return;
   const data=new FormData(form);
   const type=form.dataset.form;
+  if(!dialogContext||!editor.open)return;
+  if(dialogContext.type!==type)return;
   let next;
   try  {
-    if(type==='wake')next=upsertWake(state,dialogContext.date,data.get('time'));
+    if(type==='wake'){if(dialogContext.date>todayKey())throw new Error('今日以前の日付を選んでください。');next=upsertWake(state,dialogContext.date,data.get('time'));}
     else if(type==='target')next= {
       ...state,settings: {
         ...state.settings,wakeTarget:data.get('target')||null
@@ -399,6 +439,8 @@ editor.addEventListener('submit',event=> {
       ;
     }
     else if(type==='habit-log')next=upsertHabitLog(state,dialogContext.id,dialogContext.date,Number(data.get('value')));
+    else if(type==='event')next=upsertEvent(state,{id:dialogContext.id||makeId(),date:data.get('date'),time:data.get('time')||null,title:data.get('title').trim(),note:data.get('note').trim()});
+    else if(type==='diary'){const text=data.get('text').trim(),mood=data.get('mood')||null;if(!text&&!mood)throw new Error('ひとこと、または気分を選んでください。');next=upsertDiary(state,dialogContext.date,{text,mood});}
     if(next&&commit(next,'記録を保存しました'))closeDialog();
   }
   catch(error) {
@@ -439,11 +481,15 @@ document.addEventListener('visibilitychange',()=> {
   if(document.hidden)return;
   const current=todayKey();
   if(current!==previousToday) {
-    if(selectedDate===previousToday)selectedDate=current;
+    if(selectedDate===previousToday){selectedDate=current;calendarMonth=current.slice(0,7);}
     previousToday=current;
-    closeDialog();
+    // Keep an open editor: its context retains the original record date.
     render();
   }
 }
 );
+window.addEventListener('resize',()=>{
+  const capacity=pageCapacity(window.innerWidth,window.innerHeight);
+  if(capacity!==pageSize){pageSize=capacity;render();}
+});
 render();

@@ -98,7 +98,7 @@ test('backup round trips all fields and validation returns a deep detached copy'
   assert.equal(canonical.runs[0].points[0].time, '2026-10-04T21:00:00.000Z');
 });
 test('backup rejects unknown versions, keys, duplicate identifiers and malformed full state', () => {
-  rejected((s) => { s.version = 2; });
+  rejected((s) => { s.version = 3; });
   rejected((s) => { s.settings.wakeTarget = '9:00'; });
   rejected((s) => { s.extra = 'surprise'; });
   rejected((s) => { s.runs = [run(), run()]; });

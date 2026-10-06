@@ -1,5 +1,5 @@
 /** Pure, dependency-free domain rules. Calendar keys always use the device's local day. */
-export const STATE_VERSION = 1;
+export const STATE_VERSION = 2;
 export const LIMITS = Object.freeze({
   backupChars: 12 * 1024 * 1024,
   backupBytes: 12 * 1024 * 1024,
@@ -9,7 +9,23 @@ export const LIMITS = Object.freeze({
   runs: 5000,
   pointsPerRun: 20000,
   totalPoints: 100000,
+  events: 20000,
+  eventTitle: 120,
+  eventNote: 2000,
+  diaryDays: 36600,
+  diaryText: 8000,
 });
+export const DIARY_MOODS = Object.freeze(['bright', 'calm', 'tired', 'low']);
+export const GARDEN_PLANTS = Object.freeze([
+  Object.freeze({ id: 'cosmos', label: 'コスモス', unlockAt: 0 }),
+  Object.freeze({ id: 'sunflower', label: 'ひまわり', unlockAt: 7 }),
+  Object.freeze({ id: 'hydrangea', label: 'あじさい', unlockAt: 21 }),
+]);
+export const GARDEN_THEMES = Object.freeze([
+  Object.freeze({ id: 'day', label: '昼の庭' }),
+  Object.freeze({ id: 'dusk', label: '夕暮れの庭' }),
+  Object.freeze({ id: 'night', label: '夜の庭' }),
+]);
 const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const DATE_RE = /^(19\d{2}|20\d{2}|21\d{2}|2200)-(\d{2})-(\d{2})$/;
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
@@ -18,7 +34,8 @@ const fail = (message) => { throw new Error(message); };
 const has = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 
 export function createInitialState() {
-  return { version: STATE_VERSION, settings: { wakeTarget: null }, wake: {}, runs: [], habits: [], habitLogs: {} };
+  return { version: STATE_VERSION, settings: { wakeTarget: null }, wake: {}, runs: [], habits: [], habitLogs: {},
+    events: [], diary: {}, garden: { plant: 'cosmos', theme: 'day' } };
 }
 
 export function isDateKey(value) {
@@ -97,6 +114,15 @@ function text(value, max, path, allowEmpty = true) {
   if (typeof value !== 'string' || value.length > max || (!allowEmpty && !value.trim())) fail(`${path}が正しくありません。`);
   return value;
 }
+// Journal limits count Unicode code points, so an emoji gets the same capacity as a Japanese character.
+function journalText(value, max, path, allowEmpty = true) {
+  if (typeof value !== 'string' || (!allowEmpty && !value.trim())) fail(`${path}が正しくありません。`);
+  let count = 0;
+  for (const character of value) {
+    if (++count > max) fail(`${path}が正しくありません。`);
+  }
+  return value;
+}
 function identifier(value, path) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(value) || BAD_KEYS.has(value)) fail(`${path}が正しくありません。`);
   return value;
@@ -116,8 +142,11 @@ function time(value, path) {
 
 /** Validate the complete object before replacing data. Returns a detached canonical copy. */
 export function validateState(raw) {
-  record(raw, 'バックアップ', ['version', 'settings', 'wake', 'runs', 'habits', 'habitLogs']);
-  if (raw.version !== STATE_VERSION) fail('このバックアップのバージョンには対応していません。');
+  record(raw, 'バックアップ');
+  if (raw.version !== 1 && raw.version !== STATE_VERSION) fail('このバックアップのバージョンには対応していません。');
+  const legacy = raw.version === 1;
+  record(raw, 'バックアップ', ['version', 'settings', 'wake', 'runs', 'habits', 'habitLogs',
+    ...(legacy ? [] : ['events', 'diary', 'garden'])]);
   record(raw.settings, '設定', ['wakeTarget']);
   const output = createInitialState();
   output.settings.wakeTarget = raw.settings.wakeTarget === null ? null : time(raw.settings.wakeTarget, '目標時刻');
@@ -178,6 +207,32 @@ export function validateState(raw) {
     return { id, date: date(item.date, 'ランニング日'), distanceKm: number(item.distanceKm, 0.001, 10000, '距離'),
       durationSec: number(item.durationSec, 1, 31 * 24 * 3600, '所要時間', true), note: text(item.note ?? '', 2000, 'メモ'), points };
   });
+  if (!legacy) {
+    const eventIds = new Set();
+    output.events = list(raw.events, LIMITS.events, '予定').map((item) => {
+      record(item, '予定', ['id', 'date', 'time', 'title', 'note']);
+      const id = identifier(item.id, '予定ID');
+      if (eventIds.has(id)) fail('予定IDが重複しています。');
+      eventIds.add(id);
+      return { id, date: date(item.date, '予定の日付'),
+        time: item.time == null ? null : time(item.time, '予定の時刻'),
+        title: journalText(item.title, LIMITS.eventTitle, '予定のタイトル', false),
+        note: journalText(item.note ?? '', LIMITS.eventNote, '予定のメモ') };
+    });
+    record(raw.diary, '日記');
+    if (Object.keys(raw.diary).length > LIMITS.diaryDays) fail('日記の件数が多すぎます。');
+    for (const [key, entry] of Object.entries(raw.diary)) {
+      date(key, '日記の日付');
+      record(entry, '日記', ['text', 'mood']);
+      if (entry.mood != null && !DIARY_MOODS.includes(entry.mood)) fail('日記の気分が正しくありません。');
+      output.diary[key] = { text: journalText(entry.text, LIMITS.diaryText, '日記の本文'), mood: entry.mood ?? null };
+    }
+    record(raw.garden, '庭の設定', ['plant', 'theme']);
+    if (!GARDEN_PLANTS.some((item) => item.id === raw.garden.plant)) fail('庭の植物が正しくありません。');
+    if (!GARDEN_THEMES.some((item) => item.id === raw.garden.theme)) fail('庭のテーマが正しくありません。');
+    // Selection is retained even after deleting an earning record. Visibility is derived separately.
+    output.garden = { plant: raw.garden.plant, theme: raw.garden.theme };
+  }
   return output;
 }
 
@@ -243,4 +298,26 @@ export function upsertWake(state, key, value) {
 }
 export function upsertHabitLog(state, habitId, key, value) {
   return validateState({ ...state, habitLogs: { ...state.habitLogs, [habitId]: { ...state.habitLogs[habitId], [key]: value } } });
+}
+
+/** Immutable journal edits always pass the same strict validation as backup imports. */
+export function upsertEvent(state, event) {
+  const current = validateState(state);
+  return validateState({ ...current, events: [...current.events.filter((item) => item.id !== event?.id), event] });
+}
+export function removeEvent(state, id) {
+  identifier(id, '予定ID');
+  const current = validateState(state);
+  return validateState({ ...current, events: current.events.filter((item) => item.id !== id) });
+}
+export function upsertDiary(state, key, entry) {
+  date(key, '日記の日付');
+  const current = validateState(state);
+  return validateState({ ...current, diary: { ...current.diary, [key]: entry } });
+}
+export function removeDiary(state, key) {
+  date(key, '日記の日付');
+  const current = validateState(state);
+  delete current.diary[key];
+  return current;
 }
