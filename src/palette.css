@@ -69,17 +69,15 @@
 
 /* Shared shell: a clear canvas, white cards, and high-contrast navigation. */
 body { color: var(--ink); background: var(--canvas); }
-.topbar, .sidebar { background: #f8fafc; border-color: var(--line); }
+.topbar { background: #f8fafc; border-color: var(--line); }
 .topbar { box-shadow: inset 0 -2px 0 var(--accent); }
-.desktop-breadcrumb, .desktop-breadcrumb b, .local-indicator,
-.brand small, .sidebar-caption, .nav-divider, .sidebar-bottom,
-.sidebar-bottom p, .app-footer { color: var(--muted); }
+.local-indicator, .app-footer { color: var(--muted); }
 .local-indicator i { background: #17634a; }
-.navigation > a { color: var(--muted); }
-.navigation > a:hover { color: var(--accent-ink); background: var(--accent-soft); }
-.navigation > a[aria-current] { color: #ffffff; background: var(--accent); }
-.navigation > a[aria-current] i { background: #ffffff; }
-.page-heading h1, .brand, .mobile-brand { color: var(--ink); }
+.page-navigation > a { color: var(--muted); }
+.page-navigation > a:hover { color: var(--accent-ink); background: var(--accent-soft); }
+.page-navigation > a[aria-current] { color: #ffffff; background: var(--accent); }
+.page-navigation > a[aria-current] .page-current { background: #ffffff; }
+.page-heading h1, .topbar-brand { color: var(--ink); }
 .page-overline, .eyebrow { color: var(--accent); }
 .page-heading > div > p:last-child { color: var(--muted); }
 .view-tabs { border-color: var(--line); }
@@ -275,7 +273,7 @@ button.theme-choice:disabled, button.theme-choice:disabled:hover,
 .plant-choice:disabled strong, .plant-choice:disabled small, .plant-choice:disabled span { color: var(--disabled-ink); }
 
 @media (forced-colors: active) {
-  .navigation > a[aria-current], .view-tabs button[aria-pressed=true],
+  .page-navigation > a[aria-current], .view-tabs button[aria-pressed=true],
   .segmented button[aria-pressed=true], .calendar-day.is-selected,
   .habit-toggle.done, .week-day.selected, .plant-choice[aria-pressed=true],
   .theme-choices button[aria-pressed=true] { outline: 2px solid Highlight; outline-offset: -2px; }
@@ -285,4 +283,12 @@ button.theme-choice:disabled, button.theme-choice:disabled:hover,
   .chart-dot, .chart-bar, .run-bar, .run-bar-empty { fill: CanvasText; }
   .chart-wrap text { fill: CanvasText; }
   button:disabled, .field select:disabled { color: GrayText; -webkit-text-fill-color: GrayText; }
+}
+
+/* Named tooltips and the selected underline remain legible in every page theme. */
+.page-tooltip { color:#ffffff; background:#182638; }
+@media (forced-colors: active) {
+  .page-tooltip { color:CanvasText; background:Canvas; border-color:CanvasText; }
+  .page-navigation > a[aria-current] { color:HighlightText; background:Highlight; forced-color-adjust:none; }
+  .page-navigation > a[aria-current] .page-current { background:HighlightText; }
 }

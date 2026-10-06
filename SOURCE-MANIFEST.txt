@@ -1,19 +1,20 @@
-My Pace Workspace 0.2 — page palette and contrast refinement
-Verified baseline: otajukichi/my-pace main 9fa95aa047f2aaa752c44e16fb2017ab3a12a5fe
-Baseline tree: 923eb74e461fc5cc6d9bafc795eec0de5dbbf813
-Verified on: 2026-10-06; all source Git blob hashes matched
+My Pace Workspace 0.2 — equal top-bar icon navigation
+Verified baseline: otajukichi/my-pace main 22934ec36baa0a9bae00bedf8b59470ae5987fba
+Baseline tree: f8409ab7350d2b84ccb2f4a92a325654e26d8342
+Verified on: 2026-10-06; all 47 source Git blob hashes matched
 
 Entry: index.html
-Viewport shell: src/style.css (unchanged)
-Palette layer: src/palette.css
-Theme hooks: src/app.js, src/views/dashboard.js
-Primary themes: home blue, running green, wake orange, habits purple
-Secondary themes: calendar blue, diary purple, garden green, settings slate
+Viewport shell: src/style.css; sidebar removed, eight equal top-bar links
+Navigation: src/lib/navigation.js; native anchors, named tooltips, selected underline
+Viewport capacity: src/lib/workspace.js; reserves the responsive top-bar height
+Palette: src/palette.css; existing page colors preserved
+Main pages: home, running, wake, habits, calendar, diary, garden, settings
 Data: src/lib/domain.js and src/lib/storage.js unchanged; version2; rhythm.personal.v1
 Checks: package.json; scripts/check.mjs; scripts/build.mjs (unchanged)
-Tests: tests/*.test.js (177 tests)
+Tests: tests/*.test.js (185 tests)
 Guides: README.md; TEST-REPORT.md; qa/ACCEPTANCE.md
 Integrity: SOURCE-MANIFEST.sha256, excluding itself and generated dist
 
 No dependencies, credentials, browser data access, Git writes or deployments.
-Real-browser visual QA remains unperformed. Contrast checks are source-level.
+Real-browser visual QA remains unperformed. Layout and contrast checks are source-level.
+Narrow/short screens can use the existing internal overflow safety surface.

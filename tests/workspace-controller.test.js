@@ -13,16 +13,23 @@ import {pageCapacity} from '../src/lib/workspace.js';
 
 let instance = 0;
 class EventNode {
-  constructor() { this.dataset={}; this.handlers = new Map(); this.innerHTML = ''; this.hidden = true; this.open = false; this.fields = new Map(); this.focused = false; }
+  constructor() { this.dataset={}; this.handlers = new Map(); this._innerHTML = ''; this.htmlWrites = 0; this.hidden = true; this.open = false; this.fields = new Map(); this.focused = false; this.focusCalls = 0; this.attributes = new Map(); }
+  get innerHTML() { return this._innerHTML; }
+  set innerHTML(value) { this._innerHTML = value; this.htmlWrites++; this.fields.clear(); }
   addEventListener(type, handler) { this.handlers.set(type, [...(this.handlers.get(type) || []), handler]); }
   async emit(type, event = {}) { for (const handler of this.handlers.get(type) || []) await handler(event); }
   showModal() { this.open = true; }
   close() { if (this.open) { this.open = false; for (const handler of this.handlers.get('close') || []) handler({}); } }
-  focus() { this.focused = true; }
+  focus() { this.focused = true; this.focusCalls++; }
+  setAttribute(name, value) { this.attributes.set(name, String(value)); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  removeAttribute(name) { this.attributes.delete(name); }
+  contains(node) { return node === this; }
   querySelector(selector) { if (!this.fields.has(selector)) this.fields.set(selector, new EventNode()); return this.fields.get(selector); }
   click() { this.clicked = true; }
 }
-async function launch(t, {initial = createInitialState(), raw: initialRaw, hash = '#calendar', width = 1280, height = 900} = {}) {
+const LEGACY_SIDEBAR_KEY = 'my-pace.ui.sidebar-collapsed.v1';
+async function launch(t, {initial = createInitialState(), raw: initialRaw, hash = '#calendar', width = 1280, height = 900, legacySidebar = 'true'} = {}) {
   const originals = new Map(), app = new EventNode(), editor = new EventNode(), notice = new EventNode(), main = new EventNode();
   const document = new EventNode(), window = new EventNode(), created = [], location = {hash};
   window.innerWidth = width; window.innerHeight = height;
@@ -30,9 +37,11 @@ async function launch(t, {initial = createInitialState(), raw: initialRaw, hash 
   document.documentElement = {dataset: {}};
   document.querySelector = selector => ({'#app':app, '#editor':editor, '#notice':notice, main}[selector] || null);
   document.createElement = tag => { const node = new EventNode(); node.tag = tag; created.push(node); return node; };
+  const storageAccess = [], preferences = new Map([[LEGACY_SIDEBAR_KEY, legacySidebar]]);
   const localStorage = {
-    getItem(key) { return key === STORAGE_KEY ? raw : null; },
-    setItem(key, value) { assert.equal(key, STORAGE_KEY); if (deniedWrite) throw new Error('Quota exceeded'); raw = value; writes++; },
+    getItem(key) { storageAccess.push({method:'getItem', key}); return key === STORAGE_KEY ? raw : preferences.get(key) ?? null; },
+    setItem(key, value) { storageAccess.push({method:'setItem', key}); assert.equal(key, STORAGE_KEY); if (deniedWrite) throw new Error('Quota exceeded'); raw = value; writes++; },
+    removeItem(key) { storageAccess.push({method:'removeItem', key}); preferences.delete(key); },
   };
   const FormData = class { constructor(form) { this.values = form.values; } get(key) { return this.values[key] ?? null; } };
   for (const [key, value] of Object.entries({document, window, location, localStorage, FormData, requestAnimationFrame:callback => callback()})) {
@@ -54,9 +63,26 @@ async function launch(t, {initial = createInitialState(), raw: initialRaw, hash 
   const submit = (type, values, valid = true) => submitForm(form(type, values, valid));
   const changeDate = value => document.emit('change', {target:{id:'selected-date', value}});
   const changeHash = async value => { location.hash = value; await window.emit('hashchange'); };
+  const routeLink = route => {
+    const rendered = headerLinks(app.innerHTML).find(link => link.attributes['data-route'] === route);
+    assert.ok(rendered, `header contains the ${route} link`);
+    const link = new EventNode();
+    for (const [key, value] of Object.entries(rendered.attributes)) link.setAttribute(key, value);
+    link.dataset.route = route;
+    link.closest = selector => ['#page-navigation .page-link', 'a[href^="#"]', '.page-link'].includes(selector) ? link : null;
+    return link;
+  };
+  const clickRoute = async route => {
+    const link = routeLink(route), event = {target:link, button:0, defaultPrevented:false, preventDefault(){this.defaultPrevented = true;}};
+    await document.emit('click', event);
+    // Model the anchor's default action and changed-hash event explicitly. This is not
+    // a browser click/history implementation; it detects interception by app handlers.
+    if (!event.defaultPrevented && location.hash !== link.getAttribute('href')) await changeHash(link.getAttribute('href'));
+    return event;
+  };
   const selectFile = async file => { const input = created.filter(node => node.type === 'file').at(-1); assert.ok(input, 'a file input was created'); input.files = [file]; await input.emit('change'); };
   const resize = async (width, height) => { window.innerWidth = width; window.innerHeight = height; await window.emit('resize'); };
-  return {app, editor, notice, main, document, window, location, click, form, submit, submitForm, changeDate, changeHash, selectFile, resize, dispose,
+  return {app, editor, notice, main, document, window, location, click, routeLink, clickRoute, form, submit, submitForm, changeDate, changeHash, selectFile, resize, dispose, storageAccess, preferences,
     state:() => JSON.parse(raw), setRaw:value => {raw = value;}, denyWrite:value => {deniedWrite = value;}, get raw(){return raw;}, get writes(){return writes;}};
 }
 const valuesForEvent = (date = todayKey(), patch = {}) => ({date, time:'09:30', title:'散歩の約束', note:'公園で会う', ...patch});
@@ -64,6 +90,141 @@ const eventRecord = (id, date, patch = {}) => ({id, date, time:null, title:`予�
 const selectedDate = ui => /id="selected-date"[^>]*value="([^"]+)"/.exec(ui.app.innerHTML)?.[1];
 const calendarMonth = ui => /aria-label="(\d{4})年(\d+)月の日付"/.exec(ui.app.innerHTML)?.slice(1).map((part, index) => index ? part.padStart(2, '0') : part).join('-');
 const currentTab = (ui, tab) => new RegExp(`data-action="view-tab" data-tab="${tab}" aria-pressed="true"`).test(ui.app.innerHTML);
+const ROUTES = [
+  ['home', 'ホーム'], ['running', 'ランニング'], ['wake', '早起き'], ['habits', '習慣'],
+  ['calendar', 'カレンダー'], ['diary', '日記'], ['garden', '暮らしの庭'], ['settings', '設定'],
+];
+const attributesOf = markup => Object.fromEntries([...markup.matchAll(/([\w-]+)(?:="([^"]*)")?/g)].map(([, name, value]) => [name, value ?? '']));
+function headerLinks(markup) {
+  const header = /<header\b[^>]*class="topbar"[^>]*>([\s\S]*?)<\/header>/.exec(markup)?.[1];
+  assert.ok(header, 'the page header exists');
+  const nav = /<nav\b([^>]*\bid="page-navigation"[^>]*)>([\s\S]*?)<\/nav>/.exec(header);
+  assert.ok(nav, 'the one main page navigation is inside the header');
+  assert.equal(attributesOf(nav[1]).class, 'page-navigation');
+  assert.equal(attributesOf(nav[1])['aria-label'], 'メインナビゲーション');
+  assert.equal((markup.match(/id="page-navigation"/g) || []).length, 1);
+  return [...nav[2].matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)].map(([, attributes, body]) => ({attributes:attributesOf(attributes), body}));
+}
+function assertHeaderNavigation(ui, current) {
+  const links = headerLinks(ui.app.innerHTML);
+  assert.deepEqual(links.map(link => link.attributes['data-route']), ROUTES.map(([route]) => route));
+  assert.equal(links.filter(link => link.attributes['aria-current'] === 'page').length, 1);
+  for (const [index, [route, label]] of ROUTES.entries()) {
+    const {attributes, body} = links[index];
+    assert.equal(attributes.class, 'page-link');
+    assert.equal(attributes.href, `#${route}`);
+    assert.equal(attributes['aria-label'], label);
+    assert.equal(attributes['aria-current'], route === current ? 'page' : undefined);
+    for (const attribute of ['tabindex', 'role', 'hidden', 'inert', 'aria-disabled', 'data-action']) assert.equal(attributes[attribute], undefined);
+    assert.match(body, /<svg\b[^>]*aria-hidden="true"/);
+    assert.match(body, /<span class="page-current" aria-hidden="true"><\/span>/);
+    assert.match(body, new RegExp(`<span class="page-tooltip" role="tooltip" aria-hidden="true">${label}<\\/span>`));
+    const textOutsideTooltip = body.replace(/<span class="page-tooltip"[^>]*>[\s\S]*?<\/span>/g, '').replace(/<[^>]+>/g, '').trim();
+    assert.equal(textOutsideTooltip, '', 'route names are not rendered as permanent link text');
+  }
+  assert.doesNotMatch(ui.app.innerHTML, /<aside\b|app-sidebar|sidebar-toggle|sidebar-backdrop|data-sidebar|desktop-breadcrumb|mobile-brand/);
+}
+
+test('header markup keeps all eight ordinary links and their order at every tested viewport', async t => {
+  const ui = await launch(t, {hash:'#wake'});
+  assertHeaderNavigation(ui, 'wake');
+  for (const [width, height] of [[1440, 1080], [768, 900], [375, 667], [320, 568]]) {
+    await ui.resize(width, height);
+    for (const [route, label] of ROUTES) {
+      assert.equal((await ui.clickRoute(route)).defaultPrevented, false);
+      assertHeaderNavigation(ui, route);
+      assert.equal(ui.document.title, `${label} · マイペース`);
+      assert.equal(ui.document.documentElement.dataset.page, route);
+    }
+  }
+  await ui.changeHash('#unknown-page'); assertHeaderNavigation(ui, 'home');
+  await ui.changeHash(''); assertHeaderNavigation(ui, 'home');
+  assert.equal(ui.writes, 0);
+});
+
+test('repeated current-route anchor clicks do not rerender or discard calendar and diary drafts', async t => {
+  const ui = await launch(t), before = ui.raw;
+  for (const [route, action, field, value] of [
+    ['calendar', 'event-add', 'title', 'まだ保存していない予定'],
+    ['diary', 'diary-edit', 'text', 'まだ保存していない日記 🌷'],
+  ]) {
+    await ui.changeHash(`#${route}`); await ui.click(action);
+    const input = ui.editor.querySelector(`[name="${field}"]`); input.value = value;
+    const renders = ui.app.htmlWrites, editorRenders = ui.editor.htmlWrites, focusCalls = ui.main.focusCalls;
+    for (let repeat = 0; repeat < 4; repeat++) {
+      const event = await ui.clickRoute(route);
+      assert.equal(event.defaultPrevented, false, 'page anchors keep their native default action');
+    }
+    assert.equal(ui.app.htmlWrites, renders); assert.equal(ui.editor.htmlWrites, editorRenders);
+    assert.equal(ui.editor.open, true); assert.equal(ui.editor.querySelector(`[name="${field}"]`), input);
+    assert.equal(input.value, value); assert.equal(ui.main.focusCalls, focusCalls);
+    assert.equal(ui.raw, before); assert.equal(ui.writes, 0);
+    await ui.click('dialog-close');
+  }
+});
+
+test('explicit Back/Forward hash events restore route tabs, close stale editors, and focus main without saving', async t => {
+  const date = addDays(todayKey(), -2), ui = await launch(t), before = ui.raw;
+  await ui.changeDate(date); await ui.click('view-tab', {tab:'agenda'});
+  await ui.clickRoute('diary'); await ui.click('view-tab', {tab:'history'});
+  await ui.clickRoute('running'); await ui.click('view-tab', {tab:'trends'});
+  // These are explicit URL/hashchange controller inputs standing in for Back/Forward.
+  // No browser history stack, native timing, or browser focus behavior is asserted.
+  for (const [route, tab] of [['diary','history'], ['calendar','agenda'], ['diary','history'], ['running','trends']]) {
+    const source = ui.location.hash.slice(1);
+    const [action, type, values] = {
+      running:['run-add', 'run', {id:'', date, distance:'5', minutes:'30', seconds:'0', note:'保存しないラン'}],
+      calendar:['event-add', 'event', valuesForEvent(date)],
+      diary:['diary-edit', 'diary', {text:'保存しない古いフォーム', mood:'calm'}],
+    }[source];
+    await ui.click(action);
+    const stale = ui.form(type, values), focusCalls = ui.main.focusCalls;
+    await ui.changeHash(`#${route}`);
+    assertHeaderNavigation(ui, route); assert.equal(currentTab(ui, tab), true);
+    assert.equal(ui.editor.open, false); assert.ok(ui.main.focusCalls > focusCalls);
+    assert.equal(selectedDate(ui), date);
+    await ui.submitForm(stale); await ui.click('dialog-close');
+    assert.equal(ui.raw, before); assert.equal(ui.writes, 0);
+  }
+});
+
+test('top navigation never reads, writes, removes, or reacts to the obsolete sidebar preference', async t => {
+  const ui = await launch(t, {hash:'#home', legacySidebar:'true'}), before = ui.raw;
+  assert.equal(STORAGE_KEY, 'rhythm.personal.v1');
+  for (const [route] of ROUTES) await ui.clickRoute(route);
+  await ui.resize(320, 568); await ui.resize(1440, 1080);
+  const renders = ui.app.htmlWrites, reads = ui.storageAccess.length;
+  await ui.window.emit('storage', {key:LEGACY_SIDEBAR_KEY, oldValue:'true', newValue:'false'});
+  assert.equal(ui.app.htmlWrites, renders); assert.equal(ui.storageAccess.length, reads);
+  assert.equal(ui.raw, before); assert.equal(ui.writes, 0);
+  await ui.clickRoute('wake'); await ui.click('wake-edit'); await ui.submit('wake', {time:'06:25'});
+  assert.equal(ui.state().wake[todayKey()], '06:25'); assert.equal(ui.writes, 1);
+  assert.equal(ui.preferences.get(LEGACY_SIDEBAR_KEY), 'true');
+  assert.deepEqual(ui.storageAccess, [{method:'getItem', key:STORAGE_KEY}, {method:'setItem', key:STORAGE_KEY}]);
+});
+
+test('navigation keyboard and tooltip events leave native keys, drafts, routes, and record storage alone', async t => {
+  const ui = await launch(t, {hash:'#diary'}); await ui.click('diary-edit');
+  const input = ui.editor.querySelector('[name="text"]'); input.value = '書きかけ';
+  const link = ui.routeLink('diary'), renders = ui.app.htmlWrites, editorRenders = ui.editor.htmlWrites;
+  for (const key of ['Tab', 'Enter', 'ArrowLeft', 'ArrowRight', 'Escape']) {
+    const event = {key, target:link, defaultPrevented:false, preventDefault(){this.defaultPrevented = true;}};
+    await ui.document.emit('keydown', event);
+    assert.equal(event.defaultPrevented, false);
+  }
+  assert.equal(link.getAttribute('data-tooltip-dismissed'), 'true');
+  await ui.document.emit('pointerout', {target:link, relatedTarget:link});
+  assert.equal(link.getAttribute('data-tooltip-dismissed'), 'true', 'moving inside a link keeps dismissal');
+  await ui.document.emit('pointerout', {target:link, relatedTarget:null});
+  assert.equal(link.getAttribute('data-tooltip-dismissed'), null);
+  await ui.document.emit('keydown', {key:'Escape', target:link});
+  await ui.document.emit('focusout', {target:link});
+  assert.equal(link.getAttribute('data-tooltip-dismissed'), null);
+  assert.equal(ui.location.hash, '#diary'); assert.equal(ui.app.htmlWrites, renders);
+  assert.equal(ui.editor.htmlWrites, editorRenders); assert.equal(ui.editor.open, true);
+  assert.equal(ui.editor.querySelector('[name="text"]'), input); assert.equal(input.value, '書きかけ');
+  assert.equal(ui.writes, 0);
+});
 
 test('page palette follows direct entry, every route, invalid hashes and repeated renders without data writes',async t=>{
   const ui=await launch(t,{hash:'#wake'});

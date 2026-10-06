@@ -38,20 +38,20 @@ import  {
   wakeDialog,targetDialog,runDialog,habitDialog,habitLogDialog,confirmDialog
 }
 from './dialogs.js';
-import {createSidebarController} from './lib/sidebar.js';
+import {renderNavigation,bindNavigationTooltips} from './lib/navigation.js';
 import {renderCalendar} from './views/calendar.js';
 import {renderDiary} from './views/diary.js';
 import {renderGarden} from './views/garden.js';
 import {eventDialog,diaryDialog} from './journal-dialogs.js';
-import {pageCapacity} from './lib/workspace.js';
+import {pageCapacity,habitPageCapacity} from './lib/workspace.js';
 import {gardenProgress,GARDEN_THEMES} from './lib/garden.js';
 const app=document.querySelector('#app'), editor=document.querySelector('#editor'), notice=document.querySelector('#notice');
-const sidebar=createSidebarController({document,window,editor});
+bindNavigationTooltips(document);
 const loaded=loadState();
 let state=loaded.state||createInitialState(), storageBlocked=!loaded.ok;
 let selectedDate=todayKey(), previousToday=todayKey(), period=7, undoState=null, dialogContext=null, fileSequence=0, editorNeedsFocus=false;
 const viewState={};
-let calendarMonth=selectedDate.slice(0,7),pageSize=pageCapacity(window.innerWidth,window.innerHeight);
+let calendarMonth=selectedDate.slice(0,7),pageSize=pageCapacity(window.innerWidth,window.innerHeight),habitSize=habitPageCapacity(window.innerWidth,window.innerHeight);
 const routes={
   home:{label:'ホーム',title:'今日の記録',subtitle:'自分のペースで、少しずつ。',icon:'home',render:renderDashboard,tabs:[['today','今日'],['rhythm','つづける']]},
   running:{label:'ランニング',title:'ランニング',subtitle:'歩幅も、ペースも、自分らしく。',icon:'run',render:renderRunning,tabs:[['record','記録する'],['trends','推移'],['history','履歴']]},
@@ -75,13 +75,10 @@ function render({focus=false}={}) {
   if(!futureAllowed&&selectedDate>today)selectedDate=today;
   document.title=`${route.label} · マイペース`;
   document.documentElement.dataset.page=current;
-  const nav=keys=>keys.map(key=>`<a href="#${key}" ${current===key?'aria-current="page"':''}>${icon(routes[key].icon,20)}<span>${routes[key].label}</span><i></i></a>`).join('');
-  app.innerHTML=`<aside id="app-sidebar" class="sidebar" aria-label="メインメニュー"><div class="sidebar-tools"><button type="button" class="icon-button" data-sidebar="close" aria-label="メニューを閉じる">${icon('close',20)}</button></div><a href="#home" class="brand" aria-label="マイペース ホーム"><img src="./favicon.svg" width="38" height="38" alt=""><span>マイペース<small>My Pace</small></span></a><p class="sidebar-caption">日々を、整える。</p><nav class="navigation" aria-label="メインナビゲーション">${nav(['home','running','wake','habits'])}<span class="nav-divider">日々の余白</span>${nav(['calendar','diary','garden'])}<span class="nav-divider line-only"></span>${nav(['settings'])}</nav><div class="sidebar-bottom"><span>${icon('lock',13)} このブラウザーに保存</span><p>続けることを、心地よく。</p></div></aside><button type="button" id="sidebar-backdrop" class="sidebar-backdrop" data-sidebar="close" tabindex="-1" aria-hidden="true" hidden></button>
-  <div class="workspace"><header class="topbar"><button type="button" id="sidebar-toggle" class="icon-button sidebar-toggle" data-sidebar="toggle" aria-controls="app-sidebar" aria-expanded="true" aria-label="メニューを閉じる">${icon('menu',22)}</button><a href="#home" class="mobile-brand"><img src="./favicon.svg" width="28" height="28" alt="">マイペース</a><span class="desktop-breadcrumb">My Pace <b>/</b> ${route.label}</span><span class="local-indicator"><i></i> ブラウザー保存</span></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="page-overline">${current==='home'?'A LITTLE, EVERY DAY':'YOUR OWN PACE'}</p><h1>${route.title}</h1><p>${route.subtitle}</p></div>${dateVisible?`<div class="date-picker"><button class="icon-button" data-action="previous-day" aria-label="前の日" ${selectedDate==='1900-01-01'?'disabled':''}>${icon('left',17)}</button><label><span>${selectedDate===today?'今日':dayLabel(selectedDate,true)}</span><input id="selected-date" type="date" value="${selectedDate}" min="1900-01-01" max="${futureAllowed?'2200-12-31':today}" aria-label="表示する日付"></label><button class="icon-button" data-action="next-day" aria-label="次の日" ${selectedDate>=(futureAllowed?'2200-12-31':today)?'disabled':''}>${icon('right',17)}</button></div>`:''}</div>
+  app.innerHTML=`<div class="workspace"><header class="topbar"><a href="#home" class="topbar-brand" aria-label="マイペース ホーム"><img src="./favicon.svg" width="28" height="28" alt=""><span>My Pace</span></a>${renderNavigation(routes,current)}<span class="local-indicator"><i></i> ブラウザー保存</span></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="page-overline">${current==='home'?'A LITTLE, EVERY DAY':'YOUR OWN PACE'}</p><h1>${route.title}</h1><p>${route.subtitle}</p></div>${dateVisible?`<div class="date-picker"><button class="icon-button" data-action="previous-day" aria-label="前の日" ${selectedDate==='1900-01-01'?'disabled':''}>${icon('left',17)}</button><label><span>${selectedDate===today?'今日':dayLabel(selectedDate,true)}</span><input id="selected-date" type="date" value="${selectedDate}" min="1900-01-01" max="${futureAllowed?'2200-12-31':today}" aria-label="表示する日付"></label><button class="icon-button" data-action="next-day" aria-label="次の日" ${selectedDate>=(futureAllowed?'2200-12-31':today)?'disabled':''}>${icon('right',17)}</button></div>`:''}</div>
   <div class="view-bar"><nav class="view-tabs" aria-label="${route.label}の表示">${route.tabs.map(([key,label])=>`<button type="button" data-action="view-tab" data-tab="${key}" aria-pressed="${view.tab===key}">${label}</button>`).join('')}</nav>${dateVisible&&selectedDate!==today?'<button class="text-link return-today" data-action="today">今日に戻る</button>':''}</div>
   ${storageBlocked?`<div class="error-banner" role="alert">保存データを読み込めません。記録の変更を止めています。<button class="text-link" data-action="backup-raw">既存データを退避</button><a href="#settings">設定で復元</a></div>`:''}
-  <div class="view-stage" role="region" aria-label="${route.label}の内容" tabindex="0">${route.render({state,date:selectedDate,today,period,tab:view.tab,page:view.page,pageSize:current==='habits'?Math.max(1,Math.min(3,Math.floor(((window.innerHeight||768)-390)/110))):pageSize,month:calendarMonth})}</div><footer class="app-footer"><span>マイペース</span><span>日々の小さなことを、大切に。</span></footer></main></div>`;
-  sidebar.sync();
+  <div class="view-stage" role="region" aria-label="${route.label}の内容" tabindex="0">${route.render({state,date:selectedDate,today,period,tab:view.tab,page:view.page,pageSize:current==='habits'?habitSize:pageSize,month:calendarMonth})}</div><footer class="app-footer"><span>マイペース</span><span>日々の小さなことを、大切に。</span></footer></main></div>`;
   if((focus||restoreFocus)&&!editor.open)document.querySelector('main')?.focus();
 }
 function toast(text,undo=false)  {
@@ -493,6 +490,7 @@ document.addEventListener('visibilitychange',()=> {
 );
 window.addEventListener('resize',()=>{
   const capacity=pageCapacity(window.innerWidth,window.innerHeight);
-  if(capacity!==pageSize){pageSize=capacity;render();}
+  const habits=habitPageCapacity(window.innerWidth,window.innerHeight);
+  if(capacity!==pageSize||habits!==habitSize){pageSize=capacity;habitSize=habits;render();}
 });
 render();

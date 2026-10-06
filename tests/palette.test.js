@@ -125,10 +125,13 @@ for(const page of ['home','running','wake','habits','calendar','diary','garden',
       for(const [tag,classes] of [['p','hint'],['p','hero-caption'],['p','hero-note'],['p','empty'],['div','card-eyebrow'],['a','text-link'],['button','text-link danger'],['strong','hero-time'],['span','muted']])textCheck(make(tag,classes,surface),`${page} ${classes}`);
       check(value(root,'--focus'),background(surface),'graphics',`${page} focus on surface`);
     }
-    const sidebar=make('aside','sidebar',body),nav=make('nav','navigation',sidebar);
+    const header=make('header','topbar',body),nav=make('nav','page-navigation',header);
     for(const states of [[],['hover']]){
-      textCheck(make('a','',nav,{},states),'inactive navigation');
-      textCheck(make('a','',nav,{'aria-current':'page'},states),'current navigation');
+      textCheck(make('a','page-link',nav,{},states),'inactive navigation');
+      const selected=make('a','page-link',nav,{'aria-current':'page'},states);
+      textCheck(selected,'current navigation');
+      check(background(make('span','page-current',selected)),background(selected),'graphics','selected underline');
+      textCheck(make('span','page-tooltip',selected),'page name tooltip');
       for(const classes of ['btn primary','btn secondary','btn ghost','icon-button']){
         textCheck(make('button',classes,card,{},states),`${classes} ${states}`);
         const disabled=make('button',classes,card,{disabled:''},['disabled',...states]);

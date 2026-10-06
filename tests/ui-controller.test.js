@@ -9,18 +9,21 @@ import {STORAGE_KEY} from '../src/lib/storage.js';
 
 let instance=0;
 class EventNode {
-  constructor(){this.dataset={};this.handlers=new Map();this.innerHTML='';this.hidden=true;this.open=false;this.fields=new Map();this.focused=false;}
+  constructor(){this.dataset={};this.handlers=new Map();this._innerHTML='';this.htmlWrites=0;this.hidden=true;this.open=false;this.fields=new Map();this.focused=false;this.focusCalls=0;}
+  get innerHTML(){return this._innerHTML;}
+  set innerHTML(value){this._innerHTML=value;this.htmlWrites++;this.fields.clear();}
   addEventListener(type,handle){this.handlers.set(type,[...(this.handlers.get(type)||[]),handle]);}
   async emit(type,event={}){for(const handle of this.handlers.get(type)||[]) await handle(event);}
   showModal(){this.open=true;}
   close(){if(this.open){this.open=false;for(const handle of this.handlers.get('close')||[])handle({});}}
-  focus(){this.focused=true;}
+  focus(){this.focused=true;this.focusCalls++;}
   querySelector(selector){if(!this.fields.has(selector))this.fields.set(selector,new EventNode());return this.fields.get(selector);}
   click(){this.clicked=true;}
 }
-async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home',denyRead=false}={}) {
+async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home',denyRead=false,width=1280,height=900}={}) {
   const originals=new Map(), app=new EventNode(), editor=new EventNode(), notice=new EventNode(), main=new EventNode();
   const document=new EventNode(), window=new EventNode(), created=[];
+  window.innerWidth=width;window.innerHeight=height;
   const location={hash}; let raw=initialRaw===undefined?serializeBackup(initial):initialRaw, deniedRead=denyRead, deniedWrite=false, writes=0;
   document.documentElement = {dataset: {}};
   document.querySelector=selector=>({'#app':app,'#editor':editor,'#notice':notice,main}[selector]||null);
@@ -32,13 +35,24 @@ async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home
   }
   t.after(()=>{for(const [key,descriptor] of originals){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];}});
   await import(`../src/app.js?controller-test=${instance++}`);
-  const click=async(action,data={})=>{const button={dataset:{action,...data},disabled:false};await document.emit('click',{target:{closest:()=>button},preventDefault(){}});};
-  const submit=async(type,values,valid=true)=>{const form={dataset:{form:type},values,closest(){return this;},reportValidity(){return valid;}};await editor.emit('submit',{target:form,preventDefault(){}});};
+  const click=async(action,data={})=>{const button={dataset:{action,...data},disabled:false};await document.emit('click',{target:{closest:selector=>selector==='[data-action]'?button:null},preventDefault(){}});};
+  const form=(type,values,valid=true)=>({dataset:{form:type},values,closest(){return this;},reportValidity(){return valid;}});
+  const submitForm=form=>editor.emit('submit',{target:form,preventDefault(){}});
+  const submit=(type,values,valid=true)=>submitForm(form(type,values,valid));
   const changeDate=value=>document.emit('change',{target:{id:'selected-date',value}});
   const changeHash=async value=>{location.hash=value;await window.emit('hashchange');};
+  const resize=async(width,height)=>{window.innerWidth=width;window.innerHeight=height;await window.emit('resize');};
+  const cancelDialog=async()=>{
+    const event={defaultPrevented:false,preventDefault(){this.defaultPrevented=true;}};
+    await editor.emit('cancel',event);
+    // Explicitly model the dialog cancel default action. This does not exercise
+    // a real Escape key, focus restoration, or the browser's native dialog stack.
+    if(!event.defaultPrevented)editor.close();
+    return event;
+  };
   const fileInput=()=>created.filter(node=>node.type==='file').at(-1);
   const selectFile=async(file,input=fileInput())=>{assert.ok(input,'file input opened');input.files=[file];await input.emit('change');};
-  return {app,editor,notice,main,document,window,location,click,submit,changeDate,changeHash,fileInput,selectFile,
+  return {app,editor,notice,main,document,window,location,click,form,submit,submitForm,changeDate,changeHash,resize,cancelDialog,fileInput,selectFile,
     get raw(){return raw;},get writes(){return writes;},state:()=>JSON.parse(raw),setRaw:value=>{raw=value;},denyWrite:value=>{deniedWrite=value;},denyRead:value=>{deniedRead=value;}};
 }
 const numericHabit={id:'read',name:'本を読む',type:'number',unit:'ページ',target:10,archived:false};
@@ -119,6 +133,55 @@ test('latest external-tab state closes stale editors and clears obsolete undo',a
 test('navigation closes a dialog and focuses the new main content',async t=>{
   const ui=await launch(t);await ui.click('wake-edit');assert.equal(ui.editor.open,true);
   await ui.changeHash('#running');assert.equal(ui.editor.open,false);assert.equal(ui.main.focused,true);assert.match(ui.app.innerHTML,/<h1>ランニング<\/h1>/);
+});
+
+test('Close and modeled native cancel after resize discard only the draft and invalidate its form',async t=>{
+  const ui=await launch(t),before=ui.raw;
+  for(const dismiss of ['close','cancel']){
+    const date=addDays(todayKey(),dismiss==='close'?-1:-2);
+    await ui.changeDate(date);await ui.click('wake-edit');
+    const input=ui.editor.querySelector('[name="time"]');input.value='06:40';
+    const stale=ui.form('wake',{time:input.value}),renders=ui.app.htmlWrites,editorRenders=ui.editor.htmlWrites;
+    await ui.resize(320,568);await ui.resize(1440,1080);
+    assert.ok(ui.app.htmlWrites>renders,'viewport capacity changes exercise app rerenders');
+    assert.equal(ui.editor.htmlWrites,editorRenders);assert.equal(ui.editor.open,true);
+    assert.equal(ui.editor.querySelector('[name="time"]'),input);assert.equal(input.value,'06:40');
+    if(dismiss==='close'){
+      const focusCalls=ui.main.focusCalls;
+      await ui.click('dialog-close');assert.ok(ui.main.focusCalls>focusCalls);
+    }else{
+      assert.equal((await ui.cancelDialog()).defaultPrevented,false);
+    }
+    assert.equal(ui.editor.open,false);await ui.submitForm(stale);
+    assert.equal(ui.raw,before);assert.equal(ui.writes,0);
+    await ui.click('wake-edit');
+    assert.notEqual(ui.editor.querySelector('[name="time"]'),input,'reopening creates fresh fields');
+    assert.match(ui.app.innerHTML,new RegExp(`id="selected-date"[^>]*value="${date}"`));
+    await ui.click('dialog-close');
+  }
+  await ui.click('wake-edit');await ui.submit('wake',{time:'07:15'});
+  assert.deepEqual(ui.state().wake,{[addDays(todayKey(),-2)]:'07:15'});assert.equal(ui.writes,1);
+});
+
+test('navigation after resize closes a draft, and Close/Cancel remain safe after modeled history changes',async t=>{
+  const ui=await launch(t,{hash:'#running'}),before=ui.raw;
+  await ui.click('run-add');
+  const stale=ui.form('run',{id:'',date:todayKey(),distance:'5',minutes:'30',seconds:'0',note:'未保存'});
+  await ui.resize(375,640);
+  assert.equal(ui.editor.open,true);
+  const firstFocus=ui.main.focusCalls;
+  await ui.changeHash('#wake');
+  assert.equal(ui.editor.open,false);assert.ok(ui.main.focusCalls>firstFocus);
+  await ui.submitForm(stale);await ui.click('dialog-close');await ui.cancelDialog();
+  assert.equal(ui.raw,before);assert.equal(ui.writes,0);
+  // Back and Forward are represented only by setting hash and emitting hashchange.
+  for(const hash of ['#running','#wake']){
+    const focusCalls=ui.main.focusCalls;await ui.changeHash(hash);
+    assert.equal(ui.editor.open,false);assert.ok(ui.main.focusCalls>focusCalls);
+    await ui.click(hash==='#running'?'run-add':'wake-edit');assert.equal(ui.editor.open,true);
+    if(hash==='#running')await ui.cancelDialog();else await ui.click('dialog-close');
+    assert.equal(ui.editor.open,false);assert.equal(ui.raw,before);assert.equal(ui.writes,0);
+  }
 });
 
 test('a slow file import is ignored after navigation',async t=>{
