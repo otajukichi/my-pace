@@ -43,7 +43,11 @@ test('static server serves app with safe MIME/CSP and refuses private or non-rea
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   try{
     const base=`http://127.0.0.1:${server.address().port}`;
-    const index=await fetch(base);assert.equal(index.status,200);assert.match(await index.text(),/lang="ja"/);assert.match(index.headers.get('content-security-policy'),/connect-src 'none'/);
+    const index=await fetch(base);assert.equal(index.status,200);assert.match(await index.text(),/lang="ja"/);assert.match(index.headers.get('content-security-policy'),/connect-src 'self' https:\/\/accounts.google.com\/gsi\/ https:\/\/www.googleapis.com/);
+    assert.doesNotMatch(index.headers.get('content-security-policy').split('script-src ')[1].split(';')[0],/unsafe-inline|unsafe-eval|\*/);
+    assert.equal(index.headers.get('cross-origin-opener-policy'),'same-origin-allow-popups');
+    const production=JSON.parse(await fs.readFile(new URL('../vercel.json',import.meta.url),'utf8'));
+    assert.equal(production.headers[0].headers.find(h=>h.key==='Content-Security-Policy').value,index.headers.get('content-security-policy'));
     const js=await fetch(base+'/src/app.js');assert.equal(js.status,200);assert.match(js.headers.get('content-type'),/javascript/);
     for(const uri of ['/README.md','/.git/config','/package.json','/src/%2e%2e/README.md','/src/%5cREADME.md','/src/no-file.js'])assert.equal((await fetch(base+uri)).status,404,uri);
     assert.equal((await fetch(base,{method:'POST',body:'no'})).status,405);

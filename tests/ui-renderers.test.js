@@ -120,12 +120,12 @@ test('charts and route preview include accessible summaries, no fake background 
   assert.match(periodToggle(30),/data-days="7" aria-pressed="false"/);
 });
 
-test('settings disclose local-only persistence, backup privacy and unimplemented integrations', () => {
+test('settings disclose opt-in Drive, local persistence, backup privacy and unimplemented LINE', () => {
   const html=renderSettings(context())+renderSettings({...context(),tab:'about'});
   assert.match(html,/自動で同期されません/); assert.match(html,/位置情報/);
   assert.match(html,/Google Drive/); assert.match(html,/Google ログイン/); assert.match(html,/LINE/);
   assert.equal((html.match(/class="planned">未実装/g)||[]).length,1);
-  assert.match(html,/外部への送信、通知は行っていません/);
+  assert.match(html,/接続操作をしたときだけ/); assert.match(html,/開いている間だけ/);
   assert.doesNotMatch(html,/data-action="(?:login|connect|sync)/);
 });
 

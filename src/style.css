@@ -86,3 +86,8 @@ progress.completion-track,progress.garden-progress-track{appearance:none;-webkit
   .garden-workspace { min-height:310px; }
   .diary-card { min-height:360px; }
 }
+
+/* Drive controls remain inside the existing fixed-height workspace. */
+.drive-panel{display:flex;flex-direction:column;gap:16px;min-height:340px}.drive-panel>.section-head{margin-bottom:0}.drive-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:24px;flex:1;min-height:0}.drive-section{display:flex;flex-direction:column;gap:12px;min-width:0}.drive-section h3{font-size:14px;color:var(--text)}.drive-section .row-actions{flex-wrap:wrap;gap:8px}.drive-section .btn{white-space:normal;min-height:44px}.drive-status{font-size:13px;line-height:1.65;color:var(--text);overflow-wrap:anywhere}.drive-privacy{border-top:1px solid var(--line);padding-top:12px;line-height:1.6}.drive-checkbox{display:flex;gap:10px;align-items:center;font-size:12px;min-height:44px;cursor:pointer}.drive-checkbox input{width:18px;height:18px;flex:none}.drive-section .hint{line-height:1.65}.drive-panel .hint{color:var(--muted)}
+@media(max-width:759px){.drive-grid{grid-template-columns:1fr;gap:20px;flex:none}.drive-panel{height:auto!important;min-height:100%;gap:18px}.drive-panel .btn{font-size:11px}.drive-section{gap:9px}.drive-privacy{margin-top:auto}}
+@media(max-height:650px) and (min-width:760px){.drive-panel{gap:10px;min-height:320px;padding:16px}.drive-section{gap:8px}.drive-panel>.section-head p{display:none}.drive-panel .hint{font-size:10px}.drive-section .btn{padding:6px 10px;font-size:11px}}

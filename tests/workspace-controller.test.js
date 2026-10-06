@@ -200,7 +200,8 @@ test('top navigation never reads, writes, removes, or reacts to the obsolete sid
   await ui.clickRoute('wake'); await ui.click('wake-edit'); await ui.submit('wake', {time:'06:25'});
   assert.equal(ui.state().wake[todayKey()], '06:25'); assert.equal(ui.writes, 1);
   assert.equal(ui.preferences.get(LEGACY_SIDEBAR_KEY), 'true');
-  assert.deepEqual(ui.storageAccess, [{method:'getItem', key:STORAGE_KEY}, {method:'setItem', key:STORAGE_KEY}]);
+  // The second read protects a stale editor before the cross-tab storage event arrives.
+  assert.deepEqual(ui.storageAccess, [{method:'getItem', key:STORAGE_KEY}, {method:'getItem', key:STORAGE_KEY}, {method:'setItem', key:STORAGE_KEY}]);
 });
 
 test('navigation keyboard and tooltip events leave native keys, drafts, routes, and record storage alone', async t => {

@@ -1,20 +1,20 @@
-My Pace Workspace 0.2 — equal top-bar icon navigation
-Verified baseline: otajukichi/my-pace main 22934ec36baa0a9bae00bedf8b59470ae5987fba
-Baseline tree: f8409ab7350d2b84ccb2f4a92a325654e26d8342
-Verified on: 2026-10-06; all 47 source Git blob hashes matched
+My Pace Workspace 0.2 — opt-in Google Drive snapshots
+Verified baseline: otajukichi/my-pace main 602522aa4eed00502f5ae0360d2de9595d4a8f48
+Baseline tree: dd93f102e0c55ea65a8ab2e6653a6acb45875dba
+Verified on: 2026-10-06; all 47 baseline Git blob hashes matched
 
-Entry: index.html
-Viewport shell: src/style.css; sidebar removed, eight equal top-bar links
-Navigation: src/lib/navigation.js; native anchors, named tooltips, selected underline
-Viewport capacity: src/lib/workspace.js; reserves the responsive top-bar height
-Palette: src/palette.css; existing page colors preserved
-Main pages: home, running, wake, habits, calendar, diary, garden, settings
-Data: src/lib/domain.js and src/lib/storage.js unchanged; version2; rhythm.personal.v1
-Checks: package.json; scripts/check.mjs; scripts/build.mjs (unchanged)
-Tests: tests/*.test.js (185 tests)
-Guides: README.md; TEST-REPORT.md; qa/ACCEPTANCE.md
+Entry: index.html; no eager Google scripts
+UI: src/lib/drive-ui.js; settings Drive tab and truthful local/cloud status
+Google adapter: src/lib/google-drive.js; memory-only GIS tokens; Picker; drive.file
+Sync: src/lib/drive-sync.js; immutable snapshots, metadata graph, durable outbox
+History: paginated metadata; active heads and selected historical bodies only
+Safety: owned/unshared expected folder; exact readback; explicit conflicts; no remote deletion
+Data: src/lib/domain.js and src/lib/storage.js unchanged; schema2; rhythm.personal.v1
+Layout: existing eight top navigation entries, palette, fixed workspace preserved
+CSP: scripts/serve.mjs and vercel.json; explicit Google SDK/frame/API sources
+Checks: 319 Node tests, syntax checks, static build; no live Google calls
+Guides: GOOGLE-DRIVE.md, README.md, TEST-REPORT.md, qa/ACCEPTANCE.md
 Integrity: SOURCE-MANIFEST.sha256, excluding itself and generated dist
 
-No dependencies, credentials, browser data access, Git writes or deployments.
-Real-browser visual QA remains unperformed. Layout and contrast checks are source-level.
-Narrow/short screens can use the existing internal overflow safety surface.
+No actual client ID/key/token, GitHub writes, deployments, or live Google writes.
+Google authentication/Picker/production-CSP/real-browser checks remain unperformed.

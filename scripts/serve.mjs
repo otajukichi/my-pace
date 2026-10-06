@@ -24,7 +24,7 @@ return http.createServer(async(req,res)=>{
     if(!file.startsWith(directory+path.sep)){res.writeHead(404);res.end('Not found');return;}
     const type=MIME[path.extname(file)];if(!type){res.writeHead(404);res.end('Not found');return;}
     const body=await fs.readFile(file);
-    res.writeHead(200,{'Content-Type':type,'Content-Length':body.length,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'"});
+    res.writeHead(200,{'Content-Type':type,'Content-Length':body.length,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Cross-Origin-Opener-Policy':'same-origin-allow-popups','Referrer-Policy':'strict-origin-when-cross-origin','Content-Security-Policy':"default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client https://apis.google.com; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; img-src 'self' data:; connect-src 'self' https://accounts.google.com/gsi/ https://www.googleapis.com; frame-src https://accounts.google.com/gsi/ https://docs.google.com; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'"});
     res.end(req.method==='HEAD'?undefined:body);
   } catch(error){res.writeHead(error.code==='ENOENT'?404:400);res.end(error.code==='ENOENT'?'Not found':'Bad request');}
 });
@@ -32,6 +32,6 @@ return http.createServer(async(req,res)=>{
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 const server = createStaticServer(directory);
 server.on('error',error=>{console.error(`Could not start: ${error.message}`);process.exitCode=1;});
-server.listen(PORT,HOST,()=>{console.log(`マイペース (My Pace)  http://${HOST}:${PORT}\nStop: Ctrl+C\nSaved only in this browser. Keep the same address/port for the same records.`);if(HOST!=='127.0.0.1'&&HOST!=='localhost')console.warn('Network access enabled. No authentication is provided. Use a trusted private network only.');});
+server.listen(PORT,HOST,()=>{console.log(`マイペース (My Pace)  http://${HOST}:${PORT}\nStop: Ctrl+C\nBrowser storage is per origin. Google Drive is opt-in from Settings.`);if(HOST!=='127.0.0.1'&&HOST!=='localhost')console.warn('Network access enabled. No authentication is provided. Use a trusted private network only.');});
 
 }

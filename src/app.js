@@ -45,6 +45,7 @@ import {renderGarden} from './views/garden.js';
 import {eventDialog,diaryDialog} from './journal-dialogs.js';
 import {pageCapacity,habitPageCapacity} from './lib/workspace.js';
 import {gardenProgress,GARDEN_THEMES} from './lib/garden.js';
+import {createDriveUI,renderDrivePanel} from './lib/drive-ui.js';
 const app=document.querySelector('#app'), editor=document.querySelector('#editor'), notice=document.querySelector('#notice');
 bindNavigationTooltips(document);
 const loaded=loadState();
@@ -60,8 +61,10 @@ const routes={
   calendar:{label:'カレンダー',title:'カレンダー',subtitle:'予定も、記録も。日々をひと目に。',icon:'calendar',render:renderCalendar,tabs:[['month','月のながめ'],['agenda','予定一覧']]},
   diary:{label:'日記',title:'日記',subtitle:'何気ない一日を、言葉に。',icon:'book',render:renderDiary,tabs:[['entry','この日の日記'],['history','振り返る']]},
   garden:{label:'暮らしの庭',title:'暮らしの庭',subtitle:'記録した日が、小さな庭を育てる。',icon:'leaf',render:renderGarden,tabs:[['garden','庭をながめる'],['collection','模様替え'],['guide','育つしくみ']]},
-  settings:{label:'設定',title:'設定',subtitle:'大切な記録を、これからも。',icon:'settings',render:renderSettings,tabs:[['backup','保存と復元'],['about','このアプリ']]}
+  settings:{label:'設定',title:'設定',subtitle:'大切な記録を、これからも。',icon:'settings',render:context=>context.tab==='drive'?renderDrivePanel(drive.view()):renderSettings(context),tabs:[['backup','保存と復元'],['drive','Google Drive'],['about','このアプリ']]}
 };
+let applyingDrive=false;
+const drive=createDriveUI({getState:()=>state,applyState(candidate){applyingDrive=true;try{return commit(candidate,'Drive の版を復元しました');}finally{applyingDrive=false;}},canUse:()=>!storageBlocked,onChange:()=>render(),toast,showDialog,closeDialog,download});
 const routeKey=()=>Object.hasOwn(routes,location.hash.slice(1))?location.hash.slice(1):'home';
 function activeView() {
   const key=routeKey();
@@ -75,7 +78,7 @@ function render({focus=false}={}) {
   if(!futureAllowed&&selectedDate>today)selectedDate=today;
   document.title=`${route.label} · マイペース`;
   document.documentElement.dataset.page=current;
-  app.innerHTML=`<div class="workspace"><header class="topbar"><a href="#home" class="topbar-brand" aria-label="マイペース ホーム"><img src="./favicon.svg" width="28" height="28" alt=""><span>My Pace</span></a>${renderNavigation(routes,current)}<span class="local-indicator"><i></i> ブラウザー保存</span></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="page-overline">${current==='home'?'A LITTLE, EVERY DAY':'YOUR OWN PACE'}</p><h1>${route.title}</h1><p>${route.subtitle}</p></div>${dateVisible?`<div class="date-picker"><button class="icon-button" data-action="previous-day" aria-label="前の日" ${selectedDate==='1900-01-01'?'disabled':''}>${icon('left',17)}</button><label><span>${selectedDate===today?'今日':dayLabel(selectedDate,true)}</span><input id="selected-date" type="date" value="${selectedDate}" min="1900-01-01" max="${futureAllowed?'2200-12-31':today}" aria-label="表示する日付"></label><button class="icon-button" data-action="next-day" aria-label="次の日" ${selectedDate>=(futureAllowed?'2200-12-31':today)?'disabled':''}>${icon('right',17)}</button></div>`:''}</div>
+  app.innerHTML=`<div class="workspace"><header class="topbar"><a href="#home" class="topbar-brand" aria-label="マイペース ホーム"><img src="./favicon.svg" width="28" height="28" alt=""><span>My Pace</span></a>${renderNavigation(routes,current)}<span class="local-indicator"><i></i> ${e(drive.statusLabel())}</span></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="page-overline">${current==='home'?'A LITTLE, EVERY DAY':'YOUR OWN PACE'}</p><h1>${route.title}</h1><p>${route.subtitle}</p></div>${dateVisible?`<div class="date-picker"><button class="icon-button" data-action="previous-day" aria-label="前の日" ${selectedDate==='1900-01-01'?'disabled':''}>${icon('left',17)}</button><label><span>${selectedDate===today?'今日':dayLabel(selectedDate,true)}</span><input id="selected-date" type="date" value="${selectedDate}" min="1900-01-01" max="${futureAllowed?'2200-12-31':today}" aria-label="表示する日付"></label><button class="icon-button" data-action="next-day" aria-label="次の日" ${selectedDate>=(futureAllowed?'2200-12-31':today)?'disabled':''}>${icon('right',17)}</button></div>`:''}</div>
   <div class="view-bar"><nav class="view-tabs" aria-label="${route.label}の表示">${route.tabs.map(([key,label])=>`<button type="button" data-action="view-tab" data-tab="${key}" aria-pressed="${view.tab===key}">${label}</button>`).join('')}</nav>${dateVisible&&selectedDate!==today?'<button class="text-link return-today" data-action="today">今日に戻る</button>':''}</div>
   ${storageBlocked?`<div class="error-banner" role="alert">保存データを読み込めません。記録の変更を止めています。<button class="text-link" data-action="backup-raw">既存データを退避</button><a href="#settings">設定で復元</a></div>`:''}
   <div class="view-stage" role="region" aria-label="${route.label}の内容" tabindex="0">${route.render({state,date:selectedDate,today,period,tab:view.tab,page:view.page,pageSize:current==='habits'?habitSize:pageSize,month:calendarMonth})}</div><footer class="app-footer"><span>マイペース</span><span>日々の小さなことを、大切に。</span></footer></main></div>`;
@@ -96,7 +99,15 @@ function commit(candidate,message, {
     return false;
   }
   try  {
-    const next=validateState(candidate), result=saveState(next);
+    const next=validateState(candidate);
+    if(!allowBlocked){
+      const latest=loadState();
+      if(!latest.ok||serializeBackup(latest.state)!==serializeBackup(state)){
+        toast('別のタブで記録が変わったため、上書きを止めました。編集内容を控えてページを再読み込みしてください。');
+        return false;
+      }
+    }
+    const result=saveState(next);
     if(!result.ok) {
       toast(`保存できませんでした。変更は反映していません。${result.error||''}`);
       return false;
@@ -104,6 +115,7 @@ function commit(candidate,message, {
     undoState=undo?structuredClone(state):null;
     state=next;
     storageBlocked=false;
+    if(!applyingDrive)drive.notifyLocalChange();
     render();
     toast(message,undo);
     return true;
@@ -190,7 +202,7 @@ function openHabitLog(id) {
   );
 }
 const actions= {
-  'view-tab':el=>{const view=activeView();if(!routes[routeKey()].tabs.some(([key])=>key===el.dataset.tab))return;view.tab=el.dataset.tab;view.page=0;render({focus:true});},
+  'view-tab':el=>{const view=activeView();if(!routes[routeKey()].tabs.some(([key])=>key===el.dataset.tab))return;if(routeKey()==='settings'&&view.tab==='drive'&&el.dataset.tab!=='drive')drive.navigate();view.tab=el.dataset.tab;view.page=0;if(routeKey()==='settings'&&view.tab==='drive')drive.enter();render({focus:true});},
   'view-page':el=>{const page=Number(el.dataset.page);if(!Number.isInteger(page)||page<0)return;activeView().page=page;render({focus:true});},
   'calendar-month':el=>{const offset=Number(el.dataset.offset);if(![-1,1].includes(offset))return;const [year,month]=calendarMonth.split('-').map(Number);const value=new Date(year,month-1+offset,1,12);const key=`${value.getFullYear()}-${String(value.getMonth()+1).padStart(2,'0')}`;if(key<'1900-01'||key>'2200-12')return;calendarMonth=key;activeView().page=0;render({focus:true});},
   'calendar-today':()=>{selectedDate=todayKey();calendarMonth=selectedDate.slice(0,7);activeView().page=0;render({focus:true});},
@@ -362,6 +374,11 @@ const actions= {
 async function onClick(event) {
   const button=event.target.closest('[data-action]');
   if(!button||button.disabled)return;
+  if(button.dataset.action.startsWith('drive-')){
+    event.preventDefault();
+    try{await drive.handle(button.dataset.action);}catch(error){formError(error.message);}
+    return;
+  }
   const action=actions[button.dataset.action];
   if(action) {
     event.preventDefault();
@@ -392,7 +409,7 @@ document.addEventListener('change',event=> {
   }
 }
 );
-editor.addEventListener('submit',event=> {
+editor.addEventListener('submit',async event=> {
   const form=event.target.closest('form');
   if(!form)return;
   event.preventDefault();
@@ -403,6 +420,7 @@ editor.addEventListener('submit',event=> {
   if(dialogContext.type!==type)return;
   let next;
   try  {
+    if(type.startsWith('drive-')){await drive.submit(type,data);return;}
     if(type==='wake'){if(dialogContext.date>todayKey())throw new Error('今日以前の日付を選んでください。');next=upsertWake(state,dialogContext.date,data.get('time'));}
     else if(type==='target')next= {
       ...state,settings: {
@@ -449,10 +467,11 @@ editor.addEventListener('submit',event=> {
 }
 );
 editor.addEventListener('close',()=> {
-  if(!editor.open)dialogContext=null;
+  if(!editor.open){dialogContext=null;drive.dialogClosed();}
 }
 );
 window.addEventListener('hashchange',()=> {
+  drive.navigate();
   ++fileSequence;
   closeDialog();
   render();
@@ -468,6 +487,7 @@ window.addEventListener('storage',event=> {
     state=latest.state;
     storageBlocked=false;
     render();
+    drive.storageChanged();
     toast('別のタブの最新の記録を読み込みました。');
   }
   else {
@@ -479,6 +499,7 @@ window.addEventListener('storage',event=> {
 );
 document.addEventListener('visibilitychange',()=> {
   if(document.hidden)return;
+  drive.resume();
   const current=todayKey();
   if(current!==previousToday) {
     if(selectedDate===previousToday){selectedDate=current;calendarMonth=current.slice(0,7);}
@@ -488,6 +509,7 @@ document.addEventListener('visibilitychange',()=> {
   }
 }
 );
+window.addEventListener('online',()=>drive.resume());
 window.addEventListener('resize',()=>{
   const capacity=pageCapacity(window.innerWidth,window.innerHeight);
   const habits=habitPageCapacity(window.innerWidth,window.innerHeight);

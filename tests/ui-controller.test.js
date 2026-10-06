@@ -206,3 +206,23 @@ test('minimum date navigation and all allowed input dates render safely',async t
   await ui.changeHash('#wake');await ui.click('period',{days:'30'});
   assert.match(ui.app.innerHTML,/<h1>朝の記録<\/h1>/);
 });
+
+test('stale local editor does not overwrite a newer tab before its storage event arrives',async t=>{
+  const ui=await launch(t);await ui.click('wake-edit');
+  const newer={...createInitialState(),wake:{[todayKey()]:'08:20'}};
+  ui.setRaw(serializeBackup(newer));await ui.submit('wake',{time:'06:00'});
+  assert.deepEqual(ui.state(),newer);assert.equal(ui.writes,0);assert.equal(ui.editor.open,true);
+  assert.match(ui.notice.innerHTML,/別のタブで記録が変わったため/);
+});
+
+test('Drive tab has explicit connection actions and no initial upload',async t=>{
+  const ui=await launch(t,{hash:'#settings'});await ui.click('view-tab',{tab:'drive'});
+  assert.match(ui.app.innerHTML,/Google の準備/);assert.match(ui.app.innerHTML,/data-action="drive-auto-on" disabled/);
+  assert.equal(ui.writes,0);
+});
+
+test('switching settings tabs while Drive confirmation hashes cancels the stale dialog',async t=>{
+  const ui=await launch(t,{hash:'#settings'});await ui.click('view-tab',{tab:'drive'});
+  const saving=ui.click('drive-save');await ui.click('view-tab',{tab:'backup'});await saving;
+  assert.equal(ui.editor.open,false);assert.match(ui.app.innerHTML,/JSON を保存/);
+});
