@@ -5,6 +5,7 @@ export function escapeHTML(value = '') {
 }
 export const e = escapeHTML;
 const paths = {
+  menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
   home: '<path d="m3 10 9-7 9 7v10H3Z"/><path d="M9 20v-7h6v7"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.4 1.4m11.2 11.2L19 19M5 19l1.4-1.4M17.6 6.4 19 5"/>',
   run: '<circle cx="15" cy="4" r="2"/><path d="m6 10 4-3 5 3 3 1 3-2M9 21l3-7m-8 4 4-2 2-5m2 3 4 3v5"/>',

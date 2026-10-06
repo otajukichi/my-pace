@@ -14,12 +14,11 @@ Styling: src/style.css
 Icon: favicon.svg
 Commands: package.json and scripts/
 Safe WSL copy: scripts/install-wsl.sh
-Tests: tests/*.test.js (56 tests)
+Tests: tests/*.test.js (75 tests)
 User guide: README.md
 Test status: TEST-REPORT.md
 Manual browser acceptance: qa/ACCEPTANCE.md
-Actual verification transcript: qa/verification.log
-Integrity: SOURCE-MANIFEST.sha256 (all distributed files except itself)
+Integrity: SOURCE-MANIFEST.sha256 (tracked source plus sidebar changes, excluding itself and ignored logs)
 
 Excluded from ZIP: .git, node_modules, dist, temporary files, user data, credentials.
 No screenshots are included because real-browser rendering was blocked.
