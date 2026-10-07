@@ -125,7 +125,7 @@ test('settings disclose opt-in Drive, local persistence, backup privacy and unim
   assert.match(html,/自動で同期されません/); assert.match(html,/位置情報/);
   assert.match(html,/Google Drive/); assert.match(html,/Google ログイン/); assert.match(html,/LINE/);
   assert.equal((html.match(/class="planned">未実装/g)||[]).length,1);
-  assert.match(html,/接続操作をしたときだけ/); assert.match(html,/開いている間だけ/);
+  assert.match(html,/接続操作をしたときだけ/); assert.match(html,/定期実行は Google 側の設定が必要/);
   assert.doesNotMatch(html,/data-action="(?:login|connect|sync)/);
 });
 
@@ -140,3 +140,17 @@ test('form upper bounds permit unchanged editing of every largest valid record v
   assert.ok(max(runDialog(run,date,date),'minutes')>=run.durationSec/60);
   assert.ok(Number(runDialog(run,date,date).match(/<textarea[^>]*maxlength="(\d+)"/)[1])>=run.note.length);
 });
+
+// Import progress is readable without interpreting internal JSON state.
+test('cloud import status distinguishes waiting, retry, blocked and measured progress',async()=>{
+ const {importStatusText}=await import('../src/lib/cloud-panel.js');
+ assert.equal(importStatusText(null),'まだ取得していません');
+ assert.equal(importStatusText({status:'idle'}),'待機中');
+ assert.match(importStatusText({status:'importing',lastJob:{progress:{rows:20000,points:19999}}}),/20,000 行を処理.*19,999 サンプル/);
+ assert.match(importStatusText({status:'blocked',error:'SOURCE_CHANGED'}),/設定の確認が必要.*SOURCE_CHANGED/);
+ assert.match(importStatusText({status:'retry',retryAt:1}),/再試行待ち.*再試行予定/);
+});
+
+test('daily work-admission wait remains visibly distinct from active import or completion',async()=>{const {importStatusText}=await import('../src/lib/cloud-panel.js');const text=importStatusText({status:'budget-wait',retryAt:Date.UTC(2026,9,8),lastJob:{progress:{rows:1234,points:1200}}});assert.match(text,/実行枠の回復待ち/);assert.match(text,/再開の目安/);assert.match(text,/1,234 行を処理/);assert.doesNotMatch(text,/今回の確認は完了|CSV を処理中|再試行予定/);});
+
+test('storage recovery and required owner setup have distinct actionable labels',async()=>{const {cloudStatus,cloudErrorText}=await import('../src/lib/cloud-panel.js');const view={conflicts:[],pending:2,authenticated:true};assert.match(cloudStatus({...view,error:'WRITER_RECOVERY_PENDING'},'cloud'),/履歴の復旧・再試行待ち.*未送信 2件/);assert.match(cloudErrorText('WRITER_RECOVERY_PENDING'),/今すぐ同期/);assert.match(cloudStatus({...view,error:'WRITER_RECOVERY_SETUP_REQUIRED'},'cloud'),/保存先の設定待ち/);assert.match(cloudErrorText('WRITER_RECOVERY_SETUP_REQUIRED'),/作り直さず/);});

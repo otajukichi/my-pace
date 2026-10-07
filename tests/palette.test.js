@@ -5,6 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
+import {renderWake} from '../src/views/wake.js';
+import {renderRunning} from '../src/views/running.js';
 import {renderDashboard} from '../src/views/dashboard.js';
 import {createInitialState} from '../src/lib/domain.js';
 import {wakeChart,runChart} from '../src/lib/charts.js';
@@ -112,9 +114,9 @@ test('palette loads after the existing layout, uses complete route tokens, and r
     const root=rootFor(page);
     for(const token of ['--accent','--accent-dark','--accent-soft','--accent-hover','--accent-ink'])assert.match(value(root,token),/^#[a-f\d]{6}$/);
   }
-  assert.equal(new Set(['home','running','wake','habits'].map(page=>value(rootFor(page),'--accent'))).size,4);
+  for(const token of ['--sky','--apricot','--forest','--slate','--lilac','--sage','--plum','--ochre'])assert.match(value(rootFor('home'),token),/^#[a-f\d]{6}$/);
   assert.doesNotMatch(palette,/(?:^|[;{])\s*(?:width|height|min-width|max-width|display|position|overflow|margin|padding|font-size)\s*:/);
-  assert.match(palette,/@media \(forced-colors: active\)/);
+  assert.match(original+'\n'+palette,/@media\s*\(forced-colors:\s*active\)/);
 });
 
 for(const page of ['home','running','wake','habits','calendar','diary','garden','settings']){
@@ -178,16 +180,63 @@ for(const page of ['home','running','wake','habits','calendar','diary','garden',
   });
 }
 
-test('Home cards retain semantic themes in empty and populated renderers',()=>{
+test('Home regions use readable real-content surfaces in empty and populated renderers',()=>{
   const state=createInitialState(),date='2026-10-06';
   for(const populated of [false,true]){
     if(populated){state.wake[date]='06:30';state.habits=[{id:'h',name:'本',type:'check',target:1,unit:'',archived:false}];state.habitLogs.h={[date]:true};}
     const markup=renderDashboard({state,date,today:date});
-    for(const [cls,theme] of [['home-morning','wake'],['home-habits','habits'],['home-run','running'],['home-note','home']]){
-      assert.ok(markup.includes(`class="card ${cls}" data-theme="${theme}"`));
-      const home=make('div','home-today',rootFor('home')),card=make('section',`card ${cls}`,home,{'data-theme':theme});
-      for(const [tag,name] of [['p','hero-note'],['div','home-time'],['div','home-number'],['div','card-eyebrow'],['a','text-link'],['button','btn primary'],['button','btn secondary']])textCheck(make(tag,name,card),`${cls} ${name}`);
+    for(const cls of ['home-entry-sheet','home-lifetime','home-history','home-reflection']){
+      assert.ok(new RegExp(`class="${cls}(?: |")`).test(markup),cls);
+      const region=make('section',cls,rootFor('home'));
+      for(const tag of ['h2','h3','p','strong','small','dt','dd'])textCheck(make(tag,'',region),`${cls} ${tag}`);
     }
+    const sheet=make('section','home-entry-sheet',rootFor('home'));
+    for(const classes of ['text-link','btn primary','btn secondary'])textCheck(make('button',classes,sheet),`home entry ${classes}`);
+  }
+});
+
+test('home quick-record and selected history controls have readable normal, hover and disabled states',()=>{
+  const sheet=make('section','home-entry-sheet',rootFor('home'));
+  for(const done of [false,true])for(const hovered of [false,true])for(const disabled of [false,true]){
+    const states=[...(hovered?['hover']:[]),...(disabled?['disabled']:[])];
+    const button=make('button',`home-habit-quick${done?' done':''}`,sheet,disabled?{disabled:''}:{},states);
+    textCheck(button,'home quick habit');
+    textCheck(make('small','',button),'home quick habit value');
+    check(foreground(make('svg','',button)),background(button),'graphics','home quick habit symbol');
+    if(disabled)assert.equal(background(button),value(sheet,'--disabled-bg'));
+  }
+  const region=make('section','home-history',rootFor('home')),days=make('div','home-history-days continuity-days',region);
+  for(const recorded of [false,true])for(const selected of ['false','true'])for(const states of [[],['hover']]){
+    const day=make('button',`continuity-day${recorded?' recorded':''}`,days,{'aria-pressed':selected},states);
+    for(const tag of ['span','strong'])textCheck(make(tag,'',day),'home history date or marker');
+    if(selected==='true')check(value(day,'border-color'),background(day),'graphics','home selected date border');
+  }
+});
+
+test('wake and running chart regions retain source-resolved text and graphic contrast',()=>{
+  for(const [page,container,region] of [
+    ['wake','wake-workspace','wake-chart-panel sky-panel'],
+    ['wake','card trend-panel wake-trend','chart-space'],
+    ['running','run-workspace','run-chart-panel forest-panel'],
+    ['running','card trend-panel running-trend','chart-space'],
+  ]){
+    const parent=make('section',container,rootFor(page)),surface=make('section',region,parent);
+    const chart=make('div','chart-wrap',surface),svg=make('svg','',chart);
+    check(value(make('text','',svg),'fill'),background(surface),'text',`${page} ${region} chart label`);
+    const series=page==='wake'?[['path','chart-line','stroke'],['circle','chart-dot','fill'],['line','chart-target','stroke']]:[['rect','run-bar','fill'],['rect','run-bar-empty','fill']];
+    for(const [tag,cls,property] of series)check(value(make(tag,cls,svg),property),background(surface),'graphics',`${region} ${cls}`);
+    for(const [tag,cls] of [['p','chart-note'],['p','chart-data'],['div','empty']])textCheck(make(tag,cls,surface),`${region} ${cls}`);
+    textCheck(make('p','',make('div','empty',surface)),`${region} empty explanation`);
+    if(region.includes('panel')){
+      const head=make('div','section-head',surface);
+      textCheck(make('h2','',head),`${region} heading`);
+      for(const states of [[],['hover']])textCheck(make('button','text-link',head,{},states),`${region} history link ${states}`);
+    }
+  }
+  for(const [page,cls] of [['wake','wake-summary apricot-panel'],['running','run-summary sky-panel']]){
+    const surface=make('section',cls,rootFor(page)),stat=make('div','stat',surface);
+    for(const tag of ['span','strong','small'])textCheck(make(tag,'',stat),`${cls} ${tag}`);
+    textCheck(make('p','hint',surface),`${cls} empty hint`);
   }
 });
 
@@ -197,9 +246,9 @@ test('data charts preserve missing-day gaps, target dashes, and distinct calenda
   const path=/d="([^"]+)" class="chart-line"/.exec(wake)[1];assert.equal((path.match(/M/g)||[]).length,2);assert.ok(!path.includes('L'));
   state.runs=[{id:'r',date,distanceKm:5,durationSec:1800,note:'',points:[]}];
   const run=runChart(state,7,date);assert.match(run,/class="run-bar"/);assert.match(run,/class="run-bar-empty"/);
-  assert.match(palette,/\.chart-target\s*\{[^}]*stroke-dasharray:\s*5 5/);
-  assert.match(original,/\.calendar-markers \.diary-marker[^}]*border-radius:1px/);
-  assert.match(original,/\.calendar-markers \.record-marker[^}]*height:3px/);
+  assert.match(original+'\n'+palette,/\.chart-target\s*\{[^}]*stroke-dasharray:\s*5 5/);
+  assert.match(original,/\.calendar-markers \.diary-marker[^}]*border-radius:\s*1px/);
+  assert.match(original,/\.calendar-markers \.record-marker[^}]*height:\s*3px/);
 });
 
 test('native progress pseudo-elements have explicit colors and garden artwork is not globally recolored',()=>{
@@ -207,22 +256,29 @@ test('native progress pseudo-elements have explicit colors and garden artwork is
   assert.doesNotMatch(palette,/(?:^|\})\s*svg\s*\{[^}]*(?:fill|stroke):/);
 });
 
-test('decorative sun and trail stay below text and their composited surfaces retain contrast',()=>{
-  const composite=(fg,bg,alpha)=>'#'+rgb(fg).map((v,i)=>Math.round((v*alpha+rgb(bg)[i]*(1-alpha))*255).toString(16).padStart(2,'0')).join('');
-  for(const [page,container,art,color,alpha] of [
-    ['wake','home-morning','home-sun','#f6c57b',.55],
-    ['wake','wake-focus','sun-illustration','#cf995b',.3],
-    ['wake','wake-focus','sun-illustration','#f6c57b',.3],
-    ['running','running-focus','trail-art','#17634a',.16],
-  ]){
-    const root=rootFor(page),card=make('section',`card ${container}`,root),decoration=make('div',art,card);
-    assert.equal(value(card,'isolation'),'isolate');
-    assert.equal(declaration(decoration,'z-index'),'-1');
-    assert.equal(declaration(decoration,'pointer-events'),'none');
-    assert.equal(Number(declaration(decoration,'opacity')),alpha);
-    const surface=composite(color,value(root,'--accent-soft'),alpha);
-    for(const token of ['--ink','--muted','--accent','--accent-ink'])check(value(root,token),surface,'text',`${art} reading surface ${token}`);
+test('record workspaces contain actual charts and no fake landscape decorations',()=>{
+  const state=createInitialState(),date='2026-10-06';
+  for(const render of [renderDashboard,renderWake,renderRunning])for(const populated of [false,true]){
+    if(populated){state.wake[date]='06:30';state.runs=[{id:'r',date,distanceKm:5,durationSec:1800,points:[],note:''}];}
+    const markup=render({state,date,today:date});
+    assert.doesNotMatch(markup,/class="(?:home-sun|sun-illustration|trail-art)"/);
   }
+  assert.ok(renderWake({state,date,today:date}).includes(wakeChart(state,7,date)));
+  assert.ok(renderRunning({state,date,today:date}).includes(runChart(state,7,date)));
+});
+
+test('line-only chart and imported-route paths explicitly suppress SVG default polygon fills',()=>{
+  for(const [page,container,cls] of [['wake','chart-wrap','chart-line'],['running','route-map','route-line']]){
+    const parent=make('div',container,rootFor(page)),svg=make('svg','',parent),path=make('path',cls,svg);
+    assert.equal(value(path,'fill'),'none',`${cls} must not acquire the SVG default black fill`);
+  }
+});
+
+test('focused skip navigation uses an opaque readable surface rather than underlying page text',()=>{
+  const link=make('a','skip-link',rootFor('home'),{},['focus']);
+  assert.equal(background(link),value(link,'--surface'));
+  textCheck(link,'focused skip navigation');
+  assert.equal(value(link,'top'),'12px');
 });
 
 test('contrast summary reports source-level sampled minimums',t=>{

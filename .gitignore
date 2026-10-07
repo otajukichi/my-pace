@@ -10,3 +10,5 @@ rhythm-backup-*.json
 rhythm-recovery-*.json
 my-pace-backup-*.json
 my-pace-recovery-*.json
+
+!.env.example

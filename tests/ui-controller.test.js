@@ -6,6 +6,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createInitialState, serializeBackup, todayKey, addDays} from '../src/lib/domain.js';
 import {STORAGE_KEY} from '../src/lib/storage.js';
+import {indexedDBDouble} from './helpers/indexeddb-double.js';
+import {stateToEntities} from '../src/lib/entity-codec.js';
 
 let instance=0;
 class EventNode {
@@ -20,7 +22,7 @@ class EventNode {
   querySelector(selector){if(!this.fields.has(selector))this.fields.set(selector,new EventNode());return this.fields.get(selector);}
   click(){this.clicked=true;}
 }
-async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home',denyRead=false,width=1280,height=900}={}) {
+async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home',denyRead=false,width=1280,height=900,idb,fetcher,modePreference=null}={}) {
   const originals=new Map(), app=new EventNode(), editor=new EventNode(), notice=new EventNode(), main=new EventNode();
   const document=new EventNode(), window=new EventNode(), created=[];
   window.innerWidth=width;window.innerHeight=height;
@@ -28,9 +30,9 @@ async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home
   document.documentElement = {dataset: {}};
   document.querySelector=selector=>({'#app':app,'#editor':editor,'#notice':notice,main}[selector]||null);
   document.createElement=tag=>{const node=new EventNode();node.tag=tag;created.push(node);return node;};
-  const localStorage={getItem(key){assert.equal(key,STORAGE_KEY);if(deniedRead)throw new Error('Storage denied');return raw;},setItem(key,value){assert.equal(key,STORAGE_KEY);if(deniedWrite)throw new Error('Quota exceeded');raw=value;writes++;}};
-  const FormData=class{constructor(form){this.values=form.values;}get(key){return this.values[key]??null;}};
-  for(const [key,value] of Object.entries({document,window,location,localStorage,FormData,requestAnimationFrame:callback=>callback()})) {
+  const localStorage={getItem(key){if(key==='mypace.persistence.mode.v1')return modePreference;assert.equal(key,STORAGE_KEY);if(deniedRead)throw new Error('Storage denied');return raw;},setItem(key,value){if(key==='mypace.persistence.mode.v1'){modePreference=value;return;}assert.equal(key,STORAGE_KEY);if(deniedWrite)throw new Error('Quota exceeded');raw=value;writes++;}};
+  const FormData=class{constructor(form){this.values=form.values;}get(key){return this.values[key]??null;}getAll(key){return this.values[key]??[];}};
+  for(const [key,value] of Object.entries({document,window,location,localStorage,FormData,indexedDB:idb,fetch:fetcher||globalThis.fetch,requestAnimationFrame:callback=>callback()})) {
     originals.set(key,Object.getOwnPropertyDescriptor(globalThis,key));Object.defineProperty(globalThis,key,{value,writable:true,configurable:true});
   }
   t.after(()=>{for(const [key,descriptor] of originals){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];}});
@@ -217,7 +219,7 @@ test('stale local editor does not overwrite a newer tab before its storage event
 
 test('Drive tab has explicit connection actions and no initial upload',async t=>{
   const ui=await launch(t,{hash:'#settings'});await ui.click('view-tab',{tab:'drive'});
-  assert.match(ui.app.innerHTML,/Google の準備/);assert.match(ui.app.innerHTML,/data-action="drive-auto-on" disabled/);
+  assert.match(ui.app.innerHTML,/Google でログイン/);assert.match(ui.app.innerHTML,/data-action="cloud-migrate" disabled/);assert.doesNotMatch(ui.app.innerHTML,/drive-auto-on/);
   assert.equal(ui.writes,0);
 });
 
@@ -225,4 +227,110 @@ test('switching settings tabs while Drive confirmation hashes cancels the stale 
   const ui=await launch(t,{hash:'#settings'});await ui.click('view-tab',{tab:'drive'});
   const saving=ui.click('drive-save');await ui.click('view-tab',{tab:'backup'});await saving;
   assert.equal(ui.editor.open,false);assert.match(ui.app.innerHTML,/JSON を保存/);
+});
+
+function cachedCloud(state=createInitialState()){
+ return indexedDBDouble({format:1,store:'owner',generation:'generation',epoch:'epoch',revision:1,entities:Object.fromEntries(Object.entries(stateToEntities(state)).map(([key,value])=>[key,{key,value,version:1,deleted:false}])),outbox:[],conflicts:[],importedRuns:[],importStatus:null});
+}
+const signedOut=async()=>Response.json({ok:true,authenticated:false,configured:true});
+async function untilPending(idb){for(let i=0;i<30&&!idb.pending;i++)await Promise.resolve();assert.equal(idb.pending,true);}
+test('cloud save waits for a durable outbox, ignores duplicate submits, and preserves legacy bytes',async t=>{
+ const idb=cachedCloud(),ui=await launch(t,{idb,fetcher:signedOut,modePreference:'cloud'});
+ const legacy=ui.raw;await ui.click('wake-edit');idb.pause();
+ const save=ui.submit('wake',{time:'06:25'});await untilPending(idb);
+ assert.equal(ui.editor.open,true);assert.doesNotMatch(ui.app.innerHTML,/06:25/);assert.equal(idb.read().outbox.length,0);
+ await ui.submit('wake',{time:'07:10'});assert.equal(ui.writes,0);
+ idb.release();await save;
+ assert.equal(idb.read().outbox.length,1);assert.equal(idb.read().outbox[0].command.value,'06:25');
+ assert.equal(ui.editor.open,false);assert.equal(ui.raw,legacy);assert.match(ui.app.innerHTML,/再ログイン待ち/);
+ await ui.click('undo');assert.equal(idb.read().outbox.length,2);assert.equal(idb.read().outbox[1].command.deleted,true);
+});
+test('cached cloud pending changes survive reload without becoming new writes or overwriting legacy',async t=>{
+ const idb=cachedCloud();const first=await launch(t,{idb,fetcher:signedOut,modePreference:'cloud'});await first.click('wake-edit');await first.submit('wake',{time:'06:40'});
+ const queued=idb.read().outbox.length,legacy=first.raw;
+ const second=await launch(t,{idb,fetcher:signedOut,modePreference:'cloud'});
+ assert.match(second.app.innerHTML,/06:40/);assert.equal(idb.read().outbox.length,queued);assert.equal(second.raw,legacy);assert.equal(second.writes,0);
+});
+test('cloud transaction failure retains old UI and editable dialog, and retry is durable',async t=>{
+ const idb=cachedCloud(),ui=await launch(t,{idb,fetcher:signedOut,modePreference:'cloud'});await ui.click('wake-edit');idb.fail();
+ await ui.submit('wake',{time:'05:55'});assert.equal(idb.read().outbox.length,0);assert.equal(ui.editor.open,true);assert.doesNotMatch(ui.app.innerHTML,/05:55/);
+ await ui.submit('wake',{time:'05:55'});assert.equal(idb.read().outbox.length,1);assert.equal(ui.editor.open,false);
+});
+test('navigation and a newer dialog are not dismissed by an older durable save acknowledgement',async t=>{
+ const idb=cachedCloud(),ui=await launch(t,{idb,fetcher:signedOut,modePreference:'cloud'});await ui.click('wake-edit');idb.pause();
+ const save=ui.submit('wake',{time:'06:10'});await untilPending(idb);
+ await ui.changeHash('#diary');await ui.click('diary-edit');const markup=ui.editor.innerHTML;
+ idb.release();await save;
+ assert.equal(ui.editor.open,true);assert.equal(ui.editor.innerHTML,markup);assert.match(ui.app.innerHTML,/<h1>日記<\/h1>/);assert.equal(ui.main.focused,true);
+});
+test('cancel while a cloud save is durable-pending never reopens its editor',async t=>{
+ const idb=cachedCloud(),ui=await launch(t,{idb,fetcher:signedOut,modePreference:'cloud'});await ui.click('wake-edit');idb.pause();
+ const save=ui.submit('wake',{time:'06:30'});await untilPending(idb);await ui.cancelDialog();idb.release();await save;
+ assert.equal(ui.editor.open,false);assert.equal(idb.read().outbox.length,1);
+});
+test('opening local mode and migration preview never silently enqueue legacy data',async t=>{
+ const initial={...createInitialState(),wake:{[todayKey()]:'08:00'}},idb=cachedCloud(),ui=await launch(t,{initial,idb,fetcher:signedOut,hash:'#settings',modePreference:'cloud'});
+ await ui.click('view-tab',{tab:'drive'});assert.equal(idb.read().outbox.length,0);
+ await ui.click('cloud-migrate');assert.match(ui.editor.innerHTML,/新しく追加: 1件/);await ui.click('dialog-close');assert.equal(idb.read().outbox.length,0);
+ await ui.click('cloud-local');assert.match(ui.app.innerHTML,/このブラウザーのみ/);assert.equal(ui.state().wake[todayKey()],'08:00');assert.equal(idb.read().outbox.length,0);
+});
+
+test('imported routes load bounded pages on demand and stale navigation cannot reopen the route dialog',async t=>{
+ const idb=cachedCloud();let release;const requests=[];
+ const fetcher=async(path,options)=>{
+   if(path==='/api/auth/session')return Response.json({ok:true,authenticated:true,csrf:'test'});
+   const body=JSON.parse(options.body);if(body.action!=='route')return Response.json({ok:false,error:'OFFLINE'},{status:503});requests.push(body);
+   return new Promise(resolve=>{release=()=>resolve(Response.json({ok:true,result:{runId:'csv-run',revision:5,points:[{lat:35,lon:139},{lat:35.1,lon:139.1}],nextCursor:'next'}}));});
+ };
+ const ui=await launch(t,{idb,fetcher,hash:'#running',modePreference:'cloud'});const legacy=ui.raw;
+ const opening=ui.click('cloud-route',{id:'csv-run'});for(let i=0;i<10&&!release;i++)await Promise.resolve();
+ await ui.changeHash('#calendar');release();await opening;
+ assert.equal(ui.editor.open,false);assert.equal(ui.raw,legacy);assert.equal(idb.read().outbox.length,0);
+ const second=ui.click('cloud-route',{id:'csv-run'});for(let i=0;i<10&&requests.length<2;i++)await Promise.resolve();release();await second;
+ assert.equal(ui.editor.open,true);assert.match(ui.editor.innerHTML,/2 サンプル/);assert.equal(requests[1].payload.cursor,null);
+ const next=ui.click('cloud-route-next');for(let i=0;i<10&&requests.length<3;i++)await Promise.resolve();release();await next;
+ assert.equal(requests[2].payload.cursor,'next');assert.equal(requests[2].payload.revision,5);assert.equal(idb.read().outbox.length,0);
+});
+
+test('explicit migration submits the displayed preview and preserves the original legacy backup',async t=>{
+ const initial={...createInitialState(),wake:{[todayKey()]:'08:00'}},idb=cachedCloud(),ui=await launch(t,{initial,idb,fetcher:signedOut,hash:'#settings',modePreference:'cloud'});
+ const raw=ui.raw;await ui.click('view-tab',{tab:'drive'});await ui.click('cloud-migrate');
+ await ui.submit('cloud-migration',{overwrite:[]});assert.equal(ui.raw,raw);assert.equal(idb.read().outbox.length,1);
+ assert.equal(idb.read().outbox[0].command.key,`wake:${todayKey()}`);assert.equal(idb.read().outbox[0].command.value,'08:00');
+});
+
+test('an explicit local-mode preference survives reload even when cloud records are cached',async t=>{
+ const initial={...createInitialState(),wake:{[todayKey()]:'08:00'}},remote={...createInitialState(),wake:{[todayKey()]:'06:00'}};
+ const ui=await launch(t,{initial,idb:cachedCloud(remote),fetcher:signedOut,modePreference:'local'});
+ assert.match(ui.app.innerHTML,/08:00/);assert.match(ui.app.innerHTML,/このブラウザーのみ/);assert.equal(ui.writes,0);
+ await ui.click('cloud-use');assert.match(ui.app.innerHTML,/08:00/);assert.equal(ui.state().wake[todayKey()],'08:00');
+});
+
+test('an unverified cold cache is never displayed before owner authentication',async t=>{
+ const remote={...createInitialState(),wake:{[todayKey()]:'04:55'}},ui=await launch(t,{idb:cachedCloud(remote),fetcher:signedOut});
+ assert.doesNotMatch(ui.app.innerHTML,/04:55/);assert.match(ui.app.innerHTML,/このブラウザーのみ/);
+ await ui.click('cloud-use');assert.doesNotMatch(ui.app.innerHTML,/04:55/);
+});
+
+test('explicit logout hides cloud records, clears dialogs and undo, and preserves unsent queue',async t=>{
+ const idb=cachedCloud(),ui=await launch(t,{idb,fetcher:signedOut,modePreference:'cloud'});
+ await ui.click('wake-edit');await ui.submit('wake',{time:'04:45'});await ui.click('diary-edit');
+ await ui.click('cloud-logout');assert.equal(ui.editor.open,false);assert.doesNotMatch(ui.app.innerHTML,/04:45/);assert.equal(idb.read().outbox.length,1);
+ await ui.click('cloud-use');assert.doesNotMatch(ui.app.innerHTML,/04:45/);await ui.click('undo');assert.equal(idb.read().outbox.length,1);
+});
+test('a persisted explicit logout prevents both cached display and startup authentication or outbox transmission',async t=>{
+ const remote={...createInitialState(),wake:{[todayKey()]:'04:35'}},idb=cachedCloud(remote);let requests=0;
+ const ui=await launch(t,{idb,modePreference:'signed-out',fetcher:async()=>{requests++;throw Error('Must not request while locked');}});
+ assert.equal(requests,0);assert.doesNotMatch(ui.app.innerHTML,/04:35/);await ui.click('cloud-use');assert.equal(requests,0);
+});
+test('cross-tab logout during a pending durable save cannot redisplay cloud state after acknowledgement',async t=>{
+ const idb=cachedCloud(),ui=await launch(t,{idb,fetcher:signedOut,modePreference:'cloud'});await ui.click('wake-edit');idb.pause();
+ const save=ui.submit('wake',{time:'04:15'});await untilPending(idb);
+ await ui.window.emit('storage',{key:'mypace.persistence.mode.v1',newValue:'signed-out'});idb.release();await save;
+ assert.equal(ui.editor.open,false);assert.doesNotMatch(ui.app.innerHTML,/04:15/);assert.equal(idb.read().outbox.length,1);
+});
+test('an external local update during async dispatch prevents stale candidate overwrite',async t=>{
+ const ui=await launch(t);await ui.click('wake-edit');const save=ui.submit('wake',{time:'04:10'});
+ const external={...createInitialState(),wake:{[todayKey()]:'08:20'}};ui.setRaw(serializeBackup(external));await ui.window.emit('storage',{key:STORAGE_KEY});await save;
+ assert.equal(ui.state().wake[todayKey()],'08:20');assert.equal(ui.writes,0);
 });

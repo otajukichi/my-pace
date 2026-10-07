@@ -37,15 +37,15 @@ test('sidebar module, state/controller hooks and all obsolete shell CSS are remo
   for(const text of [source,css,palette])assert.doesNotMatch(text,/sidebar|desktop-breadcrumb|mobile-brand|nav-divider/);
   assert.match(source,/<header class="topbar">[\s\S]*renderNavigation\(routes,current\)[\s\S]*<\/header><main/);
   assert.match(css,/\.workspace\s*\{[^}]*height:100%[^}]*display:flex/);
-  assert.match(css,/main\{width:100%;max-width:none/);
+  assert.match(css,/main\s*\{\s*width:100%;\s*max-width:(?:none|1680px)/);
 });
 test('CSS explicitly keeps touch targets, icon marker, focusable tooltips and brand nowrap',()=>{
   assert.match(css,/\.page-link\s*\{[^}]*min-width:44px[^}]*min-height:44px/);
   assert.match(css,/\.page-link\[aria-current="page"\] \.page-current\s*\{[^}]*visibility:visible/);
-  assert.match(css,/\.page-link:hover \.page-tooltip, \.page-link:focus-visible \.page-tooltip/);
+  for(const state of ['hover','focus-visible'])assert.ok(css.includes(`.page-link:${state} .page-tooltip`));
   assert.match(css,/\.page-link\[data-tooltip-dismissed\] \.page-tooltip\s*\{[^}]*visibility:hidden/);
-  assert.match(css,/\.topbar-brand, \.topbar-brand span\s*\{[^}]*white-space:nowrap/);
-  assert.match(css,/@media \(forced-colors:active\)[\s\S]*border-color:Highlight/);
+  for(const selector of ['.topbar-brand','.topbar-brand span'])assert.ok(new RegExp(selector.replaceAll('.','\\.')+'\\s*\\{[^}]*white-space:nowrap').test(css));
+  assert.match(css,/@media \(forced-colors:active\)[\s\S]*(?:border-color:Highlight|outline:2px solid Highlight)/);
 });
 test('responsive grid math reserves every 44px target across mobile and laptop boundaries (not layout measurement)',()=>{
   for(const width of [320,360,390,419,420,600,601,759,760,768,1024,1366,1440,1920,2560]){
@@ -62,7 +62,7 @@ test('responsive grid math reserves every 44px target across mobile and laptop b
   }
   assert.match(css,/grid-template-columns:repeat\(8,44px\)/);
   assert.match(css,/@media \(max-width:759px\)[\s\S]*flex-basis:96px/);
-  assert.match(css,/@media \(max-width:419px\)[\s\S]*flex-basis:144px[\s\S]*repeat\(4,minmax\(44px,1fr\)\)/);
+  assert.match(css,/@media\s*\(max-width:\s*419px\)[\s\S]*flex-basis:144px[\s\S]*repeat\(4,minmax\(44px,1fr\)\)/);
   assert.ok(pageCapacity(390,800)<pageCapacity(420,800));
 });
 function tooltips(){
@@ -99,7 +99,7 @@ test('toasts are centered in the sidebar-free viewport',()=>{
 });
 
 test('taller mobile header reserves content minima instead of clipping record buttons',()=>{
-  assert.match(css,/@media \(max-width:600px\)\s*\{\s*\.home-today\s*\{[^}]*min-height:410px;[^}]*minmax\(200px,1fr\)/);
-  assert.match(css,/\.record-layout\s*\{\s*min-height:360px/);
+  assert.match(css,/@media\s*\(max-width:900px\)[\s\S]*\.home-dashboard-grid[^}]*grid-template-columns:1fr/);
+  assert.match(css,/\.btn\s*\{[^}]*min-height:44px/);
   assert.match(css,/\.view-stage\s*\{[^}]*min-height:0[^}]*overflow:auto/);
 });

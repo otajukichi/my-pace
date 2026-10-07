@@ -236,15 +236,30 @@ export function validateState(raw) {
   return output;
 }
 
+// UTF-8 length with the same lone-surrogate replacement behavior as TextEncoder.
+// Pure ECMAScript: Apps Script has no browser Encoding API.
+export function utf8ByteLength(text) {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes++;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length &&
+             text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) { bytes += 4; i++; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+
 export function parseBackup(json) {
-  if (typeof json !== 'string' || json.length > LIMITS.backupChars || new TextEncoder().encode(json).byteLength > LIMITS.backupBytes) fail('バックアップは12MiB以下のJSONにしてください。');
+  if (typeof json !== 'string' || json.length > LIMITS.backupChars || utf8ByteLength(json) > LIMITS.backupBytes) fail('バックアップは12MiB以下のJSONにしてください。');
   let parsed;
   try { parsed = JSON.parse(json); } catch { fail('JSONファイルを読み取れませんでした。'); }
   return validateState(parsed);
 }
 export function serializeBackup(state) {
   const result = JSON.stringify(validateState(state), null, 2);
-  if (result.length > LIMITS.backupChars || new TextEncoder().encode(result).byteLength > LIMITS.backupBytes) fail('バックアップの容量が12MiBを超えています。');
+  if (result.length > LIMITS.backupChars || utf8ByteLength(result) > LIMITS.backupBytes) fail('バックアップの容量が12MiBを超えています。');
   return result;
 }
 

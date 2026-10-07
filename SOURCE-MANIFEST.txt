@@ -1,20 +1,8 @@
-My Pace Workspace 0.2 — opt-in Google Drive snapshots
-Verified baseline: otajukichi/my-pace main 602522aa4eed00502f5ae0360d2de9595d4a8f48
-Baseline tree: dd93f102e0c55ea65a8ab2e6653a6acb45875dba
-Verified on: 2026-10-06; all 47 baseline Git blob hashes matched
+MyPace 0.3 owner-only Drive sync and optional owner-created scheduled import candidate.
+Baseline: e2c7a72c88d09d66c77d55a0a487b6101a950413
+Source files only; no dist, node_modules, real credentials, private CSV or generated large fixture assets.
+SOURCE-MANIFEST.sha256 covers every release source except itself.
+Validate: sha256sum -c SOURCE-MANIFEST.sha256
+Local mock/static evidence is in TEST-REPORT.md; live browser/Google/Vercel gates remain.
 
-Entry: index.html; no eager Google scripts
-UI: src/lib/drive-ui.js; settings Drive tab and truthful local/cloud status
-Google adapter: src/lib/google-drive.js; memory-only GIS tokens; Picker; drive.file
-Sync: src/lib/drive-sync.js; immutable snapshots, metadata graph, durable outbox
-History: paginated metadata; active heads and selected historical bodies only
-Safety: owned/unshared expected folder; exact readback; explicit conflicts; no remote deletion
-Data: src/lib/domain.js and src/lib/storage.js unchanged; schema2; rhythm.personal.v1
-Layout: existing eight top navigation entries, palette, fixed workspace preserved
-CSP: scripts/serve.mjs and vercel.json; explicit Google SDK/frame/API sources
-Checks: 319 Node tests, syntax checks, static build; no live Google calls
-Guides: GOOGLE-DRIVE.md, README.md, TEST-REPORT.md, qa/ACCEPTANCE.md
-Integrity: SOURCE-MANIFEST.sha256, excluding itself and generated dist
-
-No actual client ID/key/token, GitHub writes, deployments, or live Google writes.
-Google authentication/Picker/production-CSP/real-browser checks remain unperformed.
+2026-10-07 daily-scenes visual redesign: latest local source plus GAS compatibility repair and OAuth disclosure pages. See UI-DESIGN.md and REDESIGN-TEST-REPORT.md. Runtime/security/storage sources and disclosure policy texts remain unchanged by this design patch. Browser visual signoff is pending.

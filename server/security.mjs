@@ -1,0 +1,20 @@
+import {createHmac,timingSafeEqual,randomBytes} from 'node:crypto';
+export const SESSION_COOKIE='__Host-mypace_session',CHALLENGE_COOKIE='__Host-mypace_challenge';
+export const fail=(code,status=400)=>{const e=Error(code);e.code=code;e.status=status;throw e;};
+export const random=()=>randomBytes(32).toString('base64url');
+export const mac=(s,key)=>createHmac('sha256',key).update(s).digest('base64url');
+export function equal(a,b){return typeof a==='string'&&typeof b==='string'&&Buffer.byteLength(a)===Buffer.byteLength(b)&&timingSafeEqual(Buffer.from(a),Buffer.from(b));}
+export function configuration(env=process.env){
+ const origin=env.MYPACE_ORIGIN;let u;try{u=new URL(origin);}catch{fail('SERVER_NOT_CONFIGURED',503);}
+ if(u.protocol!=='https:'||u.origin!==origin||env.VERCEL_ENV==='preview'||!env.GOOGLE_CLIENT_ID?.endsWith('.apps.googleusercontent.com')||!env.MYPACE_SESSION_SECRET||Buffer.byteLength(env.MYPACE_SESSION_SECRET)<32||!env.MYPACE_SECURITY_GENERATION)fail('SERVER_NOT_CONFIGURED',503);
+ return {origin,clientId:env.GOOGLE_CLIENT_ID,sessionKey:env.MYPACE_SESSION_SECRET,generation:env.MYPACE_SECURITY_GENERATION,ownerEmail:'yakitorihanbagu0412@gmail.com',ownerSub:env.MYPACE_OWNER_SUB||null};
+}
+export function seal(payload,key){const s=Buffer.from(JSON.stringify(payload)).toString('base64url');return s+'.'+mac(s,key);}
+export function unseal(value,key,now=Date.now()){if(typeof value!=='string'||value.length>4096)fail('UNAUTHENTICATED',401);const [s,sig,...extra]=value.split('.');if(extra.length||!equal(mac(s,key),sig))fail('UNAUTHENTICATED',401);let p;try{p=JSON.parse(Buffer.from(s,'base64url').toString());}catch{fail('UNAUTHENTICATED',401);}if(!Number.isSafeInteger(p.exp)||!Number.isSafeInteger(p.iat)||p.exp<=now||p.iat>now+30000)fail('UNAUTHENTICATED',401);return p;}
+export function cookie(name,value,maxAge){return `${name}=${value}; Path=/; Max-Age=${maxAge}; Secure; HttpOnly; SameSite=Strict`;}
+export function cookies(req){const out={};for(const chunk of String(req.headers.cookie||'').split(';')){const i=chunk.indexOf('=');if(i>0){const k=chunk.slice(0,i).trim();if(Object.hasOwn(out,k))fail('COOKIE_INVALID',401);out[k]=chunk.slice(i+1).trim();}}return out;}
+export function sameOrigin(req,cfg){if(req.headers.origin!==cfg.origin||req.headers['sec-fetch-site']&&req.headers['sec-fetch-site']!=='same-origin')fail('ORIGIN_FORBIDDEN',403);}
+export function session(req,cfg,{mutation=false}={}){if(!cfg.ownerSub)fail('OWNER_PROVISIONING_REQUIRED',503);const s=unseal(cookies(req)[SESSION_COOKIE],cfg.sessionKey);if(s.kind!=='session'||s.sub!==cfg.ownerSub||s.generation!==cfg.generation||s.exp-s.iat>30*86400000||typeof s.csrf!=='string')fail('UNAUTHENTICATED',401);if(mutation){sameOrigin(req,cfg);if(!equal(req.headers['x-mypace-csrf'],s.csrf))fail('CSRF_INVALID',403);}return s;}
+export async function jsonBody(req,max=196608){if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||''))fail('JSON_REQUIRED',415);const declared=Number(req.headers['content-length']);if(Number.isFinite(declared)&&declared>max)fail('BODY_TOO_LARGE',413);let body=req.body;if(body===undefined){const chunks=[];let size=0;for await(const chunk of req){size+=Buffer.byteLength(chunk);if(size>max)fail('BODY_TOO_LARGE',413);chunks.push(chunk);}body=Buffer.concat(chunks).toString('utf8');}if(Buffer.isBuffer(body))body=body.toString('utf8');if(typeof body!=='string'){if(Buffer.byteLength(JSON.stringify(body))>max)fail('BODY_TOO_LARGE',413);}else {if(Buffer.byteLength(body)>max)fail('BODY_TOO_LARGE',413);try{body=JSON.parse(body);}catch{fail('INVALID_JSON');}}if(!body||typeof body!=='object'||Array.isArray(body))fail('INVALID_JSON');return body;}
+export function respond(res,status,payload){res.setHeader('Cache-Control','no-store, private');res.setHeader('Pragma','no-cache');res.setHeader('X-Content-Type-Options','nosniff');res.statusCode=status;res.setHeader('Content-Type','application/json; charset=utf-8');res.end(JSON.stringify(payload));}
+export const errorResponse=(res,e)=>respond(res,e.status||503,{ok:false,error:e.code||'SERVICE_UNAVAILABLE'});

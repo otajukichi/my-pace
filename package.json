@@ -1,6 +1,24 @@
 {
-  "name": "my-pace", "version": "0.2.0", "private": true, "type": "module",
+  "name": "my-pace",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
   "description": "マイペース (My Pace) — 日々の小さな習慣を、自分のペースで。",
-  "engines": {"node": ">=20"},
-  "scripts": {"start": "node scripts/serve.mjs", "dev": "node scripts/serve.mjs", "test": "node --test tests/*.test.js", "check": "node scripts/check.mjs", "build": "node scripts/build.mjs", "verify": "npm run check && npm test && npm run build"}
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "dev": "node scripts/serve.mjs",
+    "test": "node scripts/test-all.mjs",
+    "check": "node scripts/check.mjs",
+    "build": "node scripts/build.mjs",
+    "verify": "npm run check && npm test && npm run build",
+    "test:storage": "node --test storage/*.test.mjs",
+    "test:heavy": "node scripts/test-all.mjs --heavy",
+    "build:gas": "node storage/build-gas.mjs && node scripts/build-gas.mjs"
+  },
+  "dependencies": {
+    "google-auth-library": "10.9.1"
+  }
 }

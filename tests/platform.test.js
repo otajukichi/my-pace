@@ -43,7 +43,8 @@ test('static server serves app with safe MIME/CSP and refuses private or non-rea
   await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   try{
     const base=`http://127.0.0.1:${server.address().port}`;
-    const index=await fetch(base);assert.equal(index.status,200);assert.match(await index.text(),/lang="ja"/);assert.match(index.headers.get('content-security-policy'),/connect-src 'self' https:\/\/accounts.google.com\/gsi\/ https:\/\/www.googleapis.com/);
+    const index=await fetch(base);assert.equal(index.status,200);assert.match(await index.text(),/lang="ja"/);assert.match(index.headers.get('content-security-policy'),/connect-src 'self' https:\/\/accounts.google.com\/gsi\/;/);
+    assert.doesNotMatch(index.headers.get('content-security-policy'),/www\.googleapis\.com|apis\.google\.com|docs\.google\.com/);
     assert.doesNotMatch(index.headers.get('content-security-policy').split('script-src ')[1].split(';')[0],/unsafe-inline|unsafe-eval|\*/);
     assert.equal(index.headers.get('cross-origin-opener-policy'),'same-origin-allow-popups');
     const production=JSON.parse(await fs.readFile(new URL('../vercel.json',import.meta.url),'utf8'));

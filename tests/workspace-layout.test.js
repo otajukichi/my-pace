@@ -88,7 +88,7 @@ test('truncated names and notes retain their full editable detail representation
 test('source declares a bounded document and reachable internal overflow safety surfaces',async()=>{
   const css=await readFile(new URL('../src/style.css',import.meta.url),'utf8');
   const app=await readFile(new URL('../src/app.js',import.meta.url),'utf8');
-  assert.match(css,/html,body\s*\{[^}]*height:100%[^}]*overflow:hidden/);
+  for(const selector of ['html','body'])assert.match(css,new RegExp(selector+'\\s*\\{[^}]*height:100%[^}]*overflow:hidden'));
   assert.match(css,/#app\s*\{[^}]*height:100dvh[^}]*overflow:hidden/);
   assert.match(css,/\.view-stage\s*\{[^}]*min-height:0[^}]*overflow:auto/);
   assert.match(app,/class="view-stage"[^>]*role="region"[^>]*tabindex="0"/);
@@ -99,9 +99,11 @@ test('source declares a bounded document and reachable internal overflow safety 
 test('populated chart markup is matched by explicit bounded SVG CSS',async()=>{
   const css=await readFile(new URL('../src/style.css',import.meta.url),'utf8');
   const state=historyFixture();
-  for(const render of [wakeChart,runChart])assert.match(render(state,7,today),/class="chart-wrap"><svg/);
-  assert.match(css,/\.chart-wrap\s*\{[^}]*min-height:0/);
-  assert.match(css,/\.chart-wrap svg\s*\{[^}]*max-height:100%[^}]*width:100%/);
+  for(const render of [wakeChart,runChart])assert.match(render(state,7,today),/class="chart-wrap" tabindex="0" role="region" aria-label="[^"]+"><svg/);
+  assert.match(css,/\.chart-wrap\s*\{[^}]*justify-content:flex-start[^}]*overflow-x:auto[^}]*max-width:100%/);
+  assert.match(css,/\.chart-wrap svg\s*\{[^}]*height:auto[^}]*min-width:620px[^}]*width:100%/);
   assert.match(css,/\.chart-space\s*\{[^}]*flex-direction:column/);
   assert.match(css,/\.run-bar\s*\{[^}]*fill:/);
+  assert.match(css,/\[tabindex\]:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--focus\)/);
+  assert.match(css,/\.chart-wrap text\s*\{[^}]*font:12px/);
 });
