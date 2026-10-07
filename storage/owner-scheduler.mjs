@@ -37,10 +37,12 @@ export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=O
  if(!Number.isSafeInteger(settleCalls)||settleCalls<16||settleCalls>256)fail('OWNER_SETTLE_CALLS_INVALID');
  if(!Number.isSafeInteger(scanIntervalMs)||scanIntervalMs<0||scanIntervalMs>86400000)fail('OWNER_SCAN_INTERVAL_INVALID');
  for(const k of Object.keys(OWNER_LIMITS))if(!Number.isSafeInteger(limits[k])||limits[k]<1||limits[k]>OWNER_LIMITS[k])fail('OWNER_LIMITS_INVALID');
- reserveMs=reserveMs??Math.min(15000,Math.floor(limits.runtimeMs/8));
+ // Manual work also needs enough closing time for the final durable status
+ // and a quiescent checkpoint, even when a service call is slow.
+ reserveMs=reserveMs??(scheduledPolicy?Math.min(15000,Math.floor(limits.runtimeMs/8)):Math.min(30000,Math.floor(limits.runtimeMs/4))); 
  if(!Number.isSafeInteger(reserveMs)||reserveMs<0||reserveMs>limits.runtimeMs/2)fail('OWNER_RESERVE_INVALID');
  if(scheduledPolicy&&(!Number.isSafeInteger(scheduledPolicy.sliceMs)||scheduledPolicy.sliceMs<30000||scheduledPolicy.sliceMs>60000||!Number.isSafeInteger(scheduledPolicy.rangeBytes)||scheduledPolicy.rangeBytes<1||scheduledPolicy.rangeBytes>1048576||(!Number.isSafeInteger(scheduledPolicy.maxFreshOutputs)||scheduledPolicy.maxFreshOutputs<1||scheduledPolicy.maxFreshOutputs>64)||scheduledPolicy.maxStalls!==3||(scheduledPolicy.catchUp!==undefined&&typeof scheduledPolicy.catchUp!=='boolean')||limits.runtimeMs!==OWNER_LIMITS.runtimeMs||reserveMs>=scheduledPolicy.sliceMs))fail('OWNER_SCHEDULED_POLICY_INVALID');
- const meter=meteredGas(globals,{now,limits,deadlineMs,reserveMs,reserveCalls:scheduledPolicy?settleCalls:0});
+ const meter=meteredGas(globals,{now,limits,deadlineMs,reserveMs,reserveCalls:Math.min(settleCalls,Math.floor(limits.calls/2))});
  if(scheduledPolicy&&!scheduledPolicy.catchUp)meter.setRuntimeMs(scheduledPolicy.sliceMs);
  const runtime=createGasImportRuntime(meter.globals,{...config,checkBudget:meter.checkBudget,deadlineMs:scheduledPolicy?undefined:meter.deadlineMs,protocolReadCache:{mode:'lock-phase'}});
  const {writer,store,runner,source,locked}=runtime;
@@ -172,7 +174,12 @@ export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=O
   // Each reservation gets its own quiescent cut. Reusing a scan-only operation
   // ID would replay an old receipt instead of sealing later progress. The cut
   // is authoritative Drive state; the optional hint only accelerates finding it.
-  const seal=()=>writer.checkpoint({operationId:'owner_slice_'+hash([s.scanId,entry.version]),epoch:'default',digest:hash(['scheduled-quiescent',s.scanId,entry.version]),result:{scanId:s.scanId,reservationVersion:entry.version}});
+  const reservationVersion=entry.version;
+  const seal=()=>writer.checkpoint({operationId:'owner_slice_'+hash([s.scanId,reservationVersion]),epoch:'default',digest:hash(['scheduled-quiescent',s.scanId,reservationVersion]),result:{scanId:s.scanId,reservationVersion}});
+  const manualSealedView=()=>{
+   try{seal();return {...view(s),checkpointReady:true};}
+   catch(error){return {...view(s),checkpointReady:false,checkpointError:/^[A-Z0-9_]{1,80}$/.test(error.code||error.message)?error.code||error.message:'CHECKPOINT_PENDING',requiresOwnerAction:true};}
+  }; 
   try{
    if(startNew)store.beginScan({operationId:'owner_begin_'+s.generation,scanId:s.scanId});
    // Repair an interruption after scheduler reservation but before scan creation.
@@ -201,8 +208,8 @@ export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=O
    }
    // Seal a quiescent import cut before the final scheduler frame. Cold app
    // reads then replay only the checkpoint publication plus this finish frame.
-   if(s.status==='complete'){s.completedDirectoryVersion=importDirectoryVersion(writer);s.completedAt=now();s.error=null;s.attempt=0;s.retryAt=0;if(scheduledPolicy)s.processingMode='idle';if(!scheduledPolicy)writer.checkpoint({operationId:'owner_checkpoint_'+s.scanId,epoch:'default',digest:hash(['owner-import-complete',s.scanId]),result:{scanId:s.scanId,complete:true}});}
-   settle();if(scheduledPolicy)seal();entry=write(entry,s,'finish');return view(s);
+   if(s.status==='complete'){s.completedDirectoryVersion=importDirectoryVersion(writer);s.completedAt=now();s.error=null;s.attempt=0;s.retryAt=0;if(scheduledPolicy)s.processingMode='idle';}
+   settle();if(scheduledPolicy)seal();entry=write(entry,s,'finish');return scheduledPolicy?view(s):manualSealedView();
   }catch(e){
    // Retain the exact scan/job cursor and all pins. Changed/missing sources,
    // unsupported identities and structural faults require owner review.
@@ -211,8 +218,8 @@ export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=O
    const retry=e.retryable===true||(code==='RETRY_EXHAUSTED'&&[403,429,500,502,503,504].includes(e.status))||['IMPORT_YIELD','TRANSPORT_YIELD','STORE_YIELD','OWNER_BUDGET_YIELD','RATE_LIMITED','DRIVE_REQUEST_FAILED','WRITER_BUSY'].includes(code);
    s.resumeStatus=s.status;s.status=retry?'retry':'blocked';s.attempt=Math.min(10,s.attempt+1);s.retryAt=retry?now()+Math.min(3600000,1000*2**s.attempt):0;
    s.error=/^[A-Z0-9_]{1,80}$/.test(code)?code:'OWNER_OPERATION_FAILED';
-   settle();try{if(scheduledPolicy)seal();write(entry,s,'error');}catch(_){return {...view(s),errorPersisted:false};}
-   return {...view(s),errorPersisted:true};
+   settle();try{if(scheduledPolicy)seal();entry=write(entry,s,'error');}catch(_){return {...view(s),errorPersisted:false};}
+   return {...(scheduledPolicy?view(s):manualSealedView()),errorPersisted:true};
   }
  });}
  // Review acknowledgement retries the same source/cursor. It never discards or

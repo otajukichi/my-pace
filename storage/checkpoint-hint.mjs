@@ -5,6 +5,9 @@ export const CHECKPOINT_HINT_PROTOCOL='mypace-checkpoint-hint-v1';
 // Same authenticated fixed-ID envelope, explicitly different semantics: this
 // certifies only a traversed INDEX prefix, never recovered business state.
 export const INDEX_SCAN_HINT_PROTOCOL='mypace-index-scan-hint-v1';
+// Owner recovery attests a fully verified immutable frame prefix. Roots and
+// receipts remain in the referenced immutable frame, never in mutable advice.
+export const FRAME_SCAN_HINT_PROTOCOL='mypace-frame-scan-hint-v1';
 export const CHECKPOINT_HINT_MAX_BYTES=4096;
 export const CHECKPOINT_HINT_DOMAIN='MyPace/Drive/checkpoint-hint/HMAC-SHA256/v1\n';
 const hash=x=>typeof x==='string'&&/^[0-9a-f]{64}$/.test(x);

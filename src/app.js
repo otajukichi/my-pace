@@ -447,7 +447,7 @@ async function handleCloud(button){
  }
  cloudOperation=true;
  try{
-   if(action==='cloud-sync'){await cloud.refreshSession();return;}
+   if(action==='cloud-sync'){await cloud.refreshSession({automatic:false});return;}
    if(action==='cloud-logout'){
      try{await cloud.logout();}finally{cloud.lock();const local=loadState();mode='local';rememberMode('signed-out');state=local.state||createInitialState();storageBlocked=!local.ok;undoState=null;closeDialog();render();}
      toast('ログアウトしました。クラウドの表示を閉じました。端末内のキャッシュと未送信データは保持しています。');return;
@@ -468,7 +468,12 @@ async function handleCloud(button){
        try{const result=await cloud.completeLogin(response.credential,challenge.csrf);
          if(context!==dialogContext||seq!==fileSequence)return;
          if(result.provisioningRequired){formError(`オーナー設定が必要です。導入手順に従って、この Google の識別子をサーバー設定に登録してください: ${result.ownerSubject}`);return;}
-         if(result.authenticated){mode='cloud';rememberMode('cloud');state=validateState(cloud.state());storageBlocked=false;undoState=null;closeDialog();render();toast('クラウドの記録を開きました。旧記録の移行は設定から確認できます。');}
+         if(result.authenticated){
+           const cached=cloud.state();
+           if(!cached){closeDialog();render();toast('ログインしました。クラウドの記録はまだ取得できていません。設定の Google Drive で同期状況を確認してください。');return;}
+           mode='cloud';rememberMode('cloud');state=validateState(cached);storageBlocked=false;undoState=null;closeDialog();render();
+           toast(cloud.view().error?'この端末に残っているクラウドの記録を開きました。設定の Google Drive で同期状況を確認してください。':'クラウドの記録を開きました。旧記録の移行は設定から確認できます。');
+         }
        }catch(error){if(context===dialogContext)formError(error.message);}finally{cloudOperation=false;}
      }});
      identity.renderButton(editor.querySelector('#google-signin'),{theme:'outline',size:'large',text:'signin_with'});
@@ -606,7 +611,7 @@ window.addEventListener('storage',event=> {
 );
 document.addEventListener('visibilitychange',()=> {
   if(document.hidden)return;
-  if(mode==='cloud')void cloud.refreshSession();
+  if(mode==='cloud')void cloud.refreshSession({automatic:true});
   const current=todayKey();
   if(current!==previousToday) {
     if(selectedDate===previousToday){selectedDate=current;calendarMonth=current.slice(0,7);}
@@ -616,7 +621,6 @@ document.addEventListener('visibilitychange',()=> {
   }
 }
 );
-window.addEventListener('online',()=>{if(mode==='cloud')void cloud.refreshSession();});
 window.addEventListener('resize',()=>{
   const capacity=pageCapacity(window.innerWidth,window.innerHeight);
   const habits=habitPageCapacity(window.innerWidth,window.innerHeight);
@@ -625,6 +629,6 @@ window.addEventListener('resize',()=>{
 render();
 try{const initial=await cloud.init({resume:preferredMode!=='signed-out'});if(initial.state&&(initial.authenticated||preferredMode==='cloud')&&!['local','signed-out'].includes(preferredMode)){mode='cloud';if(initial.authenticated)rememberMode('cloud');state=validateState(initial.state);storageBlocked=false;}}catch(error){toast('クラウド用の端末保存を利用できません。ローカルの記録はそのままです。');}finally{initializing=false;render();}
 
-const refreshTimer=setInterval(()=>{if(!document.hidden&&mode==='cloud'&&!commitPending&&!cloudOperation)void cloud.refreshSession();},60000);
+const refreshTimer=setInterval(()=>{if(!document.hidden&&mode==='cloud'&&!commitPending&&!cloudOperation)void cloud.refreshSession({automatic:true});},60000);
 refreshTimer?.unref?.();
 window.addEventListener('pagehide',event=>{if(!event.persisted){clearInterval(refreshTimer);cloud.destroy();}});

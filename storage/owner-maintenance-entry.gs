@@ -37,3 +37,34 @@ function MyPaceRecoverStorage() {
     return myPaceOwnerMaintenanceSetup_(error,meter);
   }
 }
+
+// Run once after updating this same project to repair slow app cold reads.
+// It verifies existing history, saves authenticated recovery progress, and only
+// then appends a no-business-change checkpoint. Never starts/resets CSV import.
+function MyPacePrepareWebSync() {
+  var meter=MyPaceFolderImport.meteredGas(myPaceOwnerGlobals_());
+  try {
+    var config=myPaceOwnerBootstrap_(meter).loadRecoveryConfiguration();
+    if(!config)throw new Error('OWNER_BOOTSTRAP_REQUIRED');
+    if(!config.checkpointHintId)throw new Error('OWNER_RECOVERY_CONFIGURATION_REQUIRED');
+    var runtimeConfig=myPaceOwnerRuntimeConfig_(meter.globals,config);
+    if(!runtimeConfig.checkpointHintCodec)throw new Error('OWNER_RECOVERY_SECRET_REQUIRED');
+    var common=Object.assign({},runtimeConfig,{checkBudget:meter.checkBudget,deadlineMs:meter.hardDeadlineMs,protocolReadCache:{mode:'lock-phase'}});
+    var result=MyPaceFolderImport.prepareWebRead(MyPaceFolderImport.createGasImportRuntime(meter.globals,common));
+    if(meter.hardDeadlineMs-Date.now()<20000)return myPaceOwnerReport_({status:'prepared',sealed:result.sealed,revision:result.storage.revision,replayFrames:result.storage.replayFrames,webProbe:'not-run',nextAction:'The existing history is verified and its recovery tail is prepared. Try one app sync; report its result if it is still blocked.',usage:meter.usage()});
+    var probeStarted=Date.now(),before=meter.usage(),cold=MyPaceFolderImport.createGasImportRuntime(meter.globals,Object.assign({},common,{writerLimits:{maxIndexScanLinks:8},deadlineMs:probeStarted+20000,checkBudget:function(){return meter.checkBudget()&&Date.now()-probeStarted<20000;}}));
+    try {
+      var state=cold.locked(function(){cold.writer.recoveryBarrier();return cold.writer.status();});
+      return myPaceOwnerReport_({status:'ready',sealed:result.sealed,revision:state.revision,replayFrames:state.replayFrames,webProbe:{scope:'cold-storage-recovery',ok:true,calls:meter.usage().calls-before.calls,elapsedMs:Date.now()-probeStarted},nextAction:'Return to the app and run sync once. CSV import remains at its saved position.',usage:meter.usage()});
+    } catch(probeError) {
+      var probeCode=probeError.code||probeError.message;
+      if(['STORE_YIELD','OWNER_BUDGET_YIELD','IMPORT_YIELD','WRITER_RECOVERY_PENDING'].indexOf(probeCode)<0)throw probeError;
+      return myPaceOwnerReport_({status:'web-budget-blocked',sealed:result.sealed,revision:result.storage.revision,replayFrames:result.storage.replayFrames,code:probeCode,webProbe:{scope:'cold-storage-recovery',ok:false,calls:meter.usage().calls-before.calls,elapsedMs:Date.now()-probeStarted},nextAction:'History is verified, but the cold web budget is still insufficient. Report this result; do not repeatedly sync or recreate the store.',usage:meter.usage()});
+    }
+  } catch(error) {
+    var code=error.code||error.message;
+    if(code==='WRITER_RECOVERY_PENDING')return myPaceOwnerReport_({status:'recovering',code:code,indexLinks:error.indexLinks,scannedLinks:error.scannedLinks,cursorPersisted:error.cursorPersisted===true,nextAction:'A bounded INDEX slice was checked. Continue only if its persisted cursor is advancing.',usage:meter.usage()});
+    if(['OWNER_BOOTSTRAP_YIELD','OWNER_BUDGET_YIELD','STORE_YIELD','IMPORT_YIELD'].indexOf(code)>=0)return myPaceOwnerReport_({status:error.cursorAdvanced===true?'recovering':'recovery-budget-blocked',code:code,recoveredRevision:error.recoveredRevision||null,cursorPersisted:error.cursorPersisted===true,cursorAdvanced:error.cursorAdvanced===true,nextAction:error.cursorAdvanced===true?'Verified frame progress was saved. Run MyPacePrepareWebSync again to continue.':'No new recovery cursor was confirmed. Report this result rather than repeating the same work.',usage:meter.usage()});
+    return myPaceOwnerMaintenanceSetup_(error,meter);
+  }
+}

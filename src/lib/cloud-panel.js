@@ -2,6 +2,7 @@ import {e,icon,sectionHead} from './ui.js';
 export function cloudStatus(view,mode,initializing=false){
  if(initializing)return '保存先を確認中';
  if(mode==='local')return 'このブラウザーのみ';
+ if(view.error==='STORE_YIELD')return `保存先の復旧を要確認・自動同期は停止中 · 未送信 ${view.pending}件`;
  if(view.conflicts.length)return `競合 ${view.conflicts.length}件 · 要確認`;
  if(view.error==='WRITER_RECOVERY_PENDING')return `履歴の復旧・再試行待ち · 未送信 ${view.pending}件`;
  if(view.error==='WRITER_RECOVERY_SETUP_REQUIRED')return `保存先の設定待ち · 未送信 ${view.pending}件`;
@@ -10,6 +11,7 @@ export function cloudStatus(view,mode,initializing=false){
  if(!view.authenticated)return `この端末の記録 · 再ログイン待ち ${view.pending}件`;
  if(view.pending)return `端末に保存済み · 同期待ち ${view.pending}件`;
  if(view.busy)return 'Drive を確認中';
+ if(view.ready===false||view.verified===false)return 'Drive の保存状態は未確認';
  return 'Google Drive に保存済み';
 }
 export function importStatusText(status){
@@ -22,7 +24,7 @@ export function importStatusText(status){
  if(status.retryAt>0&&Number.isFinite(new Date(status.retryAt).getTime()))parts.push(`${status.status==='budget-wait'?'再開の目安':'再試行予定'}: ${new Date(status.retryAt).toLocaleString('ja-JP')}`);
  return parts.join(' · ');
 }
-export function cloudErrorText(code){return ({WRITER_RECOVERY_PENDING:'保存先の履歴を復旧しています。時間をおいて「今すぐ同期」で続きを確認してください',WRITER_RECOVERY_SETUP_REQUIRED:'保存先の復旧設定を確認する必要があります。記録や保存先を作り直さず、導入手順を確認してください'})[code]||code;}
+export function cloudErrorText(code){return ({STORE_YIELD:'保存先の確認が処理時間の上限に達したため、自動再試行を止めています。オーナー側の復旧状況を確認してから「今すぐ同期」で再確認してください。記録や保存先を作り直す必要はありません',WRITER_RECOVERY_PENDING:'保存先の履歴を復旧しています。時間をおいて「今すぐ同期」で続きを確認してください',WRITER_RECOVERY_SETUP_REQUIRED:'自動再試行を止めています。保存先の復旧設定を確認する必要があります。記録や保存先を作り直さず、導入手順を確認した後に「今すぐ同期」で再確認してください'})[code]||code;}
 export function renderCloudPanel(view,mode){
  return `<section class="card settings-panel cloud-panel">${sectionHead('いつもの記録を、どのブラウザーでも。','Google Drive · 自分だけの保存先')}<div class="storage-info"><span class="storage-icon">${icon('lock',27)}</span><div><strong>${e(cloudStatus(view,mode))}</strong><p>単一オーナーの Google アカウントでログイン</p></div><span class="status-pill">${mode==='cloud'?'クラウド':'ローカル'}</span></div><p>クラウドの変更はまずこの端末に保存され、接続が戻ると送信されます。未送信の記録がある間は、このサイトのブラウザーデータを消さないでください。</p>${view.error?`<div class="info-note sync-review" role="status">同期状況: ${e(cloudErrorText(view.error))}。記録と未送信の変更は保持しています。</div>`:''}<div class="row-actions">${!view.authenticated?'<button class="btn primary" data-action="cloud-login">Google でログイン</button>':'<button class="btn secondary" data-action="cloud-sync">今すぐ同期</button><button class="btn secondary" data-action="cloud-logout">ログアウト</button>'}${view.ready&&mode!=='cloud'?'<button class="btn primary" data-action="cloud-use">クラウドの記録を開く</button>':''}${mode==='cloud'?'<button class="btn secondary" data-action="cloud-local">このブラウザーの旧記録を開く</button>':''}</div><p class="hint">別のブラウザーでも同じサイトとオーナーアカウントを使います。一度ログインした端末はオフラインでも記録できます。ログアウトするとクラウドの表示を閉じ、再ログインまで開けません。端末内のキャッシュと未送信データは残ります。端末内の暗号化やプライバシーロックではありません。Google ログイン情報を入力するのは Google の画面だけです。</p><div class="quiet-divider"></div><h2>以前の記録を移す</h2><p>このブラウザーの旧データはそのまま残します。クラウドへの移行は件数と競合を確認してから行います。</p><div class="row-actions"><button class="btn secondary" data-action="backup-raw">旧データを JSON で退避</button><button class="btn secondary" data-action="cloud-migrate" ${!view.ready?'disabled':''}>移行内容を確認</button></div>${view.conflicts.length?`<div class="quiet-divider"></div><h2>競合を確認</h2><p>同じ記録が別の場所でも変更されました。どちらを残すか選んでください。</p>${view.conflicts.map(c=>`<div class="info-note sync-review"><strong>${e(c.key)}</strong><p>${e(c.error)}</p><button class="btn secondary" data-action="cloud-conflict" data-key="${e(c.key)}">内容を比較する</button></div>`).join('')}`:''}<div class="quiet-divider"></div><h2>ランニング CSV のフォルダー取り込み</h2><p>設定した Drive フォルダーの CSV はサーバーで分割処理します。定期実行は Google 側の設定が必要です。取り込んだランとルートはランニングの「Drive のラン」で確認できます。</p><p class="hint">処理状況: ${e(importStatusText(view.importStatus))}。フォルダー・列名・開始と再開の操作は導入手順を確認してください。</p></section>`;
 }

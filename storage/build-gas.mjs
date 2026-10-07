@@ -1,7 +1,7 @@
 // Local packaging only. Does not deploy, authorize, create triggers or call Drive.
 import fs from 'node:fs';import path from 'node:path';import {fileURLToPath} from 'node:url';
 const dir=path.dirname(fileURLToPath(import.meta.url));
-const modules=['import-core','codec','bounded-import','transport','immutable-assets','checkpoint-hint','reserved-writer','gas-store-io','import-store','import-runner','gas-import-runtime','owner-bootstrap','discovery-state','idle-reconciliation','owner-scheduler','scheduled-runtime','import-reader'];
+const modules=['import-core','codec','bounded-import','transport','immutable-assets','checkpoint-hint','reserved-writer','gas-store-io','import-store','import-runner','gas-import-runtime','web-read-preparation','owner-bootstrap','discovery-state','idle-reconciliation','owner-scheduler','scheduled-runtime','import-reader'];
 const names=Object.fromEntries(modules.map((m,i)=>[m,'m'+i]));
 let result='/** Local storage integration milestone. NOT DEPLOYED. No public endpoint or trigger installer. */\nvar MyPaceFolderImport = (function () {\n"use strict";\n';
 for(const m of modules){

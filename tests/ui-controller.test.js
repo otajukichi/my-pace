@@ -15,6 +15,7 @@ class EventNode {
   get innerHTML(){return this._innerHTML;}
   set innerHTML(value){this._innerHTML=value;this.htmlWrites++;this.fields.clear();}
   addEventListener(type,handle){this.handlers.set(type,[...(this.handlers.get(type)||[]),handle]);}
+  removeEventListener(type,handle){this.handlers.set(type,(this.handlers.get(type)||[]).filter(item=>item!==handle));}
   async emit(type,event={}){for(const handle of this.handlers.get(type)||[]) await handle(event);}
   showModal(){this.open=true;}
   close(){if(this.open){this.open=false;for(const handle of this.handlers.get('close')||[])handle({});}}
@@ -22,7 +23,7 @@ class EventNode {
   querySelector(selector){if(!this.fields.has(selector))this.fields.set(selector,new EventNode());return this.fields.get(selector);}
   click(){this.clicked=true;}
 }
-async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home',denyRead=false,width=1280,height=900,idb,fetcher,modePreference=null}={}) {
+async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home',denyRead=false,width=1280,height=900,idb,fetcher,modePreference=null,timers}={}) {
   const originals=new Map(), app=new EventNode(), editor=new EventNode(), notice=new EventNode(), main=new EventNode();
   const document=new EventNode(), window=new EventNode(), created=[];
   window.innerWidth=width;window.innerHeight=height;
@@ -32,7 +33,7 @@ async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home
   document.createElement=tag=>{const node=new EventNode();node.tag=tag;created.push(node);return node;};
   const localStorage={getItem(key){if(key==='mypace.persistence.mode.v1')return modePreference;assert.equal(key,STORAGE_KEY);if(deniedRead)throw new Error('Storage denied');return raw;},setItem(key,value){if(key==='mypace.persistence.mode.v1'){modePreference=value;return;}assert.equal(key,STORAGE_KEY);if(deniedWrite)throw new Error('Quota exceeded');raw=value;writes++;}};
   const FormData=class{constructor(form){this.values=form.values;}get(key){return this.values[key]??null;}getAll(key){return this.values[key]??[];}};
-  for(const [key,value] of Object.entries({document,window,location,localStorage,FormData,indexedDB:idb,fetch:fetcher||globalThis.fetch,requestAnimationFrame:callback=>callback()})) {
+  for(const [key,value] of Object.entries({document,window,location,localStorage,FormData,indexedDB:idb,fetch:fetcher||globalThis.fetch,requestAnimationFrame:callback=>callback(),addEventListener:window.addEventListener.bind(window),removeEventListener:window.removeEventListener.bind(window),...(timers?{setInterval:(callback,delay)=>{const timer={callback,delay,unref(){}};timers.push(timer);return timer;},clearInterval:timer=>{const i=timers.indexOf(timer);if(i>=0)timers.splice(i,1);}}:{})})) {
     originals.set(key,Object.getOwnPropertyDescriptor(globalThis,key));Object.defineProperty(globalThis,key,{value,writable:true,configurable:true});
   }
   t.after(()=>{for(const [key,descriptor] of originals){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];}});
@@ -333,4 +334,44 @@ test('an external local update during async dispatch prevents stale candidate ov
  const ui=await launch(t);await ui.click('wake-edit');const save=ui.submit('wake',{time:'04:10'});
  const external={...createInitialState(),wake:{[todayKey()]:'08:20'}};ui.setRaw(serializeBackup(external));await ui.window.emit('storage',{key:STORAGE_KEY});await save;
  assert.equal(ui.state().wake[todayKey()],'08:20');assert.equal(ui.writes,0);
+});
+
+
+test('STORE_YIELD blocks timer, visibility and online retries while explicit sync remains available',async t=>{
+ const initial={...createInitialState(),wake:{[todayKey()]:'06:25'}},idb=cachedCloud(initial),timers=[],requests=[];let failure=true;
+ const fetcher=async(path,options)=>{
+  requests.push(path);
+  if(path==='/api/auth/session')return Response.json({ok:true,authenticated:true,csrf:'test'});
+  const {action}=JSON.parse(options.body);
+  if(failure)return Response.json({ok:false,error:'STORE_YIELD',retryable:true},{status:503});
+  const cached=idb.read();
+  const result=action==='snapshot'?{store:cached.store,generation:cached.generation,epoch:cached.epoch,revision:cached.revision,entities:Object.values(cached.entities),cursor:null}:action==='imports'?{revision:cached.revision,runs:[],nextCursor:null}:{status:'idle'};
+  return Response.json({ok:true,result});
+ };
+ const ui=await launch(t,{idb,fetcher,timers,modePreference:'cloud',hash:'#settings'}),legacy=ui.raw;await ui.click('view-tab',{tab:'drive'});
+ assert.match(ui.app.innerHTML,/復旧を要確認.*自動同期は停止中/);assert.doesNotMatch(ui.app.innerHTML,/Google Drive に保存済み/);
+ const at=requests.length;ui.document.hidden=false;
+ await ui.document.emit('visibilitychange');await ui.window.emit('online');timers.find(timer=>timer.delay===60000).callback();await Promise.resolve();
+ assert.equal(requests.length,at);assert.equal(idb.read().outbox.length,0);assert.equal(ui.raw,legacy);
+ assert.equal(ui.window.handlers.get('online').length,1,'there is only one online refresh listener');
+ await ui.click('cloud-sync');assert.equal(requests.length,at+2);assert.doesNotMatch(ui.app.innerHTML,/Google Drive に保存済み/);
+ failure=false;await ui.click('cloud-sync');assert.match(ui.app.innerHTML,/Google Drive に保存済み/);assert.equal(ui.raw,legacy);
+ await ui.window.emit('pagehide',{persisted:false});assert.equal(timers.length,0);assert.equal(ui.window.handlers.get('online').length,0);
+});
+
+test('successful login with unready recovery leaves legacy state intact and explains that cloud data was not fetched',async t=>{
+ const original=Object.getOwnPropertyDescriptor(globalThis,'google');let callback;
+ Object.defineProperty(globalThis,'google',{configurable:true,value:{accounts:{id:{initialize(options){callback=options.callback;},renderButton(){}}}}});
+ t.after(()=>{if(original)Object.defineProperty(globalThis,'google',original);else delete globalThis.google;});
+ const fetcher=async path=>{
+  if(path==='/api/auth/session')return Response.json({ok:true,authenticated:false});
+  if(path==='/api/auth/challenge')return Response.json({ok:true,clientId:'test-client',nonce:'test-nonce',csrf:'test'});
+  if(path==='/api/auth/login')return Response.json({ok:true,authenticated:true,csrf:'test'});
+  return Response.json({ok:false,error:'STORE_YIELD',retryable:true},{status:503});
+ };
+ const ui=await launch(t,{idb:indexedDBDouble(),fetcher,hash:'#settings',timers:[]}),legacy=ui.raw;
+ await ui.click('view-tab',{tab:'drive'});await ui.click('cloud-login');await callback({credential:'test-credential'});
+ assert.equal(ui.editor.open,false);assert.equal(ui.raw,legacy);assert.equal(ui.writes,0);
+ assert.match(ui.notice.innerHTML,/クラウドの記録はまだ取得できていません/);assert.match(ui.app.innerHTML,/今すぐ同期/);
+ assert.doesNotMatch(ui.app.innerHTML,/Google Drive に保存済み/);assert.match(ui.app.innerHTML,/このブラウザーのみ/);
 });

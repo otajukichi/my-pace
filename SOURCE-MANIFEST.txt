@@ -6,3 +6,5 @@ Validate: sha256sum -c SOURCE-MANIFEST.sha256
 Local mock/static evidence is in TEST-REPORT.md; live browser/Google/Vercel gates remain.
 
 2026-10-07 daily-scenes visual redesign: latest local source plus GAS compatibility repair and OAuth disclosure pages. See UI-DESIGN.md and REDESIGN-TEST-REPORT.md. Runtime/security/storage sources and disclosure policy texts remain unchanged by this design patch. Browser visual signoff is pending.
+
+2026-10-07 STORE_YIELD recovery patch: authenticated frame-prefix progress, bounded owner web-sync preparation, manual settlement reserve, and per-page retry feedback. Baseline: delivered journal design (remote d5ffb3d). See STORE-YIELD-FIX.md and storage/FRAME-RECOVERY.md. Live Google/Vercel acceptance remains a separate gate.

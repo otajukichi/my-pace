@@ -1060,6 +1060,9 @@ const CHECKPOINT_HINT_PROTOCOL='mypace-checkpoint-hint-v1';
 // Same authenticated fixed-ID envelope, explicitly different semantics: this
 // certifies only a traversed INDEX prefix, never recovered business state.
 const INDEX_SCAN_HINT_PROTOCOL='mypace-index-scan-hint-v1';
+// Owner recovery attests a fully verified immutable frame prefix. Roots and
+// receipts remain in the referenced immutable frame, never in mutable advice.
+const FRAME_SCAN_HINT_PROTOCOL='mypace-frame-scan-hint-v1';
 const CHECKPOINT_HINT_MAX_BYTES=4096;
 const CHECKPOINT_HINT_DOMAIN='MyPace/Drive/checkpoint-hint/HMAC-SHA256/v1\n';
 const hash=x=>typeof x==='string'&&/^[0-9a-f]{64}$/.test(x);
@@ -1097,7 +1100,7 @@ function createGasCheckpointHintCodec({Utilities,secret}={}){
  }});
 }
 
-return {CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL,CHECKPOINT_HINT_MAX_BYTES,CHECKPOINT_HINT_DOMAIN,createCheckpointHintCodec,createGasCheckpointHintCodec};
+return {CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL,FRAME_SCAN_HINT_PROTOCOL,CHECKPOINT_HINT_MAX_BYTES,CHECKPOINT_HINT_DOMAIN,createCheckpointHintCodec,createGasCheckpointHintCodec};
 })();
 const m6 = (function(){
 /**
@@ -1129,7 +1132,7 @@ const m6 = (function(){
  * safe legacy admission limit. Receipts and revision proofs are never purged.
  * Referenced shards are verified on bounded traversal, not by a full-store scrub.
  */
-const {CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL} = m5;
+const {CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL,FRAME_SCAN_HINT_PROTOCOL} = m5;
 const {IncrementalSha256, encodeUtf8, decodeUtf8} = m1;
 
 const WRITER_PROTOCOL = 'mypace-reserved-v1';
@@ -1418,9 +1421,11 @@ class ReservedSlotWriter {
   }
   recoveryBarrier(options={}) {
     if(this._recovering)fail('WRITER_RECOVERY_REENTRANT');
-    this._recovering=true;
-    try{return this._recover(options);}catch(error){this._state=null;this._cache.clear();this._verifiedPhase=null;throw error;}
-    finally{this._recovering=false;}
+    this._recovering=true;this._persistFrameProgress=options.persistFrameProgress===true;this._frameProgress=null;this._frameProgressStart=0;
+    try{return this._recover(options);}catch(error){
+      if(this._frameProgress&&['STORE_YIELD','OWNER_BUDGET_YIELD','IMPORT_YIELD'].includes(error.code||error.message))Object.assign(error,{recoveryPhase:'frames',recoveredRevision:this._frameProgress.revision,cursorPersisted:true,cursorAdvanced:this._frameProgress.revision>this._frameProgressStart});
+      this._state=null;this._cache.clear();this._verifiedPhase=null;throw error;
+    }finally{this._recovering=false;this._persistFrameProgress=false;}
   }
   _hintPayload(ref,indexLinks=this._state.indexLinks,protocol=CHECKPOINT_HINT_PROTOCOL){const s=this._state;return {protocol,anchorId:this.anchorId,anchorHash:s.anchorHash,hintFileId:this.checkpointHintId,storeId:this.storeId,writerScriptId:this.writerScriptId,schemaVersion:this.schemaVersion,datasetGeneration:s.datasetGeneration,indexRef:ref,indexLinks};}
   _writeCheckpointHint(ref){
@@ -1442,9 +1447,39 @@ class ReservedSlotWriter {
     if(!this.checkpointHintCodec)return null;
     let payload;
     try{const bytes=this.io.readCheckpointHint();if(bytes===null)return null;payload=this.checkpointHintCodec.decode(bytes);}catch(error){if(error?.message==='STORE_YIELD'||error?.message==='STORE_LOCK_REQUIRED')throw error;return null;}
-    const s=this._state;
-    if(!payload||Object.keys(payload).sort().join(',')!=='anchorHash,anchorId,datasetGeneration,hintFileId,indexLinks,indexRef,protocol,schemaVersion,storeId,writerScriptId'||![CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL].includes(payload.protocol)||payload.anchorId!==this.anchorId||payload.anchorHash!==s.anchorHash||payload.hintFileId!==this.checkpointHintId||payload.storeId!==this.storeId||payload.writerScriptId!==this.writerScriptId||payload.schemaVersion!==this.schemaVersion||payload.datasetGeneration!==s.datasetGeneration||!refOk(payload.indexRef)||!payload.indexRef||!integer(payload.indexLinks)||payload.indexLinks<1)return null;
+    const s=this._state,base='anchorHash,anchorId,datasetGeneration,hintFileId,indexLinks,indexRef,protocol,schemaVersion,storeId,writerScriptId';
+    if(!payload||payload.anchorId!==this.anchorId||payload.anchorHash!==s.anchorHash||payload.hintFileId!==this.checkpointHintId||payload.storeId!==this.storeId||payload.writerScriptId!==this.writerScriptId||payload.schemaVersion!==this.schemaVersion||payload.datasetGeneration!==s.datasetGeneration||!refOk(payload.indexRef)||!integer(payload.indexLinks))return null;
+    if(payload.protocol===FRAME_SCAN_HINT_PROTOCOL){
+      if(Object.keys(payload).sort().join(',')!==(base+',frameRef,frameRevision,replayFrames').split(',').sort().join(',')||!refOk(payload.frameRef)||!payload.frameRef||!integer(payload.frameRevision)||payload.frameRevision<1||!integer(payload.replayFrames)||payload.replayFrames<1||payload.replayFrames>this.limits.maxReplayFrames||(payload.indexRef===null)!==(payload.indexLinks===0))return null;
+    }else if(![CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL].includes(payload.protocol)||Object.keys(payload).sort().join(',')!==base||!payload.indexRef||payload.indexLinks<1)return null;
     return payload;
+  }
+  _writeFrameScanHint(){
+    const s=this._state;
+    if(!this._persistFrameProgress||!this.checkpointHintCodec||s.revision<1||this._frameProgress?.revision===s.revision)return false;
+    const payload={...this._hintPayload(s.indexHead,s.indexLinks,FRAME_SCAN_HINT_PROTOCOL),frameRef:{id:s.headId,hash:s.headHash},frameRevision:s.revision,replayFrames:s.replayFrames};
+    try{this.io.writeCheckpointHint(this.checkpointHintCodec.encode(payload));this._hintRef=null;this._frameProgress={revision:s.revision};return true;}
+    catch(_){return false;} // Only confirmed progress is reported; advice never acknowledges a write.
+  }
+  _restoreFramePrefix(hint,last){
+    if(hint?.protocol!==FRAME_SCAN_HINT_PROTOCOL||!equal(hint.indexRef,last?pointer(last):null)||hint.indexLinks!==this._state.indexLinks)return false;
+    if(last){
+      // Even an authenticated later prefix must retain the current checkpoint's
+      // mandatory manifest/publication/INDEX proof. Do not overwrite the useful
+      // frame cursor with older advice while checking that publication.
+      this._hintRef=pointer(last);
+      const witness=last.payload.publishingFrame;
+      this._frame(this._read(witness.id,'frame',{id:witness.id,hash:witness.hash}),'recovery');
+    }
+    const f=this._read(hint.frameRef.id,'frame',hint.frameRef),p=f.payload,s=this._state;
+    // The owner signature attests that this exact immutable frame AND all of
+    // its transitions/references were already verified. Re-read/hash/identity
+    // validation is mandatory; a missing signed witness never falls back.
+    const cut=last?last.payload.cut.revision:0;
+    if(!p||Object.keys(p).sort().join(',')!=='acceptedEpochs,changes,checkpoint,committedAt,datasetGeneration,nextSlotId,operation,parent,receiptRoot,references,result,revision,stateRoot'||p.datasetGeneration!==s.datasetGeneration||p.revision!==hint.frameRevision||p.revision<=cut||hint.replayFrames!==p.revision-cut||!validId(p.nextSlotId)||p.nextSlotId===f.id||!refOk(p.stateRoot)||!refOk(p.receiptRoot))fail('WRITER_FRAME_HINT_INVALID');
+    this._epochs(p.acceptedEpochs);
+    Object.assign(s,{revision:p.revision,headId:f.id,headHash:f.hash,nextSlotId:p.nextSlotId,stateRoot:p.stateRoot,receiptRoot:p.receiptRoot,headReceipt:this._receiptFor(f),acceptedEpochs:p.acceptedEpochs.slice(),replayFrames:hint.replayFrames});
+    this._frameProgress={revision:p.revision};this._frameProgressStart=p.revision;this._hintRef=null;return true;
   }
   _restoreIndex(link,next,indexLinks){
     const p=link.payload,m=this._manifest(p.manifestRef,p.cut);
@@ -1463,8 +1498,8 @@ class ReservedSlotWriter {
     this._state={anchorHash:anchor.hash,datasetGeneration:a.datasetGeneration,revision:0,headId:anchor.id,headHash:anchor.hash,nextSlotId:a.firstSlotId,stateRoot:null,receiptRoot:null,headReceipt:null,acceptedEpochs:a.acceptedEpochs.slice(),indexHead:null,nextIndexId:a.firstIndexId,checkpoint:null,replayFrames:0,indexLinks:0};
     let next=a.firstIndexId,previous=null,last=null,previousCut=-1,count=0,scanned=0;const seen=new Set();
     const hint=this._authenticatedHint();
-    if(hint){
-      // Both hint protocols attest ONLY a verified immutable INDEX prefix. Do
+    if(hint?.indexRef){
+      // INDEX-bearing hint protocols attest ONLY a verified immutable INDEX prefix. Do
       // not open its historical manifest/publication: those may be retired.
       // An authenticated referenced INDEX itself may never silently disappear.
       const link=this._read(hint.indexRef.id,'checkpoint-index',hint.indexRef),p=link.payload;
@@ -1494,6 +1529,7 @@ class ReservedSlotWriter {
     }
     this._state.indexLinks=count;
     if(last)this._restoreIndex(last,next,count);
+    this._restoreFramePrefix(hint,last);
     const result=this._recoverTail(minimumAcknowledged,last?last.payload.publishingFrame.revision:null);
     this._verifiedPhase=phase;return result;
   }
@@ -1501,15 +1537,18 @@ class ReservedSlotWriter {
   _recoverTail(minimumAcknowledged,requiredPublicationRevision=null,replayed=0) {
     const s=this._state;let minSeen=minimumAcknowledged?this._minimumAtState(minimumAcknowledged):true;
     const frameSeen=new Set();
-    while(true){if(frameSeen.has(s.nextSlotId))fail('WRITER_FRAME_CYCLE');frameSeen.add(s.nextSlotId);const f=this._read(s.nextSlotId,'frame',null,true);if(!f)break;if(replayed++>=this.limits.maxReplayFrames||s.replayFrames>=this.limits.maxReplayFrames)fail('WRITER_REPLAY_BUDGET');this._frame(f,'recovery');if(minimumAcknowledged&&this._minimumAtState(minimumAcknowledged))minSeen=true;}
+    while(true){if(frameSeen.has(s.nextSlotId))fail('WRITER_FRAME_CYCLE');frameSeen.add(s.nextSlotId);const f=this._read(s.nextSlotId,'frame',null,true);if(!f)break;if(replayed++>=this.limits.maxReplayFrames||s.replayFrames>=this.limits.maxReplayFrames)fail('WRITER_REPLAY_BUDGET');this._frame(f,'recovery');if(replayed===1||replayed%4===0)this._writeFrameScanHint();if(minimumAcknowledged&&this._minimumAtState(minimumAcknowledged))minSeen=true;}
     if(requiredPublicationRevision!==null&&s.revision<requiredPublicationRevision)fail('WRITER_MISSING_PUBLICATION_FRAME');
     if(minimumAcknowledged&&!minSeen){const r=minimumAcknowledged;const known=this._lookup(s.receiptRoot,'receipts','@revision:'+r.revision);if(!known||known.revision!==r.revision||known.hash!==r.hash)fail('WRITER_ACKNOWLEDGEMENT_UNPROVEN');}
+    this._writeFrameScanHint();
     return this._statusSnapshot();
   }
   _minimumAtState(min) {
     if(!min||!integer(min.revision)||!digestOk(min.hash))fail('WRITER_ACKNOWLEDGEMENT_INVALID');
     if(min.revision===this._state.revision){if(min.hash!==this._state.headHash)fail('WRITER_ACKNOWLEDGEMENT_MISMATCH');return true;}return false;
   }
+  // Diagnostic only: a signed verified prefix is not an available business state.
+  recoveryProgress() {this._guard();return this._frameProgress?{recoveredRevision:this._frameProgress.revision,cursorPersisted:true,cursorAdvanced:this._frameProgress.revision>this._frameProgressStart}: {recoveredRevision:null,cursorPersisted:false,cursorAdvanced:false};}
   status() {this._assertReady();return this._statusSnapshot();}
   _statusSnapshot() {const s=this._state;return clone({storeId:this.storeId,datasetGeneration:s.datasetGeneration,revision:s.revision,headId:s.headId,headHash:s.headHash,nextSlotId:s.nextSlotId,checkpoint:s.checkpoint,stateRoot:s.stateRoot,receiptRoot:s.receiptRoot,headReceipt:s.headReceipt,acceptedEpochs:s.acceptedEpochs,indexHead:s.indexHead,nextIndexId:s.nextIndexId,indexLinks:s.indexLinks,replayFrames:s.replayFrames});}
   _command(command) {
@@ -2178,6 +2217,28 @@ function createGasImportRuntime(globals,config){
 return {createGasImportRuntime};
 })();
 const m11 = (function(){
+// Explicit owner repair only. It never imports CSV, changes store identity,
+// deletes history or changes application entities. Repeated completed calls are
+// no-ops; ambiguous checkpoint commits are resolved through existing recovery.
+const {writerDigest} = m6;
+function prepareWebRead(runtime){
+ if(!runtime?.writer||typeof runtime.locked!=='function')throw Error('WEB_PREPARATION_CONFIG');
+ return runtime.locked(()=>{
+  const writer=runtime.writer;writer.recoveryBarrier({persistFrameProgress:true});
+  const before=writer.status(),progress=writer.recoveryProgress();let sealed=false;
+  if(before.replayFrames>1){
+   const identity={kind:'web-read-quiescent',storeId:before.storeId,generation:before.datasetGeneration,headId:before.headId,headHash:before.headHash,revision:before.revision};
+   try{writer.checkpoint({operationId:'web_ready_'+before.revision+'_'+before.headHash.slice(0,24),epoch:before.acceptedEpochs[before.acceptedEpochs.length-1],digest:writerDigest(identity),result:{webReadPrepared:true,cutRevision:before.revision}});}
+   catch(error){if(['STORE_YIELD','OWNER_BUDGET_YIELD','IMPORT_YIELD'].includes(error.code||error.message)&&progress.cursorPersisted)Object.assign(error,progress,{recoveryPhase:'seal'});throw error;}
+   sealed=true;
+  }
+  return {sealed,storage:writer.status()};
+ });
+}
+
+return {prepareWebRead};
+})();
+const m12 = (function(){
 /**
  * Server-internal owner provisioning for the EXISTING authorized Apps Script.
  * Not an HTTP handler, public RPC, trigger installer or OAuth setup flow.
@@ -2374,7 +2435,7 @@ function createOwnerBootstrap(globals,options){
 
 return {OWNER_STORE_PROPERTY,OWNER_BOOTSTRAP_PROTOCOL,parsePinnedOwnerStoreConfig,createOwnerBootstrap};
 })();
-const m12 = (function(){
+const m13 = (function(){
 // Fixed-size, owner-private advisory source-discovery cursor. This is not an
 // app/job checkpoint. Loss or invalid authentication restarts source discovery;
 // only the immutable import protocol may register, resume or publish a job.
@@ -2440,7 +2501,7 @@ function createDiscoveryStateIO(globals,config,{checkBudget=()=>true,now=()=>Dat
 
 return {DISCOVERY_STATE_PROTOCOL,DISCOVERY_STATE_MAX_BYTES,createDiscoveryStateCodec,createGasDiscoveryStateCodec,createDiscoveryStateIO};
 })();
-const m13 = (function(){
+const m14 = (function(){
 // Read-only completion reconciliation. CacheService holds a short-lived throttle,
 // never jobs, pagination progress, app data, source snapshots, or authority.
 const {encodeUtf8} = m1;
@@ -2523,14 +2584,14 @@ function createIdleScanThrottle(globals,config,{now,intervalMs}){
 
 return {RECONCILIATION_LIMITS,importDirectoryVersion,sourceIsCurrentlySettled,completedQueueIsSettled,reconcileCompletedSources,createIdleScanThrottle};
 })();
-const m14 = (function(){
+const m15 = (function(){
 // Owner-editor only. No web handler, timer, trigger installer, or ambient work.
 const {createGasImportRuntime} = m10;
 const {encodeUtf8} = m1;
 const {hashAssetBytes} = m4;
 const {importKeys} = m8;
-const {createDiscoveryStateIO} = m12;
-const {RECONCILIATION_LIMITS,importDirectoryVersion,completedQueueIsSettled,reconcileCompletedSources,createIdleScanThrottle} = m13;
+const {createDiscoveryStateIO} = m13;
+const {RECONCILIATION_LIMITS,importDirectoryVersion,completedQueueIsSettled,reconcileCompletedSources,createIdleScanThrottle} = m14;
 const KEY='import/owner-scheduler';
 const hash=x=>hashAssetBytes(encodeUtf8(JSON.stringify(x)));
 const fail=c=>{throw Error(c);};
@@ -2563,10 +2624,12 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
  if(!Number.isSafeInteger(settleCalls)||settleCalls<16||settleCalls>256)fail('OWNER_SETTLE_CALLS_INVALID');
  if(!Number.isSafeInteger(scanIntervalMs)||scanIntervalMs<0||scanIntervalMs>86400000)fail('OWNER_SCAN_INTERVAL_INVALID');
  for(const k of Object.keys(OWNER_LIMITS))if(!Number.isSafeInteger(limits[k])||limits[k]<1||limits[k]>OWNER_LIMITS[k])fail('OWNER_LIMITS_INVALID');
- reserveMs=reserveMs??Math.min(15000,Math.floor(limits.runtimeMs/8));
+ // Manual work also needs enough closing time for the final durable status
+ // and a quiescent checkpoint, even when a service call is slow.
+ reserveMs=reserveMs??(scheduledPolicy?Math.min(15000,Math.floor(limits.runtimeMs/8)):Math.min(30000,Math.floor(limits.runtimeMs/4))); 
  if(!Number.isSafeInteger(reserveMs)||reserveMs<0||reserveMs>limits.runtimeMs/2)fail('OWNER_RESERVE_INVALID');
  if(scheduledPolicy&&(!Number.isSafeInteger(scheduledPolicy.sliceMs)||scheduledPolicy.sliceMs<30000||scheduledPolicy.sliceMs>60000||!Number.isSafeInteger(scheduledPolicy.rangeBytes)||scheduledPolicy.rangeBytes<1||scheduledPolicy.rangeBytes>1048576||(!Number.isSafeInteger(scheduledPolicy.maxFreshOutputs)||scheduledPolicy.maxFreshOutputs<1||scheduledPolicy.maxFreshOutputs>64)||scheduledPolicy.maxStalls!==3||(scheduledPolicy.catchUp!==undefined&&typeof scheduledPolicy.catchUp!=='boolean')||limits.runtimeMs!==OWNER_LIMITS.runtimeMs||reserveMs>=scheduledPolicy.sliceMs))fail('OWNER_SCHEDULED_POLICY_INVALID');
- const meter=meteredGas(globals,{now,limits,deadlineMs,reserveMs,reserveCalls:scheduledPolicy?settleCalls:0});
+ const meter=meteredGas(globals,{now,limits,deadlineMs,reserveMs,reserveCalls:Math.min(settleCalls,Math.floor(limits.calls/2))});
  if(scheduledPolicy&&!scheduledPolicy.catchUp)meter.setRuntimeMs(scheduledPolicy.sliceMs);
  const runtime=createGasImportRuntime(meter.globals,{...config,checkBudget:meter.checkBudget,deadlineMs:scheduledPolicy?undefined:meter.deadlineMs,protocolReadCache:{mode:'lock-phase'}});
  const {writer,store,runner,source,locked}=runtime;
@@ -2698,7 +2761,12 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
   // Each reservation gets its own quiescent cut. Reusing a scan-only operation
   // ID would replay an old receipt instead of sealing later progress. The cut
   // is authoritative Drive state; the optional hint only accelerates finding it.
-  const seal=()=>writer.checkpoint({operationId:'owner_slice_'+hash([s.scanId,entry.version]),epoch:'default',digest:hash(['scheduled-quiescent',s.scanId,entry.version]),result:{scanId:s.scanId,reservationVersion:entry.version}});
+  const reservationVersion=entry.version;
+  const seal=()=>writer.checkpoint({operationId:'owner_slice_'+hash([s.scanId,reservationVersion]),epoch:'default',digest:hash(['scheduled-quiescent',s.scanId,reservationVersion]),result:{scanId:s.scanId,reservationVersion}});
+  const manualSealedView=()=>{
+   try{seal();return {...view(s),checkpointReady:true};}
+   catch(error){return {...view(s),checkpointReady:false,checkpointError:/^[A-Z0-9_]{1,80}$/.test(error.code||error.message)?error.code||error.message:'CHECKPOINT_PENDING',requiresOwnerAction:true};}
+  }; 
   try{
    if(startNew)store.beginScan({operationId:'owner_begin_'+s.generation,scanId:s.scanId});
    // Repair an interruption after scheduler reservation but before scan creation.
@@ -2727,8 +2795,8 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
    }
    // Seal a quiescent import cut before the final scheduler frame. Cold app
    // reads then replay only the checkpoint publication plus this finish frame.
-   if(s.status==='complete'){s.completedDirectoryVersion=importDirectoryVersion(writer);s.completedAt=now();s.error=null;s.attempt=0;s.retryAt=0;if(scheduledPolicy)s.processingMode='idle';if(!scheduledPolicy)writer.checkpoint({operationId:'owner_checkpoint_'+s.scanId,epoch:'default',digest:hash(['owner-import-complete',s.scanId]),result:{scanId:s.scanId,complete:true}});}
-   settle();if(scheduledPolicy)seal();entry=write(entry,s,'finish');return view(s);
+   if(s.status==='complete'){s.completedDirectoryVersion=importDirectoryVersion(writer);s.completedAt=now();s.error=null;s.attempt=0;s.retryAt=0;if(scheduledPolicy)s.processingMode='idle';}
+   settle();if(scheduledPolicy)seal();entry=write(entry,s,'finish');return scheduledPolicy?view(s):manualSealedView();
   }catch(e){
    // Retain the exact scan/job cursor and all pins. Changed/missing sources,
    // unsupported identities and structural faults require owner review.
@@ -2737,8 +2805,8 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
    const retry=e.retryable===true||(code==='RETRY_EXHAUSTED'&&[403,429,500,502,503,504].includes(e.status))||['IMPORT_YIELD','TRANSPORT_YIELD','STORE_YIELD','OWNER_BUDGET_YIELD','RATE_LIMITED','DRIVE_REQUEST_FAILED','WRITER_BUSY'].includes(code);
    s.resumeStatus=s.status;s.status=retry?'retry':'blocked';s.attempt=Math.min(10,s.attempt+1);s.retryAt=retry?now()+Math.min(3600000,1000*2**s.attempt):0;
    s.error=/^[A-Z0-9_]{1,80}$/.test(code)?code:'OWNER_OPERATION_FAILED';
-   settle();try{if(scheduledPolicy)seal();write(entry,s,'error');}catch(_){return {...view(s),errorPersisted:false};}
-   return {...view(s),errorPersisted:true};
+   settle();try{if(scheduledPolicy)seal();entry=write(entry,s,'error');}catch(_){return {...view(s),errorPersisted:false};}
+   return {...(scheduledPolicy?view(s):manualSealedView()),errorPersisted:true};
   }
  });}
  // Review acknowledgement retries the same source/cursor. It never discards or
@@ -2773,15 +2841,15 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
 
 return {OWNER_LIMITS,deriveImportBudgetWait,meteredGas,createOwnerScheduler};
 })();
-const m15 = (function(){
+const m16 = (function(){
 // Trusted owner time-trigger boundary. No HTTP dispatcher, trigger installer,
 // background work on load, or progress in ScriptProperties. Event shape rejects
 // accidental/wrong entry paths; it is NOT authentication. The actual effective
 // execution identity and immutable script/store pins remain authoritative.
-const {OWNER_STORE_PROPERTY,parsePinnedOwnerStoreConfig} = m11;
+const {OWNER_STORE_PROPERTY,parsePinnedOwnerStoreConfig} = m12;
 const {createGasCheckpointHintCodec} = m5;
-const {createGasDiscoveryStateCodec} = m12;
-const {createOwnerScheduler,OWNER_LIMITS} = m14;
+const {createGasDiscoveryStateCodec} = m13;
+const {createOwnerScheduler,OWNER_LIMITS} = m15;
 const SCHEDULED_OWNER_EMAIL='yakitorihanbagu0412@gmail.com';
 const SCHEDULED_DEFAULTS=Object.freeze({sliceMs:60000,calls:750,steps:3,rangeBytes:1048576,scanIntervalMs:3600000,catchUp:true});
 const fail=code=>{const e=Error(code);e.code=code;throw e;};
@@ -2838,14 +2906,14 @@ function createScheduledImportRuntime(globals,options={}){
 
 return {SCHEDULED_OWNER_EMAIL,SCHEDULED_DEFAULTS,createScheduledImportRuntime};
 })();
-const m16 = (function(){
+const m17 = (function(){
 // Authenticated dispatcher read adapter. Cursors must be authenticated by the
 // trusted caller; no Drive file ID or checkpoint reference is accepted from UI.
 const {importKeys} = m8;
 const {decodeUtf8,encodeUtf8} = m1;
 const {LIMITS} = m2;
 const ROUTE_POINTS=1024,ROUTE_BYTES=262144,ROUTE_HEADROOM=32768;
-const {deriveImportBudgetWait,OWNER_LIMITS} = m14;
+const {deriveImportBudgetWait,OWNER_LIMITS} = m15;
 const fail=c=>{throw Error(c);};
 const token=(x,max=100)=>typeof x==='string'&&x.length>0&&x.length<=max&&/^[A-Za-z0-9_-]+$/.test(x);
 const scalar=(x,min=0)=>Number.isSafeInteger(x)&&x>=min;
@@ -2942,7 +3010,7 @@ function createImportReader({runtime,sealCursor,openCursor,now=()=>Date.now()}){
 
 return {createImportReader};
 })();
-return Object.assign({},m0,m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16);
+return Object.assign({},m0,m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17);
 })();
 
 // Paste this complete kit only into the existing owner-authorized Apps Script
@@ -3023,6 +3091,37 @@ function MyPaceRecoverStorage() {
     var code=error&& (error.code||error.message);
     if(code==='WRITER_RECOVERY_PENDING')return myPaceOwnerReport_({status:'recovering',code:code,indexLinks:error.indexLinks,scannedLinks:error.scannedLinks,cursorPersisted:error.cursorPersisted===true,nextAction:'Run MyPaceRecoverStorage again to continue bounded recovery.',usage:meter.usage()});
     if(['OWNER_BOOTSTRAP_YIELD','OWNER_BUDGET_YIELD','STORE_YIELD','IMPORT_YIELD'].indexOf(code)>=0)return myPaceOwnerReport_({status:'recovering',code:code,nextAction:'This bounded slice reached its work budget. Run MyPaceRecoverStorage again; keep the existing store configuration.',usage:meter.usage()});
+    return myPaceOwnerMaintenanceSetup_(error,meter);
+  }
+}
+
+// Run once after updating this same project to repair slow app cold reads.
+// It verifies existing history, saves authenticated recovery progress, and only
+// then appends a no-business-change checkpoint. Never starts/resets CSV import.
+function MyPacePrepareWebSync() {
+  var meter=MyPaceFolderImport.meteredGas(myPaceOwnerGlobals_());
+  try {
+    var config=myPaceOwnerBootstrap_(meter).loadRecoveryConfiguration();
+    if(!config)throw new Error('OWNER_BOOTSTRAP_REQUIRED');
+    if(!config.checkpointHintId)throw new Error('OWNER_RECOVERY_CONFIGURATION_REQUIRED');
+    var runtimeConfig=myPaceOwnerRuntimeConfig_(meter.globals,config);
+    if(!runtimeConfig.checkpointHintCodec)throw new Error('OWNER_RECOVERY_SECRET_REQUIRED');
+    var common=Object.assign({},runtimeConfig,{checkBudget:meter.checkBudget,deadlineMs:meter.hardDeadlineMs,protocolReadCache:{mode:'lock-phase'}});
+    var result=MyPaceFolderImport.prepareWebRead(MyPaceFolderImport.createGasImportRuntime(meter.globals,common));
+    if(meter.hardDeadlineMs-Date.now()<20000)return myPaceOwnerReport_({status:'prepared',sealed:result.sealed,revision:result.storage.revision,replayFrames:result.storage.replayFrames,webProbe:'not-run',nextAction:'The existing history is verified and its recovery tail is prepared. Try one app sync; report its result if it is still blocked.',usage:meter.usage()});
+    var probeStarted=Date.now(),before=meter.usage(),cold=MyPaceFolderImport.createGasImportRuntime(meter.globals,Object.assign({},common,{writerLimits:{maxIndexScanLinks:8},deadlineMs:probeStarted+20000,checkBudget:function(){return meter.checkBudget()&&Date.now()-probeStarted<20000;}}));
+    try {
+      var state=cold.locked(function(){cold.writer.recoveryBarrier();return cold.writer.status();});
+      return myPaceOwnerReport_({status:'ready',sealed:result.sealed,revision:state.revision,replayFrames:state.replayFrames,webProbe:{scope:'cold-storage-recovery',ok:true,calls:meter.usage().calls-before.calls,elapsedMs:Date.now()-probeStarted},nextAction:'Return to the app and run sync once. CSV import remains at its saved position.',usage:meter.usage()});
+    } catch(probeError) {
+      var probeCode=probeError.code||probeError.message;
+      if(['STORE_YIELD','OWNER_BUDGET_YIELD','IMPORT_YIELD','WRITER_RECOVERY_PENDING'].indexOf(probeCode)<0)throw probeError;
+      return myPaceOwnerReport_({status:'web-budget-blocked',sealed:result.sealed,revision:result.storage.revision,replayFrames:result.storage.replayFrames,code:probeCode,webProbe:{scope:'cold-storage-recovery',ok:false,calls:meter.usage().calls-before.calls,elapsedMs:Date.now()-probeStarted},nextAction:'History is verified, but the cold web budget is still insufficient. Report this result; do not repeatedly sync or recreate the store.',usage:meter.usage()});
+    }
+  } catch(error) {
+    var code=error.code||error.message;
+    if(code==='WRITER_RECOVERY_PENDING')return myPaceOwnerReport_({status:'recovering',code:code,indexLinks:error.indexLinks,scannedLinks:error.scannedLinks,cursorPersisted:error.cursorPersisted===true,nextAction:'A bounded INDEX slice was checked. Continue only if its persisted cursor is advancing.',usage:meter.usage()});
+    if(['OWNER_BOOTSTRAP_YIELD','OWNER_BUDGET_YIELD','STORE_YIELD','IMPORT_YIELD'].indexOf(code)>=0)return myPaceOwnerReport_({status:error.cursorAdvanced===true?'recovering':'recovery-budget-blocked',code:code,recoveredRevision:error.recoveredRevision||null,cursorPersisted:error.cursorPersisted===true,cursorAdvanced:error.cursorAdvanced===true,nextAction:error.cursorAdvanced===true?'Verified frame progress was saved. Run MyPacePrepareWebSync again to continue.':'No new recovery cursor was confirmed. Report this result rather than repeating the same work.',usage:meter.usage()});
     return myPaceOwnerMaintenanceSetup_(error,meter);
   }
 }
