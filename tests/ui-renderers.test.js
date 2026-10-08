@@ -153,4 +153,10 @@ test('cloud import status distinguishes waiting, retry, blocked and measured pro
 
 test('daily work-admission wait remains visibly distinct from active import or completion',async()=>{const {importStatusText}=await import('../src/lib/cloud-panel.js');const text=importStatusText({status:'budget-wait',retryAt:Date.UTC(2026,9,8),lastJob:{progress:{rows:1234,points:1200}}});assert.match(text,/実行枠の回復待ち/);assert.match(text,/再開の目安/);assert.match(text,/1,234 行を処理/);assert.doesNotMatch(text,/今回の確認は完了|CSV を処理中|再試行予定/);});
 
-test('storage recovery and required owner setup have distinct actionable labels',async()=>{const {cloudStatus,cloudErrorText}=await import('../src/lib/cloud-panel.js');const view={conflicts:[],pending:2,authenticated:true};assert.match(cloudStatus({...view,error:'WRITER_RECOVERY_PENDING'},'cloud'),/履歴の復旧・再試行待ち.*未送信 2件/);assert.match(cloudErrorText('WRITER_RECOVERY_PENDING'),/今すぐ同期/);assert.match(cloudStatus({...view,error:'WRITER_RECOVERY_SETUP_REQUIRED'},'cloud'),/保存先の設定待ち/);assert.match(cloudErrorText('WRITER_RECOVERY_SETUP_REQUIRED'),/作り直さず/);});
+test('storage recovery and required owner setup have distinct actionable labels',async()=>{const {cloudStatus,cloudErrorText}=await import('../src/lib/cloud-panel.js');const view={conflicts:[],pending:2,authenticated:true};assert.match(cloudStatus({...view,error:'WRITER_RECOVERY_PENDING'},'cloud'),/少し待って再送します.*未送信 2件/);assert.match(cloudErrorText('WRITER_RECOVERY_PENDING'),/今すぐ同期/);assert.match(cloudStatus({...view,error:'WRITER_RECOVERY_SETUP_REQUIRED',automaticPaused:true},'cloud'),/送信に必要な設定を確認/);assert.match(cloudErrorText('WRITER_RECOVERY_SETUP_REQUIRED'),/作り直さず/);});
+
+test('an unavailable session check asks for connection rather than inventing a login requirement',async()=>{
+ const {cloudStatus}=await import('../src/lib/cloud-panel.js');const view={conflicts:[],pending:1,authenticated:false,errorPhase:'session'};
+ for(const error of ['OFFLINE','REQUEST_TIMEOUT','SERVER_UNAVAILABLE']){const text=cloudStatus({...view,error},'cloud');assert.match(text,/接続待ち.*未送信 1件/);assert.doesNotMatch(text,/再ログイン|Google Drive に保存済み/);}
+ assert.match(cloudStatus({...view,error:'AUTH_REQUIRED'},'cloud'),/再ログイン待ち/);
+});

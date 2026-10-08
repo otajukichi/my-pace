@@ -15,7 +15,7 @@ function myPaceOwnerRuntimeConfig_(globals,config) {
   if(!config.checkpointHintId&&!config.discoveryStateId) return config;
   var secret=globals.PropertiesService.getScriptProperties().getProperty('MYPACE_WRITER_SECRET');
   if(secret===null||secret===undefined||secret==='') return config;
-  return Object.assign({},config,config.checkpointHintId?{checkpointHintCodec:MyPaceFolderImport.createGasCheckpointHintCodec({Utilities:globals.Utilities,secret:secret})}:{},config.discoveryStateId?{discoveryStateCodec:MyPaceFolderImport.createGasDiscoveryStateCodec({Utilities:globals.Utilities,secret:secret})}:{});
+  return Object.assign({},config,config.checkpointHintId?{checkpointHintCodec:MyPaceFolderImport.createGasCheckpointHintCodec({Utilities:globals.Utilities,secret:secret}),preparationCodec:MyPaceFolderImport.createGasPreparationCodec({Utilities:globals.Utilities,secret:secret})}:{},config.discoveryStateId?{discoveryStateCodec:MyPaceFolderImport.createGasDiscoveryStateCodec({Utilities:globals.Utilities,secret:secret})}:{});
 }
 function myPaceOwnerReport_(result) { console.log(JSON.stringify(result)); return result; }
 function myPaceOwnerRun_(method) {

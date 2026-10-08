@@ -8,3 +8,9 @@ Local mock/static evidence is in TEST-REPORT.md; live browser/Google/Vercel gate
 2026-10-07 daily-scenes visual redesign: latest local source plus GAS compatibility repair and OAuth disclosure pages. See UI-DESIGN.md and REDESIGN-TEST-REPORT.md. Runtime/security/storage sources and disclosure policy texts remain unchanged by this design patch. Browser visual signoff is pending.
 
 2026-10-07 STORE_YIELD recovery patch: authenticated frame-prefix progress, bounded owner web-sync preparation, manual settlement reserve, and per-page retry feedback. Baseline: delivered journal design (remote d5ffb3d). See STORE-YIELD-FIX.md and storage/FRAME-RECOVERY.md. Live Google/Vercel acceptance remains a separate gate.
+
+2026-10-08 JST incremental sync candidate: source/API/GAS contract v2.
+Baseline: delivered STORE_YIELD repair, remote commit 4ff0b1c.
+Package status: qualified-release. No deployment or owner activation by this installer.
+The Drive format change requires separate owner approval and cannot be undone by local rollback.
+Real browser and live GAS/Drive qualification are separate from synthetic tests.

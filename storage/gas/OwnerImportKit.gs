@@ -2,6 +2,368 @@
 var MyPaceFolderImport = (function () {
 "use strict";
 const m0 = (function(){
+/** Pure, dependency-free domain rules. Calendar keys always use the device's local day. */
+const STATE_VERSION = 2;
+const LIMITS = Object.freeze({
+  backupChars: 12 * 1024 * 1024,
+  backupBytes: 12 * 1024 * 1024,
+  wakeDays: 36600,
+  habits: 100,
+  habitDays: 100000,
+  runs: 5000,
+  pointsPerRun: 20000,
+  totalPoints: 100000,
+  events: 20000,
+  eventTitle: 120,
+  eventNote: 2000,
+  diaryDays: 36600,
+  diaryText: 8000,
+});
+const DIARY_MOODS = Object.freeze(['bright', 'calm', 'tired', 'low']);
+const GARDEN_PLANTS = Object.freeze([
+  Object.freeze({ id: 'cosmos', label: 'コスモス', unlockAt: 0 }),
+  Object.freeze({ id: 'sunflower', label: 'ひまわり', unlockAt: 7 }),
+  Object.freeze({ id: 'hydrangea', label: 'あじさい', unlockAt: 21 }),
+]);
+const GARDEN_THEMES = Object.freeze([
+  Object.freeze({ id: 'day', label: '昼の庭' }),
+  Object.freeze({ id: 'dusk', label: '夕暮れの庭' }),
+  Object.freeze({ id: 'night', label: '夜の庭' }),
+]);
+const BAD_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const DATE_RE = /^(19\d{2}|20\d{2}|21\d{2}|2200)-(\d{2})-(\d{2})$/;
+const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const pad = (n) => String(n).padStart(2, '0');
+const fail = (message) => { throw new Error(message); };
+const has = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
+
+function createInitialState() {
+  return { version: STATE_VERSION, settings: { wakeTarget: null }, wake: {}, runs: [], habits: [], habitLogs: {},
+    events: [], diary: {}, garden: { plant: 'cosmos', theme: 'day' } };
+}
+
+function isDateKey(value) {
+  if (typeof value !== 'string') return false;
+  const match = DATE_RE.exec(value);
+  if (!match) return false;
+  const y = Number(match[1]), m = Number(match[2]), d = Number(match[3]);
+  const date = new Date(y, m - 1, d, 12);
+  return date.getFullYear() === y && date.getMonth() === m - 1 && date.getDate() === d;
+}
+
+function localDateKey(date = new Date()) {
+  if (!(date instanceof Date) || !Number.isFinite(date.getTime())) fail('日付が正しくありません。');
+  const key = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  if (!isDateKey(key)) fail('日付は1900〜2200年の範囲で入力してください。');
+  return key;
+}
+const dateKey = localDateKey;
+const todayKey = () => localDateKey();
+
+function addDays(key, count) {
+  if (!isDateKey(key) || !Number.isInteger(count) || Math.abs(count) > 36600) fail('日付の計算ができません。');
+  const [year, month, day] = key.split('-').map(Number);
+  // Noon avoids DST midnight transitions; setDate advances a calendar day, not 24 hours.
+  const date = new Date(year, month - 1, day, 12);
+  date.setDate(date.getDate() + count);
+  return localDateKey(date);
+}
+
+function trailingDateKeys(days, anchor = todayKey()) {
+  if (!Number.isInteger(days) || days < 1 || days > 36600 || !isDateKey(anchor)) fail('集計期間が正しくありません。');
+  const result = [anchor];
+  while (result.length < days && result[0] !== '1900-01-01') result.unshift(addDays(result[0], -1));
+  return result;
+}
+const recentDates = trailingDateKeys;
+
+function timeToMinutes(time) {
+  const match = typeof time === 'string' && TIME_RE.exec(time);
+  if (!match) fail('時刻はHH:mm形式で入力してください。');
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+function minutesToTime(minutes) {
+  if (!Number.isFinite(minutes)) return '—';
+  const value = ((Math.round(minutes) % 1440) + 1440) % 1440;
+  return `${pad(Math.floor(value / 60))}:${pad(value % 60)}`;
+}
+function formatDuration(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—';
+  const total = Math.round(seconds), hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60), remaining = total % 60;
+  return hours ? `${hours}:${pad(minutes)}:${pad(remaining)}` : `${minutes}:${pad(remaining)}`;
+}
+function formatPace(distanceKm, durationSec) {
+  if (!Number.isFinite(distanceKm) || distanceKm <= 0 || !Number.isFinite(durationSec) || durationSec <= 0) return '—';
+  return formatDuration(durationSec / distanceKm);
+}
+function makeId() {
+  return globalThis.crypto?.randomUUID?.() ?? `id-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+}
+
+function record(value, path, allowed) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${path}の形式が正しくありません。`);
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) fail(`${path}の形式が正しくありません。`);
+  for (const key of Object.keys(value)) {
+    if (BAD_KEYS.has(key) || (allowed && !allowed.includes(key))) fail(`${path}に未対応の項目があります。`);
+  }
+  return value;
+}
+function list(value, maximum, path) {
+  if (!Array.isArray(value) || value.length > maximum) fail(`${path}の件数または形式が正しくありません。`);
+  return value;
+}
+function text(value, max, path, allowEmpty = true) {
+  if (typeof value !== 'string' || value.length > max || (!allowEmpty && !value.trim())) fail(`${path}が正しくありません。`);
+  return value;
+}
+// Journal limits count Unicode code points, so an emoji gets the same capacity as a Japanese character.
+function journalText(value, max, path, allowEmpty = true) {
+  if (typeof value !== 'string' || (!allowEmpty && !value.trim())) fail(`${path}が正しくありません。`);
+  let count = 0;
+  for (const character of value) {
+    if (++count > max) fail(`${path}が正しくありません。`);
+  }
+  return value;
+}
+function identifier(value, path) {
+  if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,100}$/.test(value) || BAD_KEYS.has(value)) fail(`${path}が正しくありません。`);
+  return value;
+}
+function number(value, min, max, path, integer = false) {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) fail(`${path}が正しくありません。`);
+  return value;
+}
+function date(value, path) {
+  if (!isDateKey(value)) fail(`${path}が正しくありません。`);
+  return value;
+}
+function time(value, path) {
+  if (typeof value !== 'string' || !TIME_RE.test(value)) fail(`${path}が正しくありません。`);
+  return value;
+}
+
+/** Validate the complete object before replacing data. Returns a detached canonical copy. */
+function validateState(raw) {
+  record(raw, 'バックアップ');
+  if (raw.version !== 1 && raw.version !== STATE_VERSION) fail('このバックアップのバージョンには対応していません。');
+  const legacy = raw.version === 1;
+  record(raw, 'バックアップ', ['version', 'settings', 'wake', 'runs', 'habits', 'habitLogs',
+    ...(legacy ? [] : ['events', 'diary', 'garden'])]);
+  record(raw.settings, '設定', ['wakeTarget']);
+  const output = createInitialState();
+  output.settings.wakeTarget = raw.settings.wakeTarget === null ? null : time(raw.settings.wakeTarget, '目標時刻');
+  record(raw.wake, '起床記録');
+  if (Object.keys(raw.wake).length > LIMITS.wakeDays) fail('起床記録の件数が多すぎます。');
+  for (const [key, value] of Object.entries(raw.wake)) output.wake[date(key, '起床日')] = time(value, '起床時刻');
+  const habitIds = new Set();
+  output.habits = list(raw.habits, LIMITS.habits, '習慣').map((item) => {
+    record(item, '習慣', ['id', 'name', 'type', 'unit', 'target', 'archived']);
+    const id = identifier(item.id, '習慣ID');
+    if (habitIds.has(id)) fail('習慣IDが重複しています。');
+    habitIds.add(id);
+    if (!['check', 'number', 'time'].includes(item.type)) fail('習慣の種類が正しくありません。');
+    if (item.archived !== undefined && typeof item.archived !== 'boolean') fail('習慣の非表示設定が正しくありません。');
+    let target = item.target ?? null;
+    if (item.type === 'check') {
+      if (target !== null && target !== 1) fail('チェック習慣の目標が正しくありません。');
+      target = 1;
+    } else number(target, 0.001, 1000000, '習慣の目標');
+    return { id, name: text(item.name, 80, '習慣名', false), type: item.type,
+      unit: text(item.unit ?? (item.type === 'time' ? '分' : ''), 20, '単位'), target, archived: item.archived ?? false };
+  });
+  record(raw.habitLogs, '習慣記録');
+  const definitions = new Map(output.habits.map((habit) => [habit.id, habit]));
+  let logCount = 0;
+  for (const [id, logs] of Object.entries(raw.habitLogs)) {
+    identifier(id, '習慣ID');
+    if (!definitions.has(id)) fail('存在しない習慣の記録が含まれています。');
+    record(logs, '日々の習慣記録');
+    output.habitLogs[id] = {};
+    for (const [key, value] of Object.entries(logs)) {
+      if (++logCount > LIMITS.habitDays) fail('習慣記録の件数が多すぎます。');
+      date(key, '習慣の記録日');
+      if (definitions.get(id).type === 'check') {
+        if (typeof value !== 'boolean') fail('チェックの記録は真偽値にしてください。');
+      } else number(value, 0, 1000000, '習慣の記録');
+      output.habitLogs[id][key] = value;
+    }
+  }
+  const runIds = new Set();
+  let pointCount = 0;
+  output.runs = list(raw.runs, LIMITS.runs, 'ランニング記録').map((item) => {
+    record(item, 'ランニング記録', ['id', 'date', 'distanceKm', 'durationSec', 'note', 'points']);
+    const id = identifier(item.id, 'ランニングID');
+    if (runIds.has(id)) fail('ランニングIDが重複しています。');
+    runIds.add(id);
+    const points = list(item.points ?? [], LIMITS.pointsPerRun, 'ルート').map((point) => {
+      if (++pointCount > LIMITS.totalPoints) fail('ルートの合計点数が多すぎます。');
+      record(point, 'ルートの座標', ['lat', 'lon', 'segment', 'time']);
+      const copy = { lat: number(point.lat, -90, 90, '緯度'), lon: number(point.lon, -180, 180, '経度'),
+        segment: number(point.segment ?? 0, 0, LIMITS.pointsPerRun, '区間', true) };
+      if (point.time !== undefined) {
+        if (typeof point.time !== 'string' || point.time.length > 40 || !Number.isFinite(Date.parse(point.time))) fail('ルートの時刻が正しくありません。');
+        copy.time = new Date(point.time).toISOString();
+      }
+      return copy;
+    });
+    return { id, date: date(item.date, 'ランニング日'), distanceKm: number(item.distanceKm, 0.001, 10000, '距離'),
+      durationSec: number(item.durationSec, 1, 31 * 24 * 3600, '所要時間', true), note: text(item.note ?? '', 2000, 'メモ'), points };
+  });
+  if (!legacy) {
+    const eventIds = new Set();
+    output.events = list(raw.events, LIMITS.events, '予定').map((item) => {
+      record(item, '予定', ['id', 'date', 'time', 'title', 'note']);
+      const id = identifier(item.id, '予定ID');
+      if (eventIds.has(id)) fail('予定IDが重複しています。');
+      eventIds.add(id);
+      return { id, date: date(item.date, '予定の日付'),
+        time: item.time == null ? null : time(item.time, '予定の時刻'),
+        title: journalText(item.title, LIMITS.eventTitle, '予定のタイトル', false),
+        note: journalText(item.note ?? '', LIMITS.eventNote, '予定のメモ') };
+    });
+    record(raw.diary, '日記');
+    if (Object.keys(raw.diary).length > LIMITS.diaryDays) fail('日記の件数が多すぎます。');
+    for (const [key, entry] of Object.entries(raw.diary)) {
+      date(key, '日記の日付');
+      record(entry, '日記', ['text', 'mood']);
+      if (entry.mood != null && !DIARY_MOODS.includes(entry.mood)) fail('日記の気分が正しくありません。');
+      output.diary[key] = { text: journalText(entry.text, LIMITS.diaryText, '日記の本文'), mood: entry.mood ?? null };
+    }
+    record(raw.garden, '庭の設定', ['plant', 'theme']);
+    if (!GARDEN_PLANTS.some((item) => item.id === raw.garden.plant)) fail('庭の植物が正しくありません。');
+    if (!GARDEN_THEMES.some((item) => item.id === raw.garden.theme)) fail('庭のテーマが正しくありません。');
+    // Selection is retained even after deleting an earning record. Visibility is derived separately.
+    output.garden = { plant: raw.garden.plant, theme: raw.garden.theme };
+  }
+  return output;
+}
+
+// UTF-8 length with the same lone-surrogate replacement behavior as TextEncoder.
+// Pure ECMAScript: Apps Script has no browser Encoding API.
+function utf8ByteLength(text) {
+  let bytes = 0;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code < 0x80) bytes++;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < text.length &&
+             text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) { bytes += 4; i++; }
+    else bytes += 3;
+  }
+  return bytes;
+}
+
+function parseBackup(json) {
+  if (typeof json !== 'string' || json.length > LIMITS.backupChars || utf8ByteLength(json) > LIMITS.backupBytes) fail('バックアップは12MiB以下のJSONにしてください。');
+  let parsed;
+  try { parsed = JSON.parse(json); } catch { fail('JSONファイルを読み取れませんでした。'); }
+  return validateState(parsed);
+}
+function serializeBackup(state) {
+  const result = JSON.stringify(validateState(state), null, 2);
+  if (result.length > LIMITS.backupChars || utf8ByteLength(result) > LIMITS.backupBytes) fail('バックアップの容量が12MiBを超えています。');
+  return result;
+}
+
+/** Current streak includes today when completed, otherwise allows yesterday. Future keys are ignored. */
+function streak(dates, anchor = todayKey()) {
+  if (!isDateKey(anchor)) fail('基準日が正しくありません。');
+  const completed = new Set(Array.isArray(dates) || dates instanceof Set ? dates : Object.keys(dates ?? {}));
+  let cursor = anchor;
+  if (!completed.has(cursor)) {
+    if (cursor === '1900-01-01') return 0;
+    cursor = addDays(cursor, -1);
+  }
+  let count = 0;
+  while (completed.has(cursor)) {
+    count++;
+    if (cursor === '1900-01-01' || count >= LIMITS.wakeDays) break;
+    cursor = addDays(cursor, -1);
+  }
+  return count;
+}
+function wakeStreak(state, anchor = todayKey()) { return streak(Object.keys(state.wake), anchor); }
+function wakeStats(state, days = 7, anchor = todayKey()) {
+  const values = recentDates(days, anchor).filter((key) => has(state.wake, key)).map((key) => timeToMinutes(state.wake[key]));
+  const averageMinutes = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+  const target = state.settings.wakeTarget == null ? null : timeToMinutes(state.settings.wakeTarget);
+  const onTimeCount = target === null ? null : values.filter((value) => value <= target).length;
+  return { count: values.length, averageMinutes, averageTime: averageMinutes === null ? null : minutesToTime(averageMinutes),
+    earliest: values.length ? minutesToTime(Math.min(...values)) : null, latest: values.length ? minutesToTime(Math.max(...values)) : null,
+    streak: wakeStreak(state, anchor), onTimeCount, targetRate: values.length && target !== null ? onTimeCount / values.length : null };
+}
+function isHabitComplete(habit, value) {
+  if (habit.type === 'check') return value === true;
+  return typeof value === 'number' && Number.isFinite(value) && (habit.target == null ? value > 0 : value >= habit.target);
+}
+function habitStreak(state, habitId, anchor = todayKey()) {
+  const habit = state.habits.find((item) => item.id === habitId);
+  if (!habit) return 0;
+  return streak(Object.entries(state.habitLogs[habitId] ?? {}).filter(([, value]) => isHabitComplete(habit, value)).map(([key]) => key), anchor);
+}
+function habitStats(state, habitId, days = 7, anchor = todayKey()) {
+  const habit = state.habits.find((item) => item.id === habitId);
+  if (!habit) fail('習慣が見つかりません。');
+  const logs = state.habitLogs[habitId] ?? {};
+  const values = recentDates(days, anchor).filter((key) => has(logs, key)).map((key) => logs[key]);
+  const total = values.reduce((sum, value) => sum + Number(value), 0);
+  return { count: values.length, completed: values.filter((value) => isHabitComplete(habit, value)).length,
+    total, average: values.length ? total / values.length : null, streak: habitStreak(state, habitId, anchor) };
+}
+function upsertWake(state, key, value) {
+  return validateState({ ...state, wake: { ...state.wake, [key]: value } });
+}
+function upsertHabitLog(state, habitId, key, value) {
+  return validateState({ ...state, habitLogs: { ...state.habitLogs, [habitId]: { ...state.habitLogs[habitId], [key]: value } } });
+}
+
+/** Immutable journal edits always pass the same strict validation as backup imports. */
+function upsertEvent(state, event) {
+  const current = validateState(state);
+  return validateState({ ...current, events: [...current.events.filter((item) => item.id !== event?.id), event] });
+}
+function removeEvent(state, id) {
+  identifier(id, '予定ID');
+  const current = validateState(state);
+  return validateState({ ...current, events: current.events.filter((item) => item.id !== id) });
+}
+function upsertDiary(state, key, entry) {
+  date(key, '日記の日付');
+  const current = validateState(state);
+  return validateState({ ...current, diary: { ...current.diary, [key]: entry } });
+}
+function removeDiary(state, key) {
+  date(key, '日記の日付');
+  const current = validateState(state);
+  delete current.diary[key];
+  return current;
+}
+
+return {STATE_VERSION,LIMITS,DIARY_MOODS,GARDEN_PLANTS,GARDEN_THEMES,createInitialState,isDateKey,localDateKey,dateKey,todayKey,addDays,trailingDateKeys,recentDates,timeToMinutes,minutesToTime,formatDuration,formatPace,makeId,validateState,utf8ByteLength,parseBackup,serializeBackup,streak,wakeStreak,wakeStats,isHabitComplete,habitStreak,habitStats,upsertWake,upsertHabitLog,upsertEvent,removeEvent,upsertDiary,removeDiary};
+})();
+const m1 = (function(){
+const {createInitialState,validateState,isDateKey} = m0;
+const clone=x=>JSON.parse(JSON.stringify(x));
+function canonical(x){if(x===null||typeof x==='boolean'||typeof x==='string')return JSON.stringify(x);if(typeof x==='number'&&Number.isFinite(x))return JSON.stringify(x);if(Array.isArray(x))return '['+x.map(canonical).join(',')+']';if(x&&typeof x==='object'&&Object.getPrototypeOf(x)===Object.prototype)return '{'+Object.keys(x).sort().map(k=>JSON.stringify(k)+':'+canonical(x[k])).join(',')+'}';throw Error('INVALID_JSON');}
+function parseKey(key){
+ if(typeof key!=='string'||key.length>240)throw Error('ENTITY_KEY_INVALID');
+ const [kind,id,date,...rest]=key.split(':');if(rest.length)throw Error('ENTITY_KEY_INVALID');
+ if(['wake','diary'].includes(kind)&&isDateKey(id)&&date===undefined)return {kind,id};
+ if(['run','habit','event'].includes(kind)&&typeof id==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(id)&&!['constructor','prototype','__proto__'].includes(id)&&date===undefined)return {kind,id};
+ if(kind==='habitLog'&&typeof id==='string'&&/^[A-Za-z0-9_-]{1,100}$/.test(id)&&!['constructor','prototype','__proto__'].includes(id)&&isDateKey(date))return {kind,id,date};
+ if((kind==='settings'&&id==='wakeTarget'||kind==='garden'&&id==='preferences')&&date===undefined)return {kind,id};
+ throw Error('ENTITY_KEY_INVALID');
+}
+function stateToEntities(raw){const s=validateState(raw),out={};for(const [d,v] of Object.entries(s.wake))out['wake:'+d]=v;for(const k of ['run','habit','event'])for(const v of s[k==='run'?'runs':k==='habit'?'habits':'events'])out[k+':'+v.id]=v;for(const [id,days] of Object.entries(s.habitLogs))for(const [d,v]of Object.entries(days))out['habitLog:'+id+':'+d]=v;for(const [d,v]of Object.entries(s.diary))out['diary:'+d]=v;out['settings:wakeTarget']=s.settings.wakeTarget;out['garden:preferences']=s.garden;return out;}
+function entitiesToState(entities){const s=createInitialState();for(const [key,value]of Object.entries(entities)){const {kind,id,date}=parseKey(key);if(kind==='wake'||kind==='diary')s[kind][id]=clone(value);else if(kind==='run'||kind==='habit'||kind==='event')s[kind==='run'?'runs':kind==='habit'?'habits':'events'].push(clone(value));else if(kind==='habitLog'){if(!Object.prototype.hasOwnProperty.call(s.habitLogs,id))s.habitLogs[id]={};s.habitLogs[id][date]=value;}else if(kind==='settings')s.settings.wakeTarget=value;else s.garden=clone(value);}for(const id of Object.keys(s.habitLogs))if(!s.habits.some(h=>h.id===id))delete s.habitLogs[id];return validateState(s);}
+function validateEntity(key,value,habit){const p=parseKey(key),s=createInitialState();if(p.kind==='habitLog'){s.habits=[habit];s.habitLogs[p.id]={[p.date]:value};}else if(p.kind==='wake'||p.kind==='diary')s[p.kind][p.id]=value;else if(p.kind==='run'||p.kind==='habit'||p.kind==='event'){if(value?.id!==p.id)throw Error('ENTITY_ID_MISMATCH');s[p.kind==='run'?'runs':p.kind==='habit'?'habits':'events']=[value];}else if(p.kind==='settings')s.settings.wakeTarget=value;else s.garden=value;return stateToEntities(s)[key];}
+function diffEntities(before,after){const a=stateToEntities(before),b=stateToEntities(after);return [...new Set([...Object.keys(a),...Object.keys(b)])].filter(k=>canonical(a[k]===undefined?null:a[k])!==canonical(b[k]===undefined?null:b[k])||Object.prototype.hasOwnProperty.call(a,k)!==Object.prototype.hasOwnProperty.call(b,k)).map(key=>({key,deleted:!Object.prototype.hasOwnProperty.call(b,key),value:Object.prototype.hasOwnProperty.call(b,key)?b[key]:null}));}
+
+return {clone,canonical,parseKey,stateToEntities,entitiesToState,validateEntity,diffEntities};
+})();
+const m2 = (function(){
 // Local tested core. GAS adapter/Drive durable writer integration is deliberately not wired.
 const PARSER_VERSION = 'sensor-multi-v1';
 class CsvBytes {
@@ -82,7 +444,7 @@ async function commitBatch(io, {job, index, digest, output, checkpoint}) {
 
 return {PARSER_VERSION,CsvBytes,sensorRow,candidate,sourceKey,sourceUnchanged,commitBatch};
 })();
-const m1 = (function(){
+const m3 = (function(){
 /**
  * Portable Apps Script V8 primitives; no Node, TextDecoder, TextEncoder, Blob,
  * Utilities, Web Crypto, I/O, or dependencies. Remove ES-module `export` when
@@ -317,10 +679,10 @@ class IncrementalSha256 {
 
 return {decodeUtf8,encodeUtf8,IncrementalSha256};
 })();
-const m2 = (function(){
+const m4 = (function(){
 // Pure GAS V8-compatible preparation layer. No network, clocks, tokens or persistence.
-const {CsvBytes, sensorRow, sourceKey, PARSER_VERSION} = m0;
-const {decodeUtf8, encodeUtf8, IncrementalSha256} = m1;
+const {CsvBytes, sensorRow, sourceKey, PARSER_VERSION} = m2;
+const {decodeUtf8, encodeUtf8, IncrementalSha256} = m3;
 const LIMITS = Object.freeze({range:1048576,points:4096,output:262144,checkpoint:2097152,outputs:64,totalOutput:8388608});
 const BASE=['time','latitude','longitude','altitude','speed'];
 const EXT=['time','gFx','gFy','gFz','ax','ay','az','wx','wy','wz','P(Pa)','Bx(µT)','By(µT)','Bz(µT)','latitude','longitude','altitude','speed','yaw','pitch','roll'];
@@ -407,7 +769,7 @@ function buildStagedPayloads(prepared,{outputIds,manifestId,checkpointId}){
 
 return {LIMITS,MAPPING,mappingHash,checkpointPointLimit,initialCheckpoint,checkpointBytes,prepareRange,buildStagedPayloads};
 })();
-const m3 = (function(){
+const m5 = (function(){
 // GAS V8-compatible source reads only. Inject existing authorized services; this module
 // neither creates grants nor installs services/triggers. Keep these methods server-internal.
 // Official contracts: https://developers.google.com/workspace/drive/api/guides/manage-downloads
@@ -727,10 +1089,10 @@ function createDriveSourceTransport(globals, options = {}) {
 
 return {SOURCE_FOLDER_ID,MAX_RANGE_BYTES,SOURCE_FIELDS,TransportError,validateSourceIdentity,normalizeGasBytes,createDriveSourceTransport};
 })();
-const m4 = (function(){
+const m6 = (function(){
 // Local candidate only. This module does NOT supply the reserved-slot writer,
 // allocate file IDs, persist pins, or authorize a deployment.
-const {IncrementalSha256, encodeUtf8, decodeUtf8} = m1;
+const {IncrementalSha256, encodeUtf8, decodeUtf8} = m3;
 
 const MAX_OUTPUT_BYTES = 256 * 1024;
 const MAX_CHECKPOINT_BYTES = 2 * 1024 * 1024;
@@ -1052,10 +1414,10 @@ class ImportCheckpointCoordinator {
 
 return {MAX_OUTPUT_BYTES,MAX_CHECKPOINT_BYTES,MAX_MANIFEST_BYTES,hashAssetBytes,encodeBoundedJson,ImmutableAssetAdapter,createGasAssetMediaReader,MAX_BATCH_OUTPUT_ASSETS,MAX_BATCH_OUTPUT_BYTES,ImportCheckpointCoordinator};
 })();
-const m5 = (function(){
+const m7 = (function(){
 // Server-only authenticated acceleration. These bytes are never authoritative
 // state, an authentication credential, or a caller-selected recovery root.
-const {encodeUtf8,decodeUtf8} = m1;
+const {encodeUtf8,decodeUtf8} = m3;
 const CHECKPOINT_HINT_PROTOCOL='mypace-checkpoint-hint-v1';
 // Same authenticated fixed-ID envelope, explicitly different semantics: this
 // certifies only a traversed INDEX prefix, never recovered business state.
@@ -1063,6 +1425,9 @@ const INDEX_SCAN_HINT_PROTOCOL='mypace-index-scan-hint-v1';
 // Owner recovery attests a fully verified immutable frame prefix. Roots and
 // receipts remain in the referenced immutable frame, never in mutable advice.
 const FRAME_SCAN_HINT_PROTOCOL='mypace-frame-scan-hint-v1';
+// Emitted only by the managed runtime after full recovery, or after extending
+// an exact already-attested prefix. Distinct from older generic frame advice.
+const ATTESTED_FRAME_HINT_PROTOCOL='mypace-attested-frame-prefix-v1';
 const CHECKPOINT_HINT_MAX_BYTES=4096;
 const CHECKPOINT_HINT_DOMAIN='MyPace/Drive/checkpoint-hint/HMAC-SHA256/v1\n';
 const hash=x=>typeof x==='string'&&/^[0-9a-f]{64}$/.test(x);
@@ -1100,9 +1465,631 @@ function createGasCheckpointHintCodec({Utilities,secret}={}){
  }});
 }
 
-return {CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL,FRAME_SCAN_HINT_PROTOCOL,CHECKPOINT_HINT_MAX_BYTES,CHECKPOINT_HINT_DOMAIN,createCheckpointHintCodec,createGasCheckpointHintCodec};
+return {CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL,FRAME_SCAN_HINT_PROTOCOL,ATTESTED_FRAME_HINT_PROTOCOL,CHECKPOINT_HINT_MAX_BYTES,CHECKPOINT_HINT_DOMAIN,createCheckpointHintCodec,createGasCheckpointHintCodec};
 })();
-const m6 = (function(){
+const m8 = (function(){
+/**
+ * Small, server-only authenticated envelopes for resumable write preparation.
+ * Each purpose has its own HMAC domain and exact payload schema. Certificates
+ * bind a fully verified transition; progress only locates authenticated work;
+ * work envelopes bind the canonical digest of a separate immutable work page.
+ *
+ * Authentication does not replace the caller's store/anchor/descriptor/base
+ * checks. frameCoreHash omits only the frame's certificate field;
+ * workStateHash omits only the work page's authentication envelope. Those
+ * digests must be recomputed by the caller before trusting the bound content.
+ * Missing/invalid envelopes decode to null for independent full verification.
+ * No key generation, persistence, configuration writes, I/O or logging occurs.
+ * Portable to Apps Script V8; no Node, TextEncoder, or Web Crypto dependency.
+ */
+const {encodeUtf8,decodeUtf8} = m3;
+
+const PREPARATION_CERTIFICATE_PROTOCOL='mypace-transition-certificate-v1';
+const PREPARATION_PROGRESS_PROTOCOL='mypace-preparation-progress-v1';
+const PREPARATION_ATTESTED_PROGRESS_PROTOCOL='mypace-preparation-attested-progress-v1';
+const PREPARATION_ATTESTED_PROGRESS_DOMAIN='MyPace/Drive/preparation-attested-progress/HMAC-SHA256/v1\n';
+const PREPARATION_WORK_PROTOCOL='mypace-preparation-work-v1';
+const PREPARATION_PROOF_VERSION=1;
+const PREPARATION_MAX_BYTES=4096;
+const PREPARATION_CERTIFICATE_DOMAIN='MyPace/Drive/transition-certificate/HMAC-SHA256/v1\n';
+const PREPARATION_PROGRESS_DOMAIN='MyPace/Drive/preparation-progress/HMAC-SHA256/v1\n';
+const PREPARATION_WORK_DOMAIN='MyPace/Drive/preparation-work/HMAC-SHA256/v1\n';
+
+const HASH=/^[0-9a-f]{64}$/;
+const ID=/^[A-Za-z0-9_-]{1,128}$/;
+const COMMON=['protocol','storeId','writerScriptId','schemaVersion','datasetGeneration','preparation','parent','commitSlotId'];
+const CERTIFICATE_KEYS=COMMON.concat(['frameCoreHash','finalWorkRef','proofVersion']).sort().join(',');
+const PROGRESS_KEYS=COMMON.concat(['workOrdinal','workPage','recoverySeed','admission']).sort().join(',');
+const WORK_KEYS=COMMON.concat(['workOrdinal','previousWorkRef','workStateHash']).sort().join(',');
+const fail=code=>{const error=new Error(code);error.code=code;throw error;};
+const hash=value=>typeof value==='string'&&HASH.test(value);
+const id=value=>typeof value==='string'&&ID.test(value);
+const integer=value=>Number.isSafeInteger(value)&&value>=0&&!Object.is(value,-0);
+
+// Reject accessors, non-enumerable fields, symbols, arrays, inherited fields and
+// custom prototypes rather than silently omitting them from authenticated JSON.
+function shape(value,keys){
+ if(!value||typeof value!=='object'||Object.getPrototypeOf(value)!==Object.prototype||Object.getOwnPropertySymbols(value).length)return false;
+ const names=Object.getOwnPropertyNames(value);
+ return names.sort().join(',')===keys&&names.every(name=>{const entry=Object.getOwnPropertyDescriptor(value,name);return entry.enumerable&&Object.prototype.hasOwnProperty.call(entry,'value');});
+}
+function ref(value){return shape(value,'hash,id')&&id(value.id)&&hash(value.hash);}
+function sameRef(left,right){return left.id===right.id&&left.hash===right.hash;}
+function common(payload,keys,protocol){
+ return shape(payload,keys)&&payload.protocol===protocol&&id(payload.storeId)&&id(payload.writerScriptId)
+  &&integer(payload.schemaVersion)&&payload.schemaVersion>=1&&id(payload.datasetGeneration)
+  &&ref(payload.preparation)&&shape(payload.parent,'hash,id,revision')&&id(payload.parent.id)
+  &&hash(payload.parent.hash)&&integer(payload.parent.revision)&&id(payload.commitSlotId);
+}
+function certificate(payload){
+ return common(payload,CERTIFICATE_KEYS,PREPARATION_CERTIFICATE_PROTOCOL)
+  &&payload.proofVersion===PREPARATION_PROOF_VERSION&&hash(payload.frameCoreHash)&&ref(payload.finalWorkRef);
+}
+function recoverySeed(seed,parent,attested=false){
+ return shape(seed,'anchorHash,anchorId,frameRef,frameRevision,hintFileId,indexLinks,indexRef,replayFrames'+(attested?',writerFence':''))
+  &&(!attested||[0,2].includes(seed.writerFence))
+  &&id(seed.anchorId)&&hash(seed.anchorHash)&&id(seed.hintFileId)&&integer(seed.indexLinks)
+  &&(seed.indexLinks===0?seed.indexRef===null:ref(seed.indexRef))
+  &&ref(seed.frameRef)&&sameRef(seed.frameRef,parent)&&integer(seed.frameRevision)&&seed.frameRevision===parent.revision
+  &&integer(seed.replayFrames)&&seed.replayFrames>=1&&seed.replayFrames<=seed.frameRevision;
+}
+function progress(payload,attested=false){
+ return common(payload,PROGRESS_KEYS,attested?PREPARATION_ATTESTED_PROGRESS_PROTOCOL:PREPARATION_PROGRESS_PROTOCOL)
+  &&integer(payload.workOrdinal)&&payload.workOrdinal>=1&&ref(payload.workPage)
+  &&(payload.admission===null||shape(payload.admission,'digest,epoch,operationId')&&id(payload.admission.operationId)&&id(payload.admission.epoch)&&hash(payload.admission.digest))
+  &&recoverySeed(payload.recoverySeed,payload.parent,attested);
+}
+function work(payload){
+ return common(payload,WORK_KEYS,PREPARATION_WORK_PROTOCOL)
+  &&integer(payload.workOrdinal)&&payload.workOrdinal>=1&&hash(payload.workStateHash)
+  &&(payload.workOrdinal===1?payload.previousWorkRef===null:ref(payload.previousWorkRef));
+}
+function canonical(value,depth=0){
+ if(depth>8)fail('PREPARATION_FORMAT');
+ if(value===null||typeof value==='string'||integer(value))return JSON.stringify(value);
+ if(value&&typeof value==='object'&&!Array.isArray(value)&&Object.getPrototypeOf(value)===Object.prototype)
+  return '{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+canonical(value[key],depth+1)).join(',')+'}';
+ fail('PREPARATION_FORMAT');
+}
+function sameMac(left,right){
+ if(!hash(left)||!hash(right))return false;
+ let difference=0;for(let at=0;at<64;at++)difference|=left.charCodeAt(at)^right.charCodeAt(at);
+ return difference===0;
+}
+
+/** All encode methods return canonical UTF-8 Uint8Array; all decode methods
+ * return a validated payload or null, including when the HMAC provider fails.
+ * hmacSha256(text) must synchronously return 64 lowercase hex characters.
+ */
+function createPreparationCodec({hmacSha256}={}){
+ if(typeof hmacSha256!=='function')fail('PREPARATION_AUTH_REQUIRED');
+ function signature(domain,text){
+  let mac;try{mac=hmacSha256(domain+text);}catch(_){fail('PREPARATION_AUTH_INVALID');}
+  if(!hash(mac))fail('PREPARATION_AUTH_INVALID');return mac;
+ }
+ function encode(payload,validate,domain){
+  if(!validate(payload))fail('PREPARATION_FORMAT');
+  const text=canonical(payload);
+  // Fixed overhead includes braces, labels, punctuation and the 64-byte MAC.
+  if(encodeUtf8(text).length+85>PREPARATION_MAX_BYTES)fail('PREPARATION_BOUND');
+  const mac=signature(domain,text);
+  // Reuse the validated immutable text: a callback cannot change the payload
+  // between signing and serialization by mutating the original input object.
+  const bytes=encodeUtf8('{"mac":"'+mac+'","payload":'+text+'}');
+  if(bytes.length>PREPARATION_MAX_BYTES)fail('PREPARATION_BOUND');return bytes;
+ }
+ function decode(bytes,validate,domain){
+  try{
+   if(!(bytes instanceof Uint8Array)||bytes.length<1||bytes.length>PREPARATION_MAX_BYTES)return null;
+   const text=decodeUtf8(bytes),envelope=JSON.parse(text);
+   if(!shape(envelope,'mac,payload')||!hash(envelope.mac)||!validate(envelope.payload))return null;
+   const payloadText=canonical(envelope.payload);
+   if('{"mac":"'+envelope.mac+'","payload":'+payloadText+'}'!==text)return null;
+   if(!sameMac(envelope.mac,signature(domain,payloadText)))return null;
+   return envelope.payload;
+  }catch(_){return null;}
+ }
+ return Object.freeze({
+  encodeCertificate:payload=>encode(payload,certificate,PREPARATION_CERTIFICATE_DOMAIN),
+  decodeCertificate:bytes=>decode(bytes,certificate,PREPARATION_CERTIFICATE_DOMAIN),
+  encodeProgress:payload=>payload?.protocol===PREPARATION_ATTESTED_PROGRESS_PROTOCOL?encode(payload,p=>progress(p,true),PREPARATION_ATTESTED_PROGRESS_DOMAIN):encode(payload,progress,PREPARATION_PROGRESS_DOMAIN),
+  decodeProgress:bytes=>decode(bytes,p=>progress(p,true),PREPARATION_ATTESTED_PROGRESS_DOMAIN)||decode(bytes,progress,PREPARATION_PROGRESS_DOMAIN),
+  encodeWork:payload=>encode(payload,work,PREPARATION_WORK_DOMAIN),
+  decodeWork:bytes=>decode(bytes,work,PREPARATION_WORK_DOMAIN)
+ });
+}
+
+/** Uses only the existing, explicitly owner-configured secret in memory. */
+function createGasPreparationCodec({Utilities,secret}={}){
+ let keyBytes=0;try{if(typeof secret==='string')keyBytes=encodeUtf8(secret).length;}catch(_){}
+ if(keyBytes<32||keyBytes>4096||typeof Utilities?.computeHmacSha256Signature!=='function'||Utilities?.Charset?.UTF_8===undefined)fail('PREPARATION_AUTH_REQUIRED');
+ return createPreparationCodec({hmacSha256:text=>{
+  const bytes=Utilities.computeHmacSha256Signature(text,secret,Utilities.Charset.UTF_8);
+  if(!bytes||bytes.length!==32)fail('PREPARATION_AUTH_INVALID');
+  return Array.from(bytes,byte=>{
+   if(!Number.isInteger(byte)||byte< -128||byte>255)fail('PREPARATION_AUTH_INVALID');
+   return (byte&255).toString(16).padStart(2,'0');
+  }).join('');
+ }});
+}
+
+return {PREPARATION_CERTIFICATE_PROTOCOL,PREPARATION_PROGRESS_PROTOCOL,PREPARATION_ATTESTED_PROGRESS_PROTOCOL,PREPARATION_ATTESTED_PROGRESS_DOMAIN,PREPARATION_WORK_PROTOCOL,PREPARATION_PROOF_VERSION,PREPARATION_MAX_BYTES,PREPARATION_CERTIFICATE_DOMAIN,PREPARATION_PROGRESS_DOMAIN,PREPARATION_WORK_DOMAIN,createPreparationCodec,createGasPreparationCodec};
+})();
+const m9 = (function(){
+/**
+ * Bounded, resumable postorder COW construction and inductive transition proof.
+ * This module owns no Drive files and never creates IDs. The caller must:
+ *  - bind the immutable descriptor to the verified parent and reserved slots;
+ *  - authenticate a restored cursor (or replay its immutable work log);
+ *  - persist recipe + assigned output ID before creating that output;
+ *  - verify same-ID bytes/hash/private metadata before completeRecipe(); and
+ *  - durably authenticate the returned cursor before trusting it in another call.
+ *
+ * Large input values live only in the descriptor/context, never in cursors or
+ * recipes. A step reads at most one old node. A split leaf is reconstructed from
+ * its original immutable leaf plus descriptor update indexes and a hash prefix.
+ */
+const PROTOCOL='mypace-prepared-cow-v1';
+const own=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
+const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
+const hash=x=>typeof x==='string'&&/^[0-9a-f]{64}$/.test(x);
+const ref=x=>x===null||!!(x&&Object.keys(x).sort().join(',')==='hash,id'&&id(x.id)&&hash(x.hash));
+const plain=x=>!!x&&typeof x==='object'&&!Array.isArray(x)&&Object.getPrototypeOf(x)===Object.prototype;
+const exact=(x,keys)=>plain(x)&&Object.keys(x).sort().join(',')===keys.split(',').sort().join(',');
+const fail=code=>{const e=Error(code);e.code=code;throw e;};
+const copy=x=>JSON.parse(JSON.stringify(x));
+const uint=x=>Number.isSafeInteger(x)&&x>=0;
+const sortedDigits=s=>typeof s==='string'&&s.length>=1&&s.length<=16&&/^[0-9a-f]+$/.test(s)&&s===[...new Set(s)].sort().join('');
+
+function createPreparedTransaction({slotId,stateRoot=null,receiptRoot=null,stateUpdates=[],receiptUpdates=[],readNode,hashValue,hashNode,nodeFits,maxLeafEntries=512,maxDepth=64,maxCursorBytes=248*1024}={}) {
+ if(!id(slotId)||!ref(stateRoot)||!ref(receiptRoot)||[readNode,hashValue,hashNode,nodeFits].some(f=>typeof f!=='function')||!Number.isSafeInteger(maxLeafEntries)||maxLeafEntries<1||maxLeafEntries>512||!Number.isSafeInteger(maxDepth)||maxDepth<1||maxDepth>64||!Number.isSafeInteger(maxCursorBytes)||maxCursorBytes<1024||maxCursorBytes>1024*1024)fail('PREPARATION_CONFIG_INVALID');
+ const trees=['entities','receipts'],roots=[copy(stateRoot),copy(receiptRoot)],updates=[copy(stateUpdates),copy(receiptUpdates)];
+ for(const list of updates){if(!Array.isArray(list)||list.length>128)fail('PREPARATION_UPDATES_INVALID');const keys=new Set();for(const u of list){if(!exact(u,'key,value')||typeof u.key!=='string'||!u.key||keys.has(u.key))fail('PREPARATION_UPDATES_INVALID');keys.add(u.key);}}
+ const keyHashes=updates.map(list=>list.map(u=>{const h=hashValue(u.key);if(!hash(h))fail('PREPARATION_HASH_INVALID');return h;}));
+ const binding=hashValue({protocol:PROTOCOL,slotId,stateRoot,receiptRoot,stateUpdates:updates[0],receiptUpdates:updates[1],maxLeafEntries,maxDepth});
+ if(!hash(binding))fail('PREPARATION_HASH_INVALID');
+ const indexes=job=>updates[job].map((_,i)=>i);
+ const visit=(oldRef,depth,indexes)=>({type:'visit',oldRef:copy(oldRef),depth,indexes:indexes.slice()});
+ const utf8Length=s=>{let n=0;for(let i=0;i<s.length;i++){const c=s.charCodeAt(i);if(c<128)n++;else if(c<2048)n+=2;else if(c>=0xd800&&c<=0xdbff&&i+1<s.length&&s.charCodeAt(i+1)>=0xdc00&&s.charCodeAt(i+1)<=0xdfff){n+=4;i++;}else n+=3;}return n;};
+ function cursor(s){if(utf8Length(JSON.stringify(s))>maxCursorBytes)fail('PREPARATION_CURSOR_BOUND');return s;}
+ function checkIndexes(xs,job){if(!Array.isArray(xs)||xs.length>updates[job].length)fail('PREPARATION_CURSOR_INVALID');let prev=-1;for(const x of xs){if(!uint(x)||x>=updates[job].length||x<=prev)fail('PREPARATION_CURSOR_INVALID');prev=x;}}
+ function checkState(s){
+  if(!exact(s,'protocol,binding,job,roots,stack')||s.protocol!==PROTOCOL||s.binding!==binding||!uint(s.job)||s.job>2||!Array.isArray(s.roots)||s.roots.length!==2||s.roots.some(r=>!ref(r))||!Array.isArray(s.stack)||s.stack.length>maxDepth+1||(s.job===2)!==(s.stack.length===0))fail('PREPARATION_CURSOR_INVALID');
+  if(s.job<2)for(let i=0;i<s.stack.length;i++){
+   const f=s.stack[i];if(!plain(f)||!uint(f.depth)||f.depth>maxDepth||(i&&f.depth!==s.stack[i-1].depth+1))fail('PREPARATION_CURSOR_INVALID');checkIndexes(f.indexes,s.job);
+   if(f.type==='visit'){if(!exact(f,'type,oldRef,depth,indexes')||!ref(f.oldRef)||i!==s.stack.length-1)fail('PREPARATION_CURSOR_INVALID');}
+   else if(f.type==='entries'){if(!exact(f,'type,sourceRef,sourceDepth,prefix,depth,indexes')||!ref(f.sourceRef)||!uint(f.sourceDepth)||f.sourceDepth>f.depth||typeof f.prefix!=='string'||!/^[0-9a-f]*$/.test(f.prefix)||f.prefix.length!==f.depth-f.sourceDepth||i!==s.stack.length-1)fail('PREPARATION_CURSOR_INVALID');}
+   else if(f.type==='branch'||f.type==='split'){
+    if(f.type==='branch'){if(!exact(f,'type,oldRef,depth,indexes,digits,results')||!f.oldRef||!ref(f.oldRef))fail('PREPARATION_CURSOR_INVALID');}
+    else if(!exact(f,'type,sourceRef,sourceDepth,prefix,depth,indexes,digits,results')||!ref(f.sourceRef)||!uint(f.sourceDepth)||f.sourceDepth>f.depth||typeof f.prefix!=='string'||!/^[0-9a-f]*$/.test(f.prefix)||f.prefix.length!==f.depth-f.sourceDepth)fail('PREPARATION_CURSOR_INVALID');
+    if(f.depth>=maxDepth||!sortedDigits(f.digits)||!Array.isArray(f.results)||f.results.length>f.digits.length)fail('PREPARATION_CURSOR_INVALID');
+    for(let k=0;k<f.results.length;k++)if(!exact(f.results[k],'digit,ref')||f.results[k].digit!==f.digits[k]||!f.results[k].ref||!ref(f.results[k].ref))fail('PREPARATION_CURSOR_INVALID');
+    if(i<s.stack.length-1&&f.results.length>=f.digits.length)fail('PREPARATION_CURSOR_INVALID');
+   }else fail('PREPARATION_CURSOR_INVALID');
+  }
+  cursor(s);return s;
+ }
+ function initialState(){return cursor({protocol:PROTOCOL,binding,job:0,roots:[null,null],stack:[visit(roots[0],0,indexes(0))]});}
+ function deliver(state,result){
+  const s=copy(state);s.stack.pop();
+  if(s.stack.length){const parent=s.stack[s.stack.length-1];if(!result||!['branch','split'].includes(parent.type)||parent.results.length>=parent.digits.length)fail('PREPARATION_CURSOR_INVALID');parent.results.push({digit:parent.digits[parent.results.length],ref:copy(result)});}
+  else {s.roots[s.job]=copy(result);s.job++;if(s.job<2)s.stack.push(visit(roots[s.job],0,indexes(s.job)));}
+  return cursor(s);
+ }
+ function read(refValue,tree,depth){
+  const p=readNode(copy(refValue),tree,depth);
+  if(!plain(p)||p.tree!==tree||p.depth!==depth||!id(p.slotId)||!['leaf','branch'].includes(p.type))fail('PREPARATION_OLD_NODE_INVALID');
+  if(p.type==='leaf'){
+   if(!exact(p,'tree,depth,type,entries,slotId')||!Array.isArray(p.entries)||!p.entries.length||p.entries.length>maxLeafEntries)fail('PREPARATION_OLD_NODE_INVALID');
+   let previous=null;for(const e of p.entries){if(!exact(e,'key,value')||typeof e.key!=='string'||(previous!==null&&previous>=e.key))fail('PREPARATION_OLD_NODE_INVALID');previous=e.key;}
+  }else{
+   if(!exact(p,'tree,depth,type,children,slotId')||depth>=maxDepth||!Array.isArray(p.children)||!p.children.length||p.children.length>16)fail('PREPARATION_OLD_NODE_INVALID');
+   let previous='';for(const c of p.children){if(!exact(c,'digit,ref')||typeof c.digit!=='string'||!/^[0-9a-f]$/.test(c.digit)||c.digit<=previous||!c.ref||!ref(c.ref))fail('PREPARATION_OLD_NODE_INVALID');previous=c.digit;}
+  }return p;
+ }
+ function merge(entries,idxs,job){const m=new Map(entries.map(e=>[e.key,copy(e)]));for(const i of idxs)m.set(updates[job][i].key,copy(updates[job][i]));return [...m.values()].sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0);}
+ const subset=(idxs,job,depth,digit)=>idxs.filter(i=>keyHashes[job][i][depth]===digit);
+ function recipe(state,payload,source){
+  const expectedHash=hashNode(copy(payload));if(!hash(expectedHash))fail('PREPARATION_HASH_INVALID');
+  return {kind:'node',recipe:{protocol:PROTOCOL,binding,stateHash:hashValue(state),tree:trees[state.job],slotId,depth:payload.depth,type:payload.type,source:copy(source),updateIndexes:state.stack[state.stack.length-1].indexes.slice(),dependencies:payload.type==='branch'?payload.children.map(c=>copy(c.ref)):[],expectedHash},payload:copy(payload)};
+ }
+ function leafOrSplit(state,entries,source){
+  const f=state.stack[state.stack.length-1],tree=trees[state.job],payload={tree,depth:f.depth,type:'leaf',entries,slotId};
+  if(entries.length&&entries.length<=maxLeafEntries&&nodeFits(copy(payload))===true)return recipe(state,payload,source);
+  if(!entries.length)fail('PREPARATION_EMPTY_NODE');if(f.depth>=maxDepth)fail('WRITER_INDEX_COLLISION_LIMIT');
+  const groups=new Set();for(const e of entries){const h=hashValue(e.key);if(!hash(h))fail('PREPARATION_HASH_INVALID');groups.add(h[f.depth]);}
+  const digits=[...groups].sort().join(''),s=copy(state);
+  s.stack[s.stack.length-1]={type:'split',sourceRef:copy(source.ref),sourceDepth:source.depth,prefix:source.prefix,depth:f.depth,indexes:f.indexes.slice(),digits,results:[]};
+  const digit=digits[0];s.stack.push({type:'entries',sourceRef:copy(source.ref),sourceDepth:source.depth,prefix:source.prefix+digit,depth:f.depth+1,indexes:subset(f.indexes,state.job,f.depth,digit)});
+  return {kind:'progress',state:cursor(s)};
+ }
+ function nextRecipe(state){
+  checkState(state);if(state.job===2)return {kind:'done',stateRoot:copy(state.roots[0]),receiptRoot:copy(state.roots[1])};
+  const f=state.stack[state.stack.length-1],tree=trees[state.job];
+  if(f.type==='visit'){
+   if(!f.indexes.length)return {kind:'progress',state:deliver(state,f.oldRef)};
+   const old=f.oldRef?read(f.oldRef,tree,f.depth):null;
+   if(!old||old.type==='leaf')return leafOrSplit(state,merge(old?old.entries:[],f.indexes,state.job),{ref:f.oldRef,depth:f.depth,prefix:''});
+   const digits=[...new Set(f.indexes.map(i=>keyHashes[state.job][i][f.depth]))].sort().join(''),s=copy(state),digit=digits[0];
+   s.stack[s.stack.length-1]={type:'branch',oldRef:copy(f.oldRef),depth:f.depth,indexes:f.indexes.slice(),digits,results:[]};
+   s.stack.push(visit(old.children.find(c=>c.digit===digit)?.ref||null,f.depth+1,subset(f.indexes,state.job,f.depth,digit)));
+   return {kind:'progress',state:cursor(s)};
+  }
+  if(f.type==='entries'){
+   const old=f.sourceRef?read(f.sourceRef,tree,f.sourceDepth):null;if(old&&old.type!=='leaf')fail('PREPARATION_SOURCE_NOT_LEAF');
+   const entries=(old?old.entries:[]).filter(e=>{const h=hashValue(e.key);if(!hash(h))fail('PREPARATION_HASH_INVALID');return h.slice(f.sourceDepth,f.depth)===f.prefix;});
+   return leafOrSplit(state,merge(entries,f.indexes,state.job),{ref:f.sourceRef,depth:f.sourceDepth,prefix:f.prefix});
+  }
+  if(f.type==='branch'){
+   const old=read(f.oldRef,tree,f.depth);if(old.type!=='branch')fail('PREPARATION_SOURCE_NOT_BRANCH');
+   const expectedDigits=[...new Set(f.indexes.map(i=>keyHashes[state.job][i][f.depth]))].sort().join('');if(f.digits!==expectedDigits)fail('PREPARATION_CURSOR_INVALID');
+   if(f.results.length<f.digits.length){const digit=f.digits[f.results.length],s=copy(state);s.stack.push(visit(old.children.find(c=>c.digit===digit)?.ref||null,f.depth+1,subset(f.indexes,state.job,f.depth,digit)));return {kind:'progress',state:cursor(s)};}
+   const children=new Map(old.children.map(c=>[c.digit,copy(c)]));for(const c of f.results)children.set(c.digit,copy(c));
+   const payload={tree,depth:f.depth,type:'branch',children:[...children.values()].sort((a,b)=>a.digit<b.digit?-1:1),slotId};
+   if(nodeFits(copy(payload))!==true)fail('WRITER_FILE_TOO_LARGE');return recipe(state,payload,{ref:f.oldRef,depth:f.depth,prefix:''});
+  }
+  if(f.results.length<f.digits.length){const digit=f.digits[f.results.length],s=copy(state);s.stack.push({type:'entries',sourceRef:copy(f.sourceRef),sourceDepth:f.sourceDepth,prefix:f.prefix+digit,depth:f.depth+1,indexes:subset(f.indexes,state.job,f.depth,digit)});return {kind:'progress',state:cursor(s)};}
+  const payload={tree,depth:f.depth,type:'branch',children:copy(f.results),slotId};if(nodeFits(copy(payload))!==true)fail('WRITER_FILE_TOO_LARGE');
+  return recipe(state,payload,{ref:f.sourceRef,depth:f.sourceDepth,prefix:f.prefix});
+ }
+ // Internal to a writer that has independently authenticated the complete
+ // immutable work page containing this exact assignment. Unlike completeRecipe
+ // this does not accept an untrusted recipe and does not reconstruct old bytes.
+ // The caller MUST still read/hash/schema-check the exact assigned output ID.
+ function completeAuthenticatedRecipe(state,planned,verifiedResult){
+  checkState(state);
+  if(!exact(planned,'protocol,binding,stateHash,tree,slotId,depth,type,source,updateIndexes,dependencies,expectedHash')||planned.protocol!==PROTOCOL||planned.binding!==binding||planned.stateHash!==hashValue(state)||planned.tree!==trees[state.job]||planned.slotId!==slotId||planned.depth!==state.stack[state.stack.length-1]?.depth||!['leaf','branch'].includes(planned.type)||!hash(planned.expectedHash)||!verifiedResult||!ref(verifiedResult)||verifiedResult.hash!==planned.expectedHash||hashValue(planned.updateIndexes)!==hashValue(state.stack[state.stack.length-1].indexes)||!Array.isArray(planned.dependencies)||planned.dependencies.some(r=>!r||!ref(r)))fail('PREPARATION_RESULT_MISMATCH');
+  return deliver(state,verifiedResult);
+ }
+ function completeRecipe(state,planned,verifiedResult){
+  checkState(state);if(!verifiedResult||!ref(verifiedResult))fail('PREPARATION_RESULT_INVALID');
+  // Recompute this ONE recipe; never trust a caller-altered expected hash. The
+  // writer's continuously-held read-phase cache makes repeat reads free, while
+  // a cold resume freshly validates the one required old-node dependency.
+  const expected=nextRecipe(state);
+  if(expected.kind!=='node'||hashValue(expected.recipe)!==hashValue(planned)||verifiedResult.hash!==expected.recipe.expectedHash)fail('PREPARATION_RESULT_MISMATCH');
+  return deliver(state,verifiedResult);
+ }
+ return Object.freeze({initialState,nextRecipe,completeRecipe,completeAuthenticatedRecipe,binding});
+}
+
+return {createPreparedTransaction};
+})();
+const m10 = (function(){
+/** Anchored, immutable and restartable app-write preparation. No new commit log:
+ * the ordinary reserved frame remains the sole business publication boundary.
+ * Work facts are accelerators. If authentication is unavailable after rotation,
+ * exact deterministic transitions are replayed from the descriptor and old COW
+ * nodes, then a current-key progress hint can resume that verified prefix.
+ */
+const {createPreparedTransaction} = m9;
+const {PREPARATION_CERTIFICATE_PROTOCOL,PREPARATION_PROGRESS_PROTOCOL,PREPARATION_ATTESTED_PROGRESS_PROTOCOL,PREPARATION_WORK_PROTOCOL} = m8;
+const {FRAME_SCAN_HINT_PROTOCOL,ATTESTED_FRAME_HINT_PROTOCOL} = m7;
+const {encodeUtf8,decodeUtf8} = m3;
+const exact=(o,keys)=>o&&typeof o==='object'&&!Array.isArray(o)&&Object.getPrototypeOf(o)===Object.prototype&&Object.keys(o).sort().join(',')===keys.split(',').sort().join(',');
+const ordinal=x=>Number.isSafeInteger(x)&&x>=1;
+const pointer=f=>({id:f.id,hash:f.hash});
+const objectBytes=o=>encodeUtf8(JSON.stringify(o));
+class PreparedWriter {
+ constructor(writer,helpers){this.w=writer;Object.assign(this,helpers);this.hint=null;this.progress=null;this._verified=null;this.semanticFrame=null;}
+ _error(code,retryable=false){return this.fail(code,retryable);}
+ _parent(){const s=this.w._state;return {id:s.headId,hash:s.headHash,revision:s.revision};}
+ _common(d){return {storeId:this.w.storeId,writerScriptId:this.w.writerScriptId,schemaVersion:this.w.schemaVersion,datasetGeneration:d.payload.datasetGeneration,preparation:pointer(d),parent:d.payload.parent,commitSlotId:d.payload.commitSlotId};}
+ _ready(){if(!this.w.preparationCodec||!this.w.checkpointHintCodec||!this.w.checkpointHintId)this._error('WRITER_PREPARATION_AUTH_REQUIRED');}
+ _adapter(d){if(d.payload.adapter==='checkpoint-v1')return null;if(typeof this.w.preparedAppAdapter!=='function')this._error('WRITER_PREPARATION_ADAPTER_REQUIRED',true);return this.w.preparedAppAdapter({command:d.payload.command,digest:d.payload.operation.digest,base:{storeId:this.w.storeId,datasetGeneration:d.payload.datasetGeneration,acceptedEpochs:d.payload.acceptedEpochs,writerFence:d.payload.writerFence}});}
+ _checkDescriptor(d){
+  const p=d.payload,s=this.w._state;
+  if(!exact(p,'version,adapter,parent,commitSlotId,nextSlotId,nextPreparationId,firstWorkId,certificateId,manifestId,nextIndexId,operation,command,committedAt,stateRoot,receiptRoot,headReceiptHash,indexHead,indexId,datasetGeneration,acceptedEpochs,writerFence')||p.version!==1||!['app-command-v2','checkpoint-v1'].includes(p.adapter)||d.id!==s.nextPreparationId||!this.equal(p.parent,this._parent())||p.commitSlotId!==s.nextSlotId||p.datasetGeneration!==s.datasetGeneration||p.writerFence!==2||s.writerFence!==2||!this.equal(p.stateRoot,s.stateRoot)||!this.equal(p.receiptRoot,s.receiptRoot)||p.headReceiptHash!==(s.headReceipt?this.digest(s.headReceipt):null)||!this.refOk(p.indexHead)||!this.validId(p.indexId)||p.indexId!==s.nextIndexId||!this.equal(p.indexHead,s.indexHead)||!this.equal(p.acceptedEpochs,s.acceptedEpochs)||typeof p.committedAt!=='string'||!Number.isFinite(Date.parse(p.committedAt)))this._error('WRITER_PREPARATION_INVALID');
+  const ids=['nextSlotId','nextPreparationId','firstWorkId','certificateId','manifestId','nextIndexId'].map(k=>p[k]);
+  if(ids.some(id=>!this.validId(id)||[d.id,s.nextSlotId,s.headId,this.w.anchorId,this.w.checkpointHintId,s.nextIndexId].includes(id))||new Set(ids).size!==ids.length)this._error('WRITER_PREPARATION_INVALID');
+  if(!exact(p.operation,'operationId,epoch,digest')||!this.validId(p.operation.operationId)||!this.validId(p.operation.epoch)||!s.acceptedEpochs.includes(p.operation.epoch)||!(/^[a-f0-9]{64}$/.test(p.operation.digest)))this._error('WRITER_PREPARATION_INVALID');
+  if(p.adapter==='app-command-v2'){
+   if(p.command?.operationId!==p.operation.operationId||p.command?.epoch!==p.operation.epoch||p.command?.store!==this.w.storeId||p.command?.generation!==s.datasetGeneration||this.digest(p.command)!==p.operation.digest)this._error('WRITER_PREPARATION_INVALID');
+   const first=this._adapter(d).advance(this._adapter(d).initialState(),()=>this._error('WRITER_PREPARATION_INVALID'));
+   if(first.kind!=='progress')this._error('WRITER_PREPARATION_INVALID');
+  }else if(!exact(p.command,'operationId,epoch,digest,changes,references,result')||!Array.isArray(p.command.changes)||!Array.isArray(p.command.references)||p.command.changes.length||p.command.references.length||!this.equal(p.operation,{operationId:p.command.operationId,epoch:p.command.epoch,digest:p.command.digest}))this._error('WRITER_PREPARATION_INVALID');
+  return d;
+ }
+ _createOrAdopt(id,kind,payload,check,{knownAbsent=false}={}){
+  let file=knownAbsent?null:this.w._read(id,kind,null,true);if(file){check(file);return file;}
+  const bytes=this.w._bytes(this.w._sealed(kind,payload));
+  for(let attempt=0;attempt<this.w.limits.maxCreateAttempts;attempt++){
+   try{this.w.io.createFile(id,bytes,kind);}catch(_){}
+   file=this.w._read(id,kind,null,true);if(file){check(file);return file;}
+  }
+  this._error('WRITER_CREATE_UNRESOLVED',true);
+ }
+ _descriptor(command,digest,adapter,{knownAbsent=false}={}){
+  const w=this.w,s=w._state;let existing=knownAbsent?null:w._read(s.nextPreparationId,'preparation',null,true);if(existing)return this._checkDescriptor(existing);
+  const ids=Array.from({length:6},()=>w._id()),operation={operationId:command.operationId,epoch:command.epoch,digest};
+  const payload={version:1,adapter,parent:this._parent(),commitSlotId:s.nextSlotId,nextSlotId:ids[0],nextPreparationId:ids[1],firstWorkId:ids[2],certificateId:ids[3],manifestId:ids[4],nextIndexId:ids[5],operation,command:this.clone(command),committedAt:w.clock(),stateRoot:this.clone(s.stateRoot),receiptRoot:this.clone(s.receiptRoot),headReceiptHash:s.headReceipt?this.digest(s.headReceipt):null,indexHead:this.clone(s.indexHead),indexId:s.nextIndexId,datasetGeneration:s.datasetGeneration,acceptedEpochs:s.acceptedEpochs.slice(),writerFence:2};
+  // Admission precedes occupancy. The original large diary exists only here.
+  w._bytes(w._sealed('preparation',payload));
+  return this._createOrAdopt(s.nextPreparationId,'preparation',payload,file=>this._checkDescriptor(file),{knownAbsent:true});
+ }
+ _initial(d){return {phase:d.payload.adapter==='checkpoint-v1'?'cow':'domain',domain:this._adapter(d)?.initialState()||null,error:null,cow:null,assignment:null};}
+ _expanded(d,state){
+  if(state.error)return {changes:[],result:{preparationError:state.error}};
+  if(d.payload.adapter==='checkpoint-v1')return {changes:[],result:this.clone(d.payload.command.result)};
+  const out=this._adapter(d).advance(state.domain,()=>this._error('WRITER_PREPARATION_STATE_INVALID'));
+  if(out.kind!=='ready')this._error('WRITER_PREPARATION_STATE_INVALID');return out;
+ }
+ _changes(d,state){
+  const changes=this._expanded(d,state).changes,keys=new Set();if(!Array.isArray(changes)||changes.length>this.w.limits.maxChanges)this._error('WRITER_CHANGE_INVALID');
+  return changes.map(c=>{this.w._key(c.key);if(keys.has(c.key)||!Number.isSafeInteger(c.expectedVersion)||c.expectedVersion<0||c.expectedVersion>=Number.MAX_SAFE_INTEGER||Object.keys(c).some(k=>!['key','expectedVersion','deleted','recreate','value'].includes(k)))this._error('WRITER_CHANGE_INVALID');keys.add(c.key);const value=c.deleted?null:this.clone(c.value);if(encodeUtf8(this.canonical(value)).length>this.w.limits.maxValueBytes)this._error('WRITER_VALUE_TOO_LARGE');return {key:c.key,expectedVersion:c.expectedVersion,entity:{key:c.key,version:c.expectedVersion+1,deleted:!!c.deleted,value}};});
+ }
+ _planner(d,state){
+  const w=this.w,s=w._state,changes=this._changes(d,state),head=s.headReceipt,receiptUpdates=head?[{key:JSON.stringify([head.epoch,head.operationId]),value:head},{key:'@revision:'+d.payload.parent.revision,value:{revision:d.payload.parent.revision,hash:d.payload.parent.hash}}]:[];
+  return createPreparedTransaction({slotId:d.payload.commitSlotId,stateRoot:d.payload.stateRoot,receiptRoot:d.payload.receiptRoot,stateUpdates:changes.map(c=>({key:c.key,value:c.entity})),receiptUpdates,readNode:(...args)=>w._node(...args),hashValue:this.digest,hashNode:p=>w._sealed('index-node',p).hash,nodeFits:p=>{try{w._bytes(w._sealed('index-node',p));return true;}catch(e){if(e.code==='WRITER_FILE_TOO_LARGE')return false;throw e;}},maxLeafEntries:w.limits.maxLeafEntries});
+ }
+ _validateState(state){if(!exact(state,'phase,domain,error,cow,assignment')||!['domain','cow','done'].includes(state.phase)||state.error!==null&&(typeof state.error!=='string'||!/^[_A-Z][_A-Z0-9]{1,80}$/.test(state.error))||state.assignment!==null&&(!exact(state.assignment,'nodes')||!Array.isArray(state.assignment.nodes)||state.assignment.nodes.length<1||state.assignment.nodes.length>4||state.assignment.nodes.some(n=>!exact(n,'id,recipe,cursor')||!this.validId(n.id))||new Set(state.assignment.nodes.map(n=>n.id)).size!==state.assignment.nodes.length))this._error('WRITER_PREPARATION_STATE_INVALID');}
+ _transition(d,before,assignmentId=null,options={}){
+  const writer=this.w,original=writer._node;writer._node=(ref,...args)=>{if(this._pageDependencies&&ref)this._pageDependencies.set(ref.id,this.clone(ref));return original.call(writer,ref,...args);};
+  try{return this._advanceTransition(d,before,assignmentId,options);}finally{writer._node=original;}
+ }
+ _advanceTransition(d,before,assignmentId=null,{materialize=true}={}){
+  this._validateState(before);const state=this.clone(before),w=this.w;
+  if(state.phase==='domain'){
+   const out=this._adapter(d).advance(state.domain,key=>w._get(d.payload.stateRoot,key));
+   if(out.kind==='progress'){state.domain=out.state;return state;}
+   if(out.kind==='rejected'){state.error=out.error;state.phase='cow';return state;}
+   if(out.kind==='ready'){state.phase='cow';try{this._changes(d,state);if(encodeUtf8(this.canonical({changes:this._changes(d,state),result:out.result,references:[]})).length>w.limits.maxFileBytes-4096)state.error='WRITER_FILE_TOO_LARGE';}catch(error){if(['WRITER_VALUE_TOO_LARGE','WRITER_FILE_TOO_LARGE'].includes(error.code))state.error=error.code;else throw error;}return state;}
+   this._error('WRITER_PREPARATION_STATE_INVALID');
+  }
+  if(state.phase==='done')this._error('WRITER_PREPARATION_COMPLETE');
+  const planner=this._planner(d,state);
+  if(!state.cow){state.cow=planner.initialState();return state;}
+  if(state.assignment){
+   if(materialize&&this._authenticatedAssignment&&this.equal(this._authenticatedAssignment.preparation,pointer(d))&&this.equal(this._authenticatedAssignment.parent,this._parent())&&this._authenticatedAssignment.stateHash===this.digest(before)){
+    const assigned=state.assignment.nodes;
+    if(typeof w.io.prefetchFiles==='function')w.io.prefetchFiles(assigned.map(n=>n.id),w.limits.maxFileBytes);
+    const missing=[];
+    for(const n of assigned){
+     const found=w._read(n.id,'index-node',null,true);if(found){if(found.hash!==n.recipe.expectedHash||found.payload.slotId!==n.recipe.slotId||found.payload.type!==n.recipe.type)this._error('WRITER_PREPARATION_NODE_INVALID');w._node(pointer(found),n.recipe.tree,n.recipe.depth);continue;}
+     // Only absent outputs need old-node reconstruction. Authenticated existing
+     // outputs already bind the exact recipe hash, so rereading old paths here
+     // would repeat proved facts and can starve a cold four-node assignment.
+     const step=planner.nextRecipe(n.cursor);if(step.kind!=='node'||!this.equal(step.recipe,n.recipe))this._error('WRITER_PREPARATION_RECIPE_INVALID');missing.push({id:n.id,bytes:w._bytes(w._sealed('index-node',step.payload)),role:'index-node'});
+    }
+    if(missing.length)try{w.io.createMany(missing);}catch(error){if(!error?.retryable&&!['STORE_YIELD','STORE_CREATE_UNRESOLVED','STORE_REQUEST_UNRESOLVED'].includes(error.code||error.message))throw error;}
+    if(typeof w.io.prefetchFiles==='function')w.io.prefetchFiles(assigned.map(n=>n.id),w.limits.maxFileBytes);
+    for(const n of assigned){const found=w._read(n.id,'index-node',null,true);if(!found)this._error('WRITER_CREATE_UNRESOLVED',true);if(found.hash!==n.recipe.expectedHash||found.payload.slotId!==n.recipe.slotId||found.payload.type!==n.recipe.type)this._error('WRITER_PREPARATION_NODE_INVALID');w._node(pointer(found),n.recipe.tree,n.recipe.depth);state.cow=planner.completeAuthenticatedRecipe(n.cursor,n.recipe,pointer(found));}
+    this._authenticatedAssignment=null;this._resumedAssignment=false;state.assignment=null;return state;
+   }
+   const nodes=state.assignment.nodes,plans=[];let frontier=state.cow;
+   for(const node of nodes){let step;for(let n=0;n<256;n++){step=planner.nextRecipe(frontier);if(step.kind!=='progress')break;frontier=step.state;}if(step.kind!=='node'||!this.equal(frontier,node.cursor)||!this.equal(step.recipe,node.recipe))this._error('WRITER_PREPARATION_RECIPE_INVALID');plans.push({id:node.id,payload:step.payload,recipe:step.recipe,cursor:frontier});frontier=planner.completeRecipe(frontier,step.recipe,{id:node.id,hash:step.recipe.expectedHash});}
+   // IDs and complete recipes were anchored in the preceding immutable page.
+   // Parallel creation is staging only: no verified frontier advances until
+   // every actual output has been privately read back at that exact ID/hash.
+   if(materialize&&typeof w.io.createMany==='function'){
+    let missing=plans;
+    // A resumed assignment may already have durably created every output before
+    // its progress-page response was lost. Read those pinned IDs first instead
+    // of redispatching the whole immutable batch and spending the slice on409s.
+    // Never use absence as exclusivity: remaining creates still adopt exact IDs.
+    if(this._resumedAssignment){
+     if(typeof w.io.prefetchFiles==='function')w.io.prefetchFiles(plans.map(n=>n.id),w.limits.maxFileBytes);
+     missing=plans.filter(n=>{const existing=w._read(n.id,'index-node',null,true);if(existing&&existing.hash!==n.recipe.expectedHash)this._error('WRITER_PREPARATION_NODE_INVALID');return !existing;});
+    }
+    if(missing.length)try{w.io.createMany(missing.map(n=>({id:n.id,bytes:w._bytes(w._sealed('index-node',n.payload)),role:'index-node'})));}catch(error){if(!error?.retryable&&!['STORE_YIELD','STORE_CREATE_UNRESOLVED','STORE_REQUEST_UNRESOLVED'].includes(error.code||error.message))throw error;}
+    if(typeof w.io.prefetchFiles==='function')w.io.prefetchFiles(plans.map(n=>n.id),w.limits.maxFileBytes);
+    this._resumedAssignment=false;
+   }
+   for(const planned of plans){let node=w._read(planned.id,'index-node',null,true);if(!node&&materialize){w._createExact(planned.id,'index-node',planned.payload);node=w._read(planned.id,'index-node',{id:planned.id,hash:planned.recipe.expectedHash});}if(!node||node.hash!==planned.recipe.expectedHash)this._error('WRITER_PREPARATION_NODE_INVALID');w._node(pointer(node),planned.recipe.tree,planned.recipe.depth);state.cow=planner.completeRecipe(planned.cursor,planned.recipe,pointer(node));}
+   state.assignment=null;return state;
+  }
+  const action=planner.nextRecipe(state.cow);
+  if(action.kind==='progress'){state.cow=action.state;return state;}
+  if(action.kind==='done'){state.phase='done';return state;}
+  if(action.kind!=='node'||!Array.isArray(assignmentId)||assignmentId.length<1||assignmentId.length>4||assignmentId.some(id=>!this.validId(id))||new Set(assignmentId).size!==assignmentId.length)this._error('WRITER_PREPARATION_ASSIGNMENT_INVALID');
+  const nodes=[];let frontier=state.cow;
+  for(const id of assignmentId){
+   if([d.id,d.payload.commitSlotId,d.payload.nextSlotId,d.payload.nextPreparationId,d.payload.firstWorkId,d.payload.certificateId,d.payload.manifestId,d.payload.nextIndexId,this.w.anchorId,this.w.checkpointHintId].includes(id))this._error('WRITER_PREPARATION_ASSIGNMENT_INVALID');
+   let step;for(let n=0;n<256;n++){step=planner.nextRecipe(frontier);if(step.kind!=='progress')break;frontier=step.state;}if(step.kind==='done')break;if(step.kind!=='node')this._error('WRITER_PREPARATION_RECIPE_INVALID');
+   nodes.push({id,recipe:step.recipe,cursor:this.clone(frontier)});
+   // This is a planned frontier, not a verified one. Actual state.cow is kept
+   // unchanged until all assigned nodes have exact same-ID proof on resume.
+   frontier=planner.completeRecipe(frontier,step.recipe,{id,hash:step.recipe.expectedHash});
+  }
+  state.assignment={nodes};return state;
+ }
+ _workBody(p){const {auth,...body}=p;return body;}
+ _workAuth(d,body){return {...this._common(d),protocol:PREPARATION_WORK_PROTOCOL,workOrdinal:body.ordinal,previousWorkRef:body.previousWorkRef,workStateHash:this.digest(body)};}
+ _checkWork(d,file,{previous,priorState=null,trustedHint=false}={}){
+  const p=file.payload;
+  if(!exact(p,'version,preparation,ordinal,previousWorkRef,nextWorkId,state,steps,dependencies,auth')||p.version!==1||!Array.isArray(p.dependencies)||p.dependencies.length>128||p.dependencies.some(r=>!r||!this.refOk(r))||new Set(p.dependencies.map(r=>r.id)).size!==p.dependencies.length||!Array.isArray(p.steps)||p.steps.length<1||p.steps.length>16||p.steps.some(ids=>ids!==null&&(!Array.isArray(ids)||ids.length<1||ids.length>4||ids.some(id=>!this.validId(id))||new Set(ids).size!==ids.length))||!this.equal(p.preparation,pointer(d))||!ordinal(p.ordinal)||!this.validId(p.nextWorkId)||[file.id,d.id,d.payload.commitSlotId,d.payload.nextSlotId,d.payload.nextPreparationId,d.payload.certificateId,d.payload.manifestId,d.payload.nextIndexId,this.w.anchorId,this.w.checkpointHintId].includes(p.nextWorkId)||!this.refOk(p.previousWorkRef)||p.ordinal===1&&p.previousWorkRef!==null||p.ordinal>1&&p.previousWorkRef===null)this._error('WRITER_PREPARATION_WORK_INVALID');
+  this._validateState(p.state);
+  if(previous!==undefined){if((previous?.payload.ordinal||0)+1!==p.ordinal||!this.equal(p.previousWorkRef,previous?pointer(previous):null)||file.id!==(previous?previous.payload.nextWorkId:d.payload.firstWorkId))this._error('WRITER_PREPARATION_WORK_ORDER');}
+  const decoded=this.w.preparationCodec?.decodeWork(objectBytes(p.auth)),authenticated=decoded&&this.equal(decoded,this._workAuth(d,this._workBody(p)));
+  if(!authenticated&&!trustedHint){
+   if(!priorState)this._error('WRITER_PREPARATION_PROOF_REQUIRED');
+   // These bounded immutable IDs are merely prefetch candidates. Every proof
+   // transition still re-derives the expected ref/hash and checks actual nodes.
+   if(typeof this.w.io.prefetchFiles==='function')for(let at=0;at<p.dependencies.length;at+=16)this.w.io.prefetchFiles(p.dependencies.slice(at,at+16).map(r=>r.id),this.w.limits.maxFileBytes);
+   let expected=priorState;for(let at=0;at<p.steps.length;at++){if(at&&expected.assignment)this._error('WRITER_PREPARATION_UNANCHORED_OUTPUT');expected=this._transition(d,expected,p.steps[at],{materialize:false});}
+   if(!this.equal(expected,p.state))this._error('WRITER_PREPARATION_TRANSITION_INVALID');
+  }
+  return file;
+ }
+ _appendWork(d,previous,state,steps,dependencies){
+  const id=previous?previous.payload.nextWorkId:d.payload.firstWorkId,body={version:1,preparation:pointer(d),ordinal:(previous?.payload.ordinal||0)+1,previousWorkRef:previous?pointer(previous):null,nextWorkId:this.w._id(),state:this.clone(state),steps:steps.slice(),dependencies:this.clone(dependencies)};
+  const payload={...body,auth:JSON.parse(decodeUtf8(this.w.preparationCodec.encodeWork(this._workAuth(d,body))))};
+  // If a delayed earlier page wins, validate/adopt that page before any output
+  // assigned by our losing candidate can be created.
+  return this._createOrAdopt(id,'preparation-work',payload,file=>this._checkWork(d,file,{previous,priorState:previous?.payload.state||this._initial(d)}),{knownAbsent:true});
+ }
+ _seed(){const s=this.w._state;return {anchorId:this.w.anchorId,anchorHash:s.anchorHash,hintFileId:this.w.checkpointHintId,indexRef:s.indexHead,indexLinks:s.indexLinks,frameRef:{id:s.headId,hash:s.headHash},frameRevision:s.revision,replayFrames:s.replayFrames,...(this.w._attestedPrefixReady?{writerFence:s.writerFence}: {})};}
+ decodeHint(bytes){
+  const p=this.w.preparationCodec?.decodeProgress(bytes);if(!p)return null;
+  const s=this.w._state,r=p.recoverySeed;
+  if(p.storeId!==this.w.storeId||p.writerScriptId!==this.w.writerScriptId||p.schemaVersion!==this.w.schemaVersion||p.datasetGeneration!==s.datasetGeneration||r.anchorId!==this.w.anchorId||r.anchorHash!==s.anchorHash||r.hintFileId!==this.w.checkpointHintId)return null;
+  this.hint=p;return {protocol:p.protocol===PREPARATION_ATTESTED_PROGRESS_PROTOCOL?ATTESTED_FRAME_HINT_PROTOCOL:FRAME_SCAN_HINT_PROTOCOL,storeId:p.storeId,writerScriptId:p.writerScriptId,schemaVersion:p.schemaVersion,datasetGeneration:p.datasetGeneration,...r};
+ }
+ _saveProgress(d,page,startOrdinal,{force=false}={}){
+  if(!page)return false;
+  const payload={...this._common(d),protocol:this.w._attestedPrefixReady?PREPARATION_ATTESTED_PROGRESS_PROTOCOL:PREPARATION_PROGRESS_PROTOCOL,workOrdinal:page.payload.ordinal,workPage:pointer(page),recoverySeed:this._seed(),admission:this.admission&&this.equal(this.admission.parent,d.payload.parent)?this.clone(this.admission.operation):null};
+  // Immutable work pages are already durable. Avoid repeatedly rewriting the
+  // advisory file while a short command can finish in this invocation. Reserve
+  // hint writes for the declining window or an explicit yield/error boundary.
+  if((force||!this.w.canContinuePreparation(18000))&&(!this.hint||this.hint.protocol!==payload.protocol||!this.equal(this.hint.workPage,payload.workPage)||!this.equal(this.hint.admission,payload.admission))){try{this.w.io.writeCheckpointHint(this.w.preparationCodec.encodeProgress(payload));this.hint=payload;}catch(_){/* Immutable work still determines the only assigned output IDs. */}}
+  // A current-key immutable work fact is resumable even if the advisory write
+  // fails. Old-key semantic replay is resumable only after current-key advice
+  // really persisted; an in-memory re-verification is not saved progress.
+  const currentWork=this.w.preparationCodec.decodeWork(objectBytes(page.payload.auth));
+  const authenticated=currentWork&&this.equal(currentWork,this._workAuth(d,this._workBody(page.payload)));
+  const hinted=this.hint&&this.equal(this.hint.preparation,payload.preparation)&&this.equal(this.hint.parent,payload.parent)&&this.equal(this.hint.workPage,payload.workPage)&&this.hint.workOrdinal===payload.workOrdinal;
+  const persisted=!!(authenticated||hinted);
+  this.progress={phase:'preparation',ordinal:page.payload.ordinal,cursorPersisted:persisted,cursorAdvanced:persisted&&page.payload.ordinal>startOrdinal};
+  return true;
+ }
+ _pending(d,page,startOrdinal){this._saveProgress(d,page,startOrdinal,{force:true});const e=Error('WRITER_RECOVERY_PENDING');e.code=e.message;e.retryable=true;if(this.progress)Object.assign(e,this.progress,{recovery:this.clone(this.progress)});throw e;}
+ _locate(d){
+  const hint=this.hint;let page=null,state=this._initial(d),startOrdinal=0;
+  if(hint&&this.equal(hint.preparation,pointer(d))&&this.equal(hint.parent,this._parent())&&hint.commitSlotId===d.payload.commitSlotId){
+   page=this.w._read(hint.workPage.id,'preparation-work',hint.workPage);this._checkWork(d,page,{previous:undefined,trustedHint:true});if(page.payload.ordinal!==hint.workOrdinal)this._error('WRITER_PREPARATION_HINT_INVALID');state=page.payload.state;startOrdinal=page.payload.ordinal;
+  }
+  while(true){
+   if(!this.w.canContinuePreparation())this._pending(d,page,startOrdinal);
+   const id=page?page.payload.nextWorkId:d.payload.firstWorkId,next=this.w._read(id,'preparation-work',null,true);if(!next)return {page,state,startOrdinal};
+   this._checkWork(d,next,{previous:page,priorState:state});page=next;state=page.payload.state;
+   this._saveProgress(d,page,startOrdinal);
+  }
+ }
+ _core(d,state){
+  const w=this.w,s=w._state,p=d.payload,expanded=this._expanded(d,state),changes=this._changes(d,state),roots=this._planner(d,state).nextRecipe(state.cow);
+  if(state.phase!=='done'||roots.kind!=='done')this._error('WRITER_PREPARATION_INCOMPLETE');
+  let checkpoint=null;
+  if(p.adapter==='checkpoint-v1'){
+   const cut={id:s.headId,hash:s.headHash,revision:s.revision,nextSlotId:s.nextSlotId,nextPreparationId:s.nextPreparationId};
+   const manifest={datasetGeneration:s.datasetGeneration,cut,stateRoot:roots.stateRoot,receiptRoot:roots.receiptRoot,acceptedEpochs:s.acceptedEpochs,writerFence:2};
+   checkpoint={indexId:p.indexId,nextIndexId:p.nextIndexId,previousIndex:p.indexHead,manifestRef:{id:p.manifestId,hash:w._sealed('checkpoint-manifest',manifest).hash},cut};
+  }
+  const core={datasetGeneration:p.datasetGeneration,revision:p.parent.revision+1,parent:{id:p.parent.id,hash:p.parent.hash},nextSlotId:p.nextSlotId,nextPreparationId:p.nextPreparationId,operation:p.operation,committedAt:p.committedAt,changes,stateRoot:roots.stateRoot,receiptRoot:roots.receiptRoot,result:expanded.result,references:[],checkpoint,acceptedEpochs:p.acceptedEpochs,writerFence:2,preparation:pointer(d)};
+  w._bytes(w._sealed('frame',{...core,certificate:{id:p.certificateId,hash:'0'.repeat(64)}}));return core;
+ }
+ _certificatePayload(d,core,page){return {...this._common(d),protocol:PREPARATION_CERTIFICATE_PROTOCOL,frameCoreHash:this.digest(core),finalWorkRef:pointer(page),proofVersion:1};}
+ _finish(d,page,{verifyOnly=false,expectedFrame=null}={}){
+  const w=this.w,core=this._core(d,page.payload.state),p=d.payload;
+  if(expectedFrame){const {certificate,...claimed}=expectedFrame.payload;if(!this.equal(core,claimed))this._error('WRITER_PREPARATION_FRAME_MISMATCH');return true;}
+  if(verifyOnly)return core;
+  if(core.checkpoint){const c=core.checkpoint;w._createExact(p.manifestId,'checkpoint-manifest',{datasetGeneration:core.datasetGeneration,cut:c.cut,stateRoot:core.stateRoot,receiptRoot:core.receiptRoot,acceptedEpochs:core.acceptedEpochs,writerFence:2});}
+  const certBody={version:1,preparation:pointer(d),finalWorkRef:pointer(page),proof:JSON.parse(decodeUtf8(w.preparationCodec.encodeCertificate(this._certificatePayload(d,core,page))))};
+  const cert=this._createOrAdopt(p.certificateId,'transition-certificate',certBody,file=>{
+   const c=file.payload;if(!exact(c,'version,preparation,finalWorkRef,proof')||c.version!==1||!this.equal(c.preparation,pointer(d))||!this.equal(c.finalWorkRef,pointer(page)))this._error('WRITER_PREPARATION_CERTIFICATE_INVALID');
+   const decoded=w.preparationCodec.decodeCertificate(objectBytes(c.proof));if(decoded&&!this.equal(decoded,this._certificatePayload(d,core,page)))this._error('WRITER_PREPARATION_CERTIFICATE_INVALID');
+   // An old-key certificate can be adopted only here, after the whole exact
+   // work prefix has been authenticated or independently semantically replayed.
+   // Immutable certificate bytes are never replaced during key rotation.
+  });
+  const payload={...core,certificate:pointer(cert)},file=this._createOrAdopt(p.commitSlotId,'frame',payload,()=>{});
+  w._frame(file,'readback');this.hint=null;this.progress=null;w._writeFrameScanHint();return w._receipt(p.operation.operationId,p.operation.epoch);
+ }
+ _resume(d){
+  this._ready();const {page:located,state:initial,startOrdinal}=this._locate(d);let page=located,state=initial;
+  // Upgrade advice only after the runtime completed the full original
+  // recovery. The same authenticated work page/parent is preserved; this
+  // changes a hint purpose, never invents an ordinal advance or business ACK.
+  if(page&&this.w._attestedPrefixReady&&this.hint?.protocol!==PREPARATION_ATTESTED_PROGRESS_PROTOCOL)this._saveProgress(d,page,startOrdinal,{force:true});
+  this._resumedAssignment=!!state.assignment;
+  const signedWork=page&&this.w.preparationCodec.decodeWork(objectBytes(page.payload.auth));
+  this._authenticatedAssignment=this.w.io._managedWritePhase&&state.assignment&&typeof this.w.io.createMany==='function'&&signedWork&&this.equal(signedWork,this._workAuth(d,this._workBody(page.payload)))?{preparation:pointer(d),parent:this.clone(this._parent()),stateHash:this.digest(page.payload.state),workPage:pointer(page)}:null;
+  this._pathsPrefetched=false;
+  if(!this.w.io._managedWritePhase&&state.phase==='cow'&&typeof this.w._prefetchMutationPaths==='function')this._pathsPrefetched=this.w._prefetchMutationPaths({operation:d.payload.operation,changes:this._changes(d,state),stateRoot:d.payload.stateRoot,receiptRoot:d.payload.receiptRoot},false);
+  if(!this.w.io._managedWritePhase&&state.assignment&&typeof this.w.io.prefetchFiles==='function'&&page)for(let at=0;at<page.payload.dependencies.length;at+=16)this.w.io.prefetchFiles(page.payload.dependencies.slice(at,at+16).map(r=>r.id),this.w.limits.maxFileBytes);
+  if(!page&&this.w._receipt(d.payload.operation.operationId,d.payload.operation.epoch)!==null)this._error('WRITER_PREPARATION_DUPLICATE_OPERATION');
+  try{
+   while(true){
+    if(!this.w.canContinuePreparation())this._pending(d,page,startOrdinal);
+    if(state.phase==='done')return this._finish(d,page);
+    // Allocate only in memory here. The assignment cannot be used until its
+    // immutable work page wins and has been read back and authenticated.
+    let next=state;const steps=[];this._pageDependencies=new Map();
+    do {
+     const needAssignment=next.phase==='cow'&&next.cow&&!next.assignment&&this._planner(d,next).nextRecipe(next.cow).kind==='node';
+     // Preserve earlier domain/verification progress before starting a fresh
+     // multi-node planning unit late in the request. The next cold invocation
+     // can use a full stable-ID batch instead of serial singleton batches.
+     if(needAssignment&&steps.length&&typeof this.w.io.createMany==='function'&&!this.w.canContinuePreparation(this._pathsPrefetched?9000:18000))break;
+     const batchFits=!needAssignment||!this.w.io._managedWritePhase||[d.payload.stateRoot,d.payload.receiptRoot].every((ref,i)=>!ref||this.w._node(ref,i?'receipts':'entities',0).type==='leaf');
+     const assignedId=needAssignment?Array.from({length:typeof this.w.io.createMany==='function'&&this.w.canContinuePreparation(this._pathsPrefetched?9000:18000)?(batchFits?4:2):1},()=>this.w._id()):null;
+     next=this._transition(d,next,assignedId);steps.push(assignedId);
+     // Newly assigned IDs must first win an immutable page. An output assigned
+     // in the PREVIOUS page may be verified and combined with later pure steps.
+     if(next.assignment||next.phase==='done')break;
+    } while(steps.length<16&&this.w.canContinuePreparation(13000));
+    page=this._appendWork(d,page,next,steps,[...this._pageDependencies.values()]);this._pageDependencies=null;state=page.payload.state;
+    this._saveProgress(d,page,startOrdinal);
+    if(state.phase!=='done'&&!state.assignment&&typeof this.w.io.createMany==='function'&&!this.w.canContinuePreparation(this._pathsPrefetched?9000:18000))this._pending(d,page,startOrdinal);
+   }
+  }catch(error){
+   if(['STORE_YIELD','WRITER_CREATE_UNRESOLVED','STORE_READ_UNRESOLVED','STORE_METADATA_UNRESOLVED','STORE_IDS_UNRESOLVED'].includes(error.code||error.message)){this._saveProgress(d,page,startOrdinal,{force:true});if(this.progress)Object.assign(error,{recovery:this.clone(this.progress),...this.progress});}
+   throw error;
+  }
+ }
+ requireVacant(){const d=this.w._read(this.w._state.nextPreparationId,'preparation',null,true);if(!d)return;this._checkDescriptor(d);this._resume(d);this._error('WRITER_CONTENTION',true);}
+ command(command,digest){
+  const w=this.w;this._ready();const phase=w.io.getVerifiedReadPhase?.();if(!phase||!w._state||w._verifiedPhase!==phase)w.recoveryBarrier();
+  for(let attempt=0;attempt<w.limits.maxContention;attempt++){
+   const s=w._state;let pending=null;
+   if(this.hint&&this.equal(this.hint.parent,this._parent())&&this.hint.commitSlotId===s.nextSlotId&&this.hint.preparation.id===s.nextPreparationId)pending=this._checkDescriptor(w._read(s.nextPreparationId,'preparation',this.hint.preparation));
+   const samePending=pending&&pending.payload.operation.operationId===command.operationId&&pending.payload.operation.epoch===command.epoch;
+   const operation={operationId:command.operationId,epoch:command.epoch,digest},receiptAdmission=pending&&this.hint.admission&&this.equal(this.hint.admission,operation);
+   if(!samePending&&!receiptAdmission){const prior=w._checkReplay(operation);if(prior)return prior;}else if(samePending&&pending.payload.operation.digest!==digest)this._error('OP_ID_REUSED');
+   // Only an actual null lookup or an exact authenticated unchanged-parent fact
+   // authorizes this accelerator. Advisory mismatches always fall back to IO.
+   this.admission={parent:this.clone(this._parent()),operation};
+   if(command.store!==w.storeId)this._error('STORE_ID_MISMATCH');if(command.generation!==s.datasetGeneration)this._error('DATASET_GENERATION_MISMATCH');if(!s.acceptedEpochs.includes(command.epoch))this._error('OPERATION_EPOCH_EXPIRED');if(!s.nextPreparationId||s.writerFence!==2)this._error('WRITER_FORMAT_FENCE_REQUIRED');if(!Number.isSafeInteger(command.expectedVersion)||command.expectedVersion<0||command.expectedVersion>=Number.MAX_SAFE_INTEGER)this._error('COMMAND_INVALID');if(this.digest(command)!==digest)this._error('WRITER_PREPARATION_DIGEST_INVALID');
+   if(encodeUtf8(this.canonical(command.value)).length>w.limits.maxValueBytes)this._error('WRITER_VALUE_TOO_LARGE');
+   // Validate permanent shape/key/scope without occupying the immutable slot.
+   const adapter=w.preparedAppAdapter?.({command,digest,base:{storeId:w.storeId,datasetGeneration:s.datasetGeneration,acceptedEpochs:s.acceptedEpochs,writerFence:2}});if(!adapter)this._error('WRITER_PREPARATION_ADAPTER_REQUIRED');const admitted=adapter.advance(adapter.initialState(),()=>this._error('WRITER_PREPARATION_INVALID'));if(admitted.kind!=='progress')this._error(admitted.error||'COMMAND_INVALID');
+   let d=pending||w._read(s.nextPreparationId,'preparation',null,true);
+   if(!d&&s.replayFrames>=w.limits.checkpointEvery){w._automaticCheckpoint();w.recoveryBarrier();continue;}
+   d=d?this._checkDescriptor(d):this._descriptor(command,digest,'app-command-v2',{knownAbsent:true});
+   const same=d.payload.operation.operationId===command.operationId&&d.payload.operation.epoch===command.epoch;if(same&&d.payload.operation.digest!==digest)this._error('OP_ID_REUSED');
+   const receipt=this._resume(d);if(same&&receipt)return receipt;w.recoveryBarrier();
+  }this._error('WRITER_CONTENTION',true);
+ }
+ checkpoint(command){
+  this._ready();let d=this.w._read(this.w._state.nextPreparationId,'preparation',null,true);d=d?this._checkDescriptor(d):this._descriptor({operationId:command.operationId,epoch:command.epoch,digest:command.digest,changes:[],references:[],result:command.result},command.digest,'checkpoint-v1',{knownAbsent:true});
+  const receipt=this._resume(d);return d.payload.operation.operationId===command.operationId&&d.payload.operation.epoch===command.epoch?receipt:null;
+ }
+ verifyFrame(f,{verifiedTransition=false}={}){
+  const p=f.payload;if(!p.certificate&&!p.preparation)return false;
+  if(!p.certificate||!p.preparation||!Array.isArray(p.references)||p.references.length)this._error('WRITER_PREPARATION_CERTIFICATE_INVALID');
+  const {certificate,...core}=p,cert=this.w._read(certificate.id,'transition-certificate',certificate),c=cert.payload;
+  if(!exact(c,'version,preparation,finalWorkRef,proof')||c.version!==1||!this.equal(c.preparation,p.preparation)||!this.refOk(c.finalWorkRef)||!c.finalWorkRef)this._error('WRITER_PREPARATION_CERTIFICATE_INVALID');
+  // Only the caller's exact current-INDEX authenticated descendant witness
+  // may attest this already-verified publication transition. Certificate bytes,
+  // hash, identity and current privacy were still checked above. This prevents
+  // old-key checkpoint replay from starving the following preparation forever.
+  const expected={storeId:this.w.storeId,writerScriptId:this.w.writerScriptId,schemaVersion:this.w.schemaVersion,datasetGeneration:p.datasetGeneration,preparation:p.preparation,parent:this._parent(),commitSlotId:f.id,protocol:PREPARATION_CERTIFICATE_PROTOCOL,frameCoreHash:this.digest(core),finalWorkRef:c.finalWorkRef,proofVersion:1};
+  if(verifiedTransition){if(!exact(c.proof,'mac,payload')||typeof c.proof.mac!=='string'||!(/^[a-f0-9]{64}$/.test(c.proof.mac))||!this.equal(c.proof.payload,expected))this._error('WRITER_PREPARATION_CERTIFICATE_INVALID');return true;}
+  const decoded=this.w.preparationCodec?.decodeCertificate(objectBytes(c.proof));if(decoded&&this.equal(decoded,expected))return true;
+  // Key rotation never makes an immutable committed frame unreadable. Replay
+  // actual work transitions, preserving current-key verified-prefix hints.
+  this._ready();const s=this.w._state,saved={receiptRoot:s.receiptRoot,headReceipt:s.headReceipt,indexHead:s.indexHead,nextIndexId:s.nextIndexId,indexLinks:s.indexLinks,replayFrames:s.replayFrames};
+  try{
+   // A checkpoint manifest restores a cut with the previous head receipt
+   // already carried. For independent proof replay, recover that exact old
+   // parent by its cut hash, not an unauthenticated descriptor claim.
+   if(p.checkpoint&&s.headReceipt===null&&s.revision>0){const parent=this.w._read(s.headId,'frame',{id:s.headId,hash:s.headHash});if(parent.payload.revision!==s.revision||!this.equal(parent.payload.stateRoot,s.stateRoot)||parent.payload.nextSlotId!==s.nextSlotId||parent.payload.nextPreparationId!==s.nextPreparationId)this._error('WRITER_PREPARATION_PARENT_INVALID');s.receiptRoot=parent.payload.receiptRoot;s.headReceipt=this.w._receiptFor(parent);if(s.indexHead?.id===p.checkpoint.indexId){
+    s.indexHead=p.checkpoint.previousIndex;s.nextIndexId=p.checkpoint.indexId;s.indexLinks--;
+    // Restore the original parent's replay ordinal as well as its receipt and
+    // INDEX context. A manifest-restored cut has replayFrames=0, which cannot
+    // encode a resumable signed frame seed for old-key semantic verification.
+    let priorCut=0;
+    if(s.indexHead){const previous=this.w._read(s.indexHead.id,'checkpoint-index',s.indexHead);this.w._indexPayload(previous.payload,previous.id,previous.payload.previousIndex);if(previous.payload.nextIndexId!==s.nextIndexId)this._error('WRITER_PREPARATION_PARENT_INVALID');priorCut=previous.payload.cut.revision;}
+    s.replayFrames=s.revision-priorCut;
+    if(!Number.isSafeInteger(s.replayFrames)||s.replayFrames<1||s.replayFrames>this.w.limits.maxReplayFrames)this._error('WRITER_PREPARATION_PARENT_INVALID');
+   }}
+   const d=this._checkDescriptor(this.w._read(p.preparation.id,'preparation',p.preparation)),located=this._locate(d);if(!located.page||!this.equal(pointer(located.page),c.finalWorkRef)||located.state.phase!=='done')this._error('WRITER_PREPARATION_PROOF_INCOMPLETE');const verified=this._finish(d,located.page,{expectedFrame:f});if(p.checkpoint)this.semanticFrame=pointer(f);return verified;
+  }finally{Object.assign(s,saved);}
+ }
+}
+
+return {PreparedWriter};
+})();
+const m11 = (function(){
 /**
  * Portable, synchronous GAS V8 reserved-slot writer. No external state is
  * authoritative: the fixed Drive bootstrap, immutable frames, index links and
@@ -1132,16 +2119,20 @@ const m6 = (function(){
  * safe legacy admission limit. Receipts and revision proofs are never purged.
  * Referenced shards are verified on bounded traversal, not by a full-store scrub.
  */
-const {CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL,FRAME_SCAN_HINT_PROTOCOL} = m5;
-const {IncrementalSha256, encodeUtf8, decodeUtf8} = m1;
+const {CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL,FRAME_SCAN_HINT_PROTOCOL,ATTESTED_FRAME_HINT_PROTOCOL} = m7;
+const {IncrementalSha256, encodeUtf8, decodeUtf8} = m3;
+const {PreparedWriter} = m10;
 
 const WRITER_PROTOCOL = 'mypace-reserved-v1';
-const WRITER_ROLES = Object.freeze(['bootstrap','frame','index-node','checkpoint-manifest','checkpoint-index']);
+const WRITER_ROLES = Object.freeze(['bootstrap','frame','index-node','checkpoint-manifest','checkpoint-index','preparation','preparation-work','transition-certificate']);
 const DEFAULT_LIMITS = Object.freeze({maxFileBytes:256*1024,maxValueBytes:128*1024,maxChanges:128,maxReferences:128,maxLeafEntries:512,maxCachedNodes:64,maxReplayFrames:256,maxIndexLinks:4096,maxIndexScanLinks:64,checkpointEvery:16,maxContention:4,maxCreateAttempts:2});
 const own=(o,k)=>Object.prototype.hasOwnProperty.call(o,k);
 const validId=s=>typeof s==='string' && /^[A-Za-z0-9_-]{1,128}$/.test(s);
 const digestOk=s=>typeof s==='string' && /^[0-9a-f]{64}$/.test(s);
 const integer=n=>Number.isSafeInteger(n)&&n>=0;
+const FRAME_KEYS='acceptedEpochs,changes,checkpoint,committedAt,datasetGeneration,nextSlotId,operation,parent,receiptRoot,references,result,revision,stateRoot';
+const frameShape=p=>{if(!p)return false;const keys=Object.keys(p).sort().join(',');return [FRAME_KEYS,FRAME_KEYS+',writerFence', (FRAME_KEYS+',nextPreparationId,writerFence').split(',').sort().join(','),(FRAME_KEYS+',nextPreparationId,preparation,certificate,writerFence').split(',').sort().join(',')].includes(keys)&&(!own(p,'writerFence')||p.writerFence===2)&&(!own(p,'nextPreparationId')||validId(p.nextPreparationId))&&(!own(p,'certificate')||(refOk(p.certificate)&&p.certificate&&refOk(p.preparation)&&p.preparation));};
+const fenceOf=p=>own(p,'writerFence')?p.writerFence:0;
 function fail(code,retryable=false) {const e=new Error(code);e.code=code;if(retryable)e.retryable=true;throw e;}
 function canonical(value,depth=0) {
   if(depth>40)fail('WRITER_VALUE_DEPTH');
@@ -1162,17 +2153,20 @@ function receiptKey(epoch,id) {return JSON.stringify([epoch,id]);}
 function pointer(file) {return {id:file.id,hash:file.hash};}
 
 class ReservedSlotWriter {
-  constructor({io,anchorId,bootstrapId,storeId,writerScriptId,scriptId,schemaVersion=3,limits={},clock=()=>new Date().toISOString(),validateMutation,verifyReferences,checkpointHintId,checkpointHintAnchorHash,checkpointHintCodec}) {
+  constructor({io,anchorId,bootstrapId,storeId,writerScriptId,scriptId,schemaVersion=3,limits={},clock=()=>new Date().toISOString(),validateMutation,verifyReferences,checkpointHintId,checkpointHintAnchorHash,checkpointHintCodec,progressiveRecovery=false,canContinueRecovery=()=>true,preparationCodec,preparedAppAdapter,canContinuePreparation=()=>true}) {
     anchorId=anchorId||bootstrapId;writerScriptId=writerScriptId||scriptId;
     if(!io || ['getScriptId','assertLockHeld','allocateIds','readFile','createFile'].some(k=>typeof io[k]!=='function') || !validId(anchorId) || !validId(storeId) || !validId(writerScriptId) || !integer(schemaVersion) || schemaVersion<1 || typeof clock!=='function')fail('WRITER_CONFIG_INVALID');
     if(checkpointHintId!==undefined&&(!validId(checkpointHintId)||[anchorId,storeId,writerScriptId].includes(checkpointHintId)))fail('WRITER_HINT_CONFIG');
     if(checkpointHintAnchorHash!==undefined&&(!checkpointHintId||!digestOk(checkpointHintAnchorHash)))fail('WRITER_HINT_CONFIG');
     if(checkpointHintCodec!==undefined&&(!checkpointHintId||typeof checkpointHintCodec?.encode!=='function'||typeof checkpointHintCodec?.decode!=='function'||typeof io.readCheckpointHint!=='function'||typeof io.writeCheckpointHint!=='function'))fail('WRITER_HINT_CONFIG');
+    if(typeof progressiveRecovery!=='boolean'||typeof canContinueRecovery!=='function')fail('WRITER_CONFIG_INVALID');
+    this.progressiveRecovery=progressiveRecovery&&!!checkpointHintCodec;this.canContinueRecovery=canContinueRecovery;this._frameHintRef=null;this._checkpointProgress=null;this._indexProgress=null;
     this.checkpointHintId=checkpointHintId;this.checkpointHintAnchorHash=checkpointHintAnchorHash;this.checkpointHintCodec=checkpointHintCodec;this._hintRef=null;
     this.io=io;this.anchorId=anchorId;this.storeId=storeId;this.writerScriptId=writerScriptId;this.schemaVersion=schemaVersion;this.clock=clock;this.validateMutation=validateMutation;this.verifyReferences=verifyReferences;
     this.limits={...DEFAULT_LIMITS,...limits};
     if(Object.keys(limits).some(k=>!own(DEFAULT_LIMITS,k)) || Object.values(this.limits).some(v=>!Number.isSafeInteger(v)||v<1) || this.limits.maxValueBytes>this.limits.maxFileBytes || this.limits.checkpointEvery+2>=this.limits.maxReplayFrames)fail('WRITER_LIMITS_INVALID');
-    this._state=null;this._cache=new Map();this._ids=[];this._verifiedPhase=null;this._recovering=false;
+    this.preparationCodec=preparationCodec;this.preparedAppAdapter=preparedAppAdapter;if(!preparationCodec||!preparedAppAdapter)this.prepareAppCommand=undefined;this.canContinuePreparation=canContinuePreparation;this._prepared=new PreparedWriter(this,{digest:writerDigest,canonical,clone,equal,refOk,validId,fail});
+    this._state=null;this._cache=new Map();this._nodeCachePhase=null;this._nodeCachePhaseRequired=typeof io.getVerifiedReadPhase==='function';this._ids=[];this._verifiedPhase=null;this._recovering=false;this._frozenReadPhase=null;this._frozenAnchor=null;
   }
   _guard() {
     if(this.io.getScriptId()!==this.writerScriptId)fail('WRITER_SCRIPT_MISMATCH');
@@ -1261,8 +2255,11 @@ class ReservedSlotWriter {
   }
   _node(ref,tree,depth) {
     if(!refOk(ref)||!ref)fail('WRITER_INDEX_REFERENCE_INVALID');
-    const key=ref.id+':'+ref.hash;
-    let f=this._cache.get(key);if(!f){f=this._read(ref.id,'index-node',ref);this._cache.set(key,f);if(this._cache.size>this.limits.maxCachedNodes)this._cache.delete(this._cache.keys().next().value);}
+    const key=ref.id+':'+ref.hash;let cacheable=true;
+    // IO implementations with phase evidence authorize node-cache reuse only
+    // under that exact positive token. Bytes-only/no-cache modes provide none.
+    if(this._nodeCachePhaseRequired){const phase=this.io.getVerifiedReadPhase();if(!phase||phase!==this._nodeCachePhase){this._cache.clear();cacheable=false;}}
+    let f=cacheable?this._cache.get(key):null;if(!f){f=this._read(ref.id,'index-node',ref);if(cacheable){this._cache.set(key,f);if(this._cache.size>this.limits.maxCachedNodes)this._cache.delete(this._cache.keys().next().value);}}
     const p=f.payload;
     if(!p||p.tree!==tree||p.depth!==depth||!validId(p.slotId)||!['leaf','branch'].includes(p.type))fail('WRITER_INDEX_INVALID');
     if(p.type==='leaf') {
@@ -1340,6 +2337,70 @@ class ReservedSlotWriter {
   _assertReady(){this._guard();if(!this._state||this._recovering)fail('WRITER_RECOVERY_REQUIRED');}
   getEntity(key) {this._assertReady();this._key(key);return this._get(this._state.stateRoot,key);}
   get(key) {return this.getEntity(key);}
+  // Server-internal frozen-view readers. The public API may call these only
+  // with a verified, domain-bound signed cut, never caller-selected raw roots.
+  captureReadView() {this._assertReady();const s=this._state;return clone({storeId:this.storeId,writerScriptId:this.writerScriptId,schemaVersion:this.schemaVersion,anchorId:this.anchorId,anchorHash:s.anchorHash,writerFence:s.writerFence||0,datasetGeneration:s.datasetGeneration,revision:s.revision,stateRoot:s.stateRoot,receiptRoot:s.receiptRoot,acceptedEpochs:s.acceptedEpochs,headId:s.headId,headHash:s.headHash});}
+  _guardFrozenRead() {
+    this._guard();const phase=typeof this.io.getVerifiedReadPhase==='function'?this.io.getVerifiedReadPhase():null;
+    this._nodeCachePhaseRequired=this._nodeCachePhaseRequired||!!phase;if(this._nodeCachePhase!==phase){this._cache.clear();this._nodeCachePhase=phase;}
+    if(!phase||phase!==this._frozenReadPhase){if(!phase||phase!==this._verifiedPhase)this._cache.clear();this._frozenReadPhase=phase;this._frozenAnchor=null;}
+    if(!this._frozenAnchor){const a=this._read(this.anchorId,'bootstrap');this._checkAnchor(a);this._frozenAnchor=a;}
+    return this._frozenAnchor;
+  }
+  validateReadView(view) {
+    const anchor=this._guardFrozenRead();
+    if(!view||view.storeId!==this.storeId||view.writerScriptId!==this.writerScriptId||view.schemaVersion!==this.schemaVersion||view.anchorId!==this.anchorId||view.anchorHash!==anchor.hash||view.datasetGeneration!==anchor.payload.datasetGeneration||![0,2].includes(view.writerFence)||!integer(view.revision)||!validId(view.headId)||!digestOk(view.headHash)||!refOk(view.stateRoot)||!refOk(view.receiptRoot))fail('WRITER_READ_VIEW_INVALID');
+    this._epochs(view.acceptedEpochs);return true;
+  }
+  readEntityAtRoot(root,key) {this._guardFrozenRead();if(!refOk(root))fail('WRITER_INDEX_REFERENCE_INVALID');this._key(key);return this._get(root,key);}
+  // Stable, bounded DFS over one immutable COW root. Position contains only
+  // radix digits/entry offset; the signed API cursor binds the root separately.
+  // Nonmatching entries still advance position, preventing import-heavy roots
+  // from trapping a snapshot on the same empty page.
+  scanEntitiesAtRoot(root,{position=null,prefix='app/data/',limit=128,maxBytes=229376,scanLimit=2048,nodeLimit=128,canContinue=()=>true}={}) {
+    this._guardFrozenRead();if(!refOk(root)||typeof prefix!=='string'||!prefix||!integer(limit)||limit<1||limit>512||!integer(maxBytes)||maxBytes<1||maxBytes>262144||!integer(scanLimit)||scanLimit<1||scanLimit>8192||!integer(nodeLimit)||nodeLimit<64||nodeLimit>512||typeof canContinue!=='function')fail('WRITER_SCAN_CONFIG');
+    if(position!==null&&(!position||Object.keys(position).sort().join(',')!=='offset,path'||typeof position.path!=='string'||!/^[0-9a-f]{0,64}$/.test(position.path)||!integer(position.offset)||position.offset>this.limits.maxLeafEntries))fail('WRITER_SCAN_CURSOR_INVALID');
+    if(root===null){if(position!==null)fail('WRITER_SCAN_CURSOR_INVALID');return {entries:[],position:null,done:true,scanned:0,bytes:2};}
+    const start=position?clone(position):{path:'',offset:0};let current=clone(start),entries=[],scanned=0,nodes=0,bytes=2,done=false;
+    const open=pos=>{
+      let reference=root,depth=0,path='',stack=[];
+      while(true){if(++nodes>nodeLimit)fail('SYNC_BUDGET_YIELD',true);const node=this._node(reference,'entities',depth);
+        if(node.type==='leaf'){if(pos.path.length>depth||pos.offset>node.entries.length)fail('WRITER_SCAN_CURSOR_INVALID');return {node,path,stack,offset:pos.offset};}
+        if(pos.path.length<=depth&&pos.offset!==0)fail('WRITER_SCAN_CURSOR_INVALID');
+        const index=pos.path.length>depth?node.children.findIndex(c=>c.digit===pos.path[depth]):0;if(index<0)fail('WRITER_SCAN_CURSOR_INVALID');
+        stack.push({node,index,path});const child=node.children[index];reference=child.ref;path+=child.digit;depth++;
+      }
+    };
+    const nextPosition=leaf=>{for(let n=leaf.stack.length-1;n>=0;n--){const ancestor=leaf.stack[n],next=ancestor.node.children[ancestor.index+1];if(next)return {path:ancestor.path+next.digit,offset:0};}return null;};
+    while(!done&&entries.length<limit&&scanned<scanLimit){
+      if(!canContinue())break;
+      let leaf;try{leaf=open(current);}catch(error){if(scanned&&error?.retryable===true)break;throw error;}
+      let offset=leaf.offset;
+      while(offset<leaf.node.entries.length&&entries.length<limit&&scanned<scanLimit){
+        if(!canContinue())break;
+        const raw=leaf.node.entries[offset];let entity=null,size=0;
+        if(raw.key.startsWith(prefix)){entity=this._validateEntity(raw.value,raw.key);size=encodeUtf8(canonical({...entity,key:entity.key.slice(prefix.length)})).length+(entries.length?1:0);if(bytes+size>maxBytes){if(!entries.length&&scanned===0)fail('WRITER_SCAN_ENTRY_TOO_LARGE');break;}}
+        offset++;scanned++;current={path:leaf.path,offset};
+        if(entity){entries.push(clone(entity));bytes+=size;}
+      }
+      if(offset<leaf.node.entries.length)break;
+      const next=nextPosition(leaf);if(next===null){done=true;current=null;break;}
+      current=next;
+    }
+    const advanced=done||current.path!==start.path||current.offset!==start.offset;
+    if(!done&&!advanced)fail('SYNC_BUDGET_YIELD',true);
+    return {entries,position:current,done,scanned,nodes,bytes};
+  }
+  assertMinimumAtReadView(view,min) {
+    this.validateReadView(view);
+    if(!min||!integer(min.revision)||!digestOk(min.hash))fail('WRITER_ACKNOWLEDGEMENT_INVALID');
+    if(min.revision>view.revision)return false;
+    if(min.revision===0){if(min.hash!==view.anchorHash)fail('WRITER_ACKNOWLEDGEMENT_MISMATCH');return true;}
+    if(min.revision===view.revision){if(min.hash!==view.headHash)fail('WRITER_ACKNOWLEDGEMENT_MISMATCH');return true;}
+    const proof=this._lookup(view.receiptRoot,'receipts','@revision:'+min.revision);
+    if(!proof||proof.revision!==min.revision||proof.hash!==min.hash)fail('WRITER_ACKNOWLEDGEMENT_UNPROVEN');return true;
+  }
+
   _key(key) {if(typeof key!=='string'||key.length<1||encodeUtf8(key).length>512)fail('WRITER_KEY_INVALID');}
   _receipt(op,epoch) {
     const s=this._state,key=receiptKey(epoch,op);
@@ -1355,26 +2416,46 @@ class ReservedSlotWriter {
     if(!Array.isArray(refs)||refs.length>this.limits.maxReferences)fail('WRITER_REFERENCES_INVALID');
     if(refs.length && (typeof this.verifyReferences!=='function'||this.verifyReferences(clone(refs),{phase,slotId:frame.id,revision:frame.revision,changes:clone(frame.changes),getEntity:key=>this._get(this._state.stateRoot,key)})!==true))fail('WRITER_REFERENCES_UNVERIFIED');
   }
-  _frame(f,phase) {
+  _prefetchMutationPaths(payload,includeOperation=true){
+    if(typeof this.io.prefetchFiles!=='function')return false;
+    const s=this._state,entityKeys=payload.changes.map(c=>c?.key).filter(k=>typeof k==='string'),receiptKeys=includeOperation?[receiptKey(payload.operation.epoch,payload.operation.operationId)]:[];
+    if(s.headReceipt)receiptKeys.push(receiptKey(s.headReceipt.epoch,s.headReceipt.operationId),'@revision:'+s.revision);
+    let frontier=[];for(const [tree,roots,keys] of [['entities',[s.stateRoot,payload.stateRoot],entityKeys],['receipts',[s.receiptRoot,payload.receiptRoot],receiptKeys]])if(keys.length)for(const ref of roots)if(ref)frontier.push({ref,tree,depth:0,keys});
+    let visited=0,complete=true;
+    while(frontier.length&&visited<64){
+      const merged=new Map();for(const task of frontier){const key=task.tree+':'+task.depth+':'+task.ref.id+':'+task.ref.hash,old=merged.get(key);if(old)old.keys=[...new Set([...old.keys,...task.keys])];else merged.set(key,{...task,keys:[...new Set(task.keys)]});}
+      const tasks=[...merged.values()].slice(0,64-visited);if(tasks.length<merged.size)complete=false;frontier=[];
+      for(let at=0;at<tasks.length;at+=16)this.io.prefetchFiles(tasks.slice(at,at+16).map(t=>t.ref.id),this.limits.maxFileBytes);
+      for(const task of tasks){visited++;const node=this._node(task.ref,task.tree,task.depth);if(node.type!=='branch')continue;const groups=new Map();for(const key of task.keys){const digit=writerDigest(key)[task.depth];if(!groups.has(digit))groups.set(digit,[]);groups.get(digit).push(key);}for(const child of node.children)if(groups.has(child.digit))frontier.push({ref:child.ref,tree:task.tree,depth:task.depth+1,keys:groups.get(child.digit)});}
+    }
+    // This is bounded prefetch, not a proof. Full existing transition/receipt
+    // checks below still cover untouched children, leaf splits and all values.
+    return complete&&frontier.length===0;
+  }
+  _frame(f,phase,{verifiedOperation=false,verifiedTransition=false}={}) {
     const p=f.payload,s=this._state;
-    if(!p||Object.keys(p).sort().join(',')!=='acceptedEpochs,changes,checkpoint,committedAt,datasetGeneration,nextSlotId,operation,parent,receiptRoot,references,result,revision,stateRoot'||p.datasetGeneration!==s.datasetGeneration||p.revision!==s.revision+1||!equal(p.parent,{id:s.headId,hash:s.headHash})||f.id!==s.nextSlotId||!validId(p.nextSlotId)||p.nextSlotId===f.id||p.nextSlotId===s.headId||!refOk(p.stateRoot)||!refOk(p.receiptRoot)||typeof p.committedAt!=='string'||!Number.isFinite(Date.parse(p.committedAt)))fail('WRITER_FRAME_INVALID');
-    const op=p.operation;
-    if(!op||Object.keys(op).sort().join(',')!=='digest,epoch,operationId'||!validId(op.operationId)||!validId(op.epoch)||!digestOk(op.digest)||!s.acceptedEpochs.includes(op.epoch)||this._receipt(op.operationId,op.epoch)!==null)fail('WRITER_FRAME_OPERATION_INVALID');
+    if(!frameShape(p)||p.datasetGeneration!==s.datasetGeneration||p.revision!==s.revision+1||!equal(p.parent,{id:s.headId,hash:s.headHash})||f.id!==s.nextSlotId||!validId(p.nextSlotId)||p.nextSlotId===f.id||p.nextSlotId===s.headId||!refOk(p.stateRoot)||!refOk(p.receiptRoot)||typeof p.committedAt!=='string'||!Number.isFinite(Date.parse(p.committedAt)))fail('WRITER_FRAME_INVALID');
+    if(fenceOf(p)<(s.writerFence||0)||s.nextPreparationId&&!p.nextPreparationId)fail('WRITER_FORMAT_FENCE_REQUIRED');
+    if(p.nextPreparationId&&[f.id,p.nextSlotId,s.headId,s.nextPreparationId,this.anchorId,this.checkpointHintId].includes(p.nextPreparationId))fail('WRITER_PREPARATION_SLOT_INVALID');
+    const certified=this._prepared.verifyFrame(f,{verifiedTransition}),op=p.operation;
+    if(!op||Object.keys(op).sort().join(',')!=='digest,epoch,operationId'||!validId(op.operationId)||!validId(op.epoch)||!digestOk(op.digest)||!s.acceptedEpochs.includes(op.epoch))fail('WRITER_FRAME_OPERATION_INVALID');
     this._epochs(p.acceptedEpochs);
     if(!Array.isArray(p.changes)||p.changes.length>this.limits.maxChanges)fail('WRITER_FRAME_CHANGES_INVALID');
+    if(!certified){this._prefetchMutationPaths(p,!verifiedOperation);if(!verifiedOperation&&this._receipt(op.operationId,op.epoch)!==null)fail('WRITER_FRAME_OPERATION_INVALID');}
     const keys=new Set();
-    for(const c of p.changes){if(!c||Object.keys(c).sort().join(',')!=='entity,expectedVersion,key'||keys.has(c.key)||!integer(c.expectedVersion))fail('WRITER_FRAME_CHANGES_INVALID');this._key(c.key);keys.add(c.key);const prev=this._get(s.stateRoot,c.key),entity=this._validateEntity(c.entity,c.key);if((prev?prev.version:0)!==c.expectedVersion||entity.version!==c.expectedVersion+1||!equal(this._get(p.stateRoot,c.key),entity))fail('WRITER_FRAME_ENTITY_MISMATCH');}
-    this._verifyTree(s.stateRoot,p.stateRoot,'entities',p.changes.map(c=>({key:c.key,value:c.entity})),f.id);
+    for(const c of p.changes){if(!c||Object.keys(c).sort().join(',')!=='entity,expectedVersion,key'||keys.has(c.key)||!integer(c.expectedVersion))fail('WRITER_FRAME_CHANGES_INVALID');this._key(c.key);keys.add(c.key);const entity=this._validateEntity(c.entity,c.key);if(entity.version!==c.expectedVersion+1)fail('WRITER_FRAME_ENTITY_MISMATCH');if(!certified){const prev=this._get(s.stateRoot,c.key);if((prev?prev.version:0)!==c.expectedVersion||!equal(this._get(p.stateRoot,c.key),entity))fail('WRITER_FRAME_ENTITY_MISMATCH');}}
+    if(!certified)this._verifyTree(s.stateRoot,p.stateRoot,'entities',p.changes.map(c=>({key:c.key,value:c.entity})),f.id);
     // The prior head receipt is carried forward with its full verified hash.
     // The current receipt lives in THIS frame until the following commit.
     const receiptUpdates=s.headReceipt?[{key:receiptKey(s.headReceipt.epoch,s.headReceipt.operationId),value:s.headReceipt},{key:'@revision:'+s.revision,value:{revision:s.revision,hash:s.headHash}}]:[];
-    this._verifyTree(s.receiptRoot,p.receiptRoot,'receipts',receiptUpdates,f.id);
+    if(!certified)this._verifyTree(s.receiptRoot,p.receiptRoot,'receipts',receiptUpdates,f.id);
     this._refs(p.references,phase,{id:f.id,revision:p.revision,changes:p.changes});
     if(p.checkpoint)this._publication(f);
-    s.revision=p.revision;s.headId=f.id;s.headHash=f.hash;s.nextSlotId=p.nextSlotId;s.stateRoot=p.stateRoot;s.receiptRoot=p.receiptRoot;s.headReceipt=this._receiptFor(f);s.acceptedEpochs=p.acceptedEpochs.slice();s.replayFrames=p.checkpoint?1:s.replayFrames+1;
+    s.revision=p.revision;s.headId=f.id;s.headHash=f.hash;s.nextSlotId=p.nextSlotId;s.nextPreparationId=p.nextPreparationId||null;s.stateRoot=p.stateRoot;s.receiptRoot=p.receiptRoot;s.headReceipt=this._receiptFor(f);s.acceptedEpochs=p.acceptedEpochs.slice();s.replayFrames=p.checkpoint?1:s.replayFrames+1;s.writerFence=fenceOf(p);
+    if(p.checkpoint&&phase==='readback')this._checkpointProgress={phase:'checkpoint',revision:p.revision,indexLinks:s.indexLinks,cursorPersisted:true,cursorAdvanced:true};
   }
   _checkCut(cut) {
-    if(!cut||Object.keys(cut).sort().join(',')!=='hash,id,nextSlotId,revision'||!integer(cut.revision)||!validId(cut.id)||!digestOk(cut.hash)||!validId(cut.nextSlotId))fail('WRITER_CHECKPOINT_INVALID');
+    if(!cut||!['hash,id,nextSlotId,revision','hash,id,nextPreparationId,nextSlotId,revision'].includes(Object.keys(cut).sort().join(','))||!integer(cut.revision)||!validId(cut.id)||!digestOk(cut.hash)||!validId(cut.nextSlotId)||(own(cut,'nextPreparationId')&&!validId(cut.nextPreparationId)))fail('WRITER_CHECKPOINT_INVALID');
   }
   _indexPayload(p,id,previous,previousCut=-1) {
     if(!p||Object.keys(p).sort().join(',')!=='cut,manifestRef,nextIndexId,previousIndex,publishingFrame'||!refOk(p.manifestRef)||!p.manifestRef||!validId(p.nextIndexId)||p.nextIndexId===id||!refOk(p.previousIndex)||!equal(p.previousIndex,previous)||(p.previousIndex&&p.previousIndex.id===id)||!p.publishingFrame||Object.keys(p.publishingFrame).sort().join(',')!=='hash,id,revision'||!validId(p.publishingFrame.id)||!digestOk(p.publishingFrame.hash))fail('WRITER_CHECKPOINT_INDEX_INVALID');
@@ -1382,16 +2463,16 @@ class ReservedSlotWriter {
   }
   _manifest(ref,cut) {
     const f=this._read(ref.id,'checkpoint-manifest',ref),p=f.payload;
-    if(!p||Object.keys(p).sort().join(',')!=='acceptedEpochs,cut,datasetGeneration,receiptRoot,stateRoot'||p.datasetGeneration!==this._state.datasetGeneration||!equal(p.cut,cut)||!refOk(p.stateRoot)||!refOk(p.receiptRoot))fail('WRITER_CHECKPOINT_INVALID');
+    if(!p||!['acceptedEpochs,cut,datasetGeneration,receiptRoot,stateRoot','acceptedEpochs,cut,datasetGeneration,receiptRoot,stateRoot,writerFence'].includes(Object.keys(p).sort().join(','))||(own(p,'writerFence')&&p.writerFence!==2)||fenceOf(p)<(this._state.writerFence||0)||p.datasetGeneration!==this._state.datasetGeneration||!equal(p.cut,cut)||!refOk(p.stateRoot)||!refOk(p.receiptRoot))fail('WRITER_CHECKPOINT_INVALID');
     this._epochs(p.acceptedEpochs);return p;
   }
   _publication(f) {
     const c=f.payload.checkpoint,s=this._state;
     if(!c||Object.keys(c).sort().join(',')!=='cut,indexId,manifestRef,nextIndexId,previousIndex'||!validId(c.indexId)||!validId(c.nextIndexId)||!refOk(c.manifestRef)||!c.manifestRef||!refOk(c.previousIndex))fail('WRITER_CHECKPOINT_INVALID');
     this._checkCut(c.cut);
-    if(!equal(c.cut,{id:s.headId,hash:s.headHash,revision:s.revision,nextSlotId:s.nextSlotId}))fail('WRITER_CHECKPOINT_CUT_MISMATCH');
+    if(!equal(c.cut,{id:s.headId,hash:s.headHash,revision:s.revision,nextSlotId:s.nextSlotId,...(s.nextPreparationId?{nextPreparationId:s.nextPreparationId}:{})}))fail('WRITER_CHECKPOINT_CUT_MISMATCH');
     const m=this._manifest(c.manifestRef,c.cut);
-    if(!equal(m.stateRoot,s.stateRoot)||!equal(m.receiptRoot,f.payload.receiptRoot)||!equal(m.acceptedEpochs,s.acceptedEpochs))fail('WRITER_CHECKPOINT_STATE_MISMATCH');
+    if(fenceOf(m)!==(s.writerFence||0)||fenceOf(f.payload)!==(s.writerFence||0)||!equal(m.stateRoot,s.stateRoot)||!equal(m.receiptRoot,f.payload.receiptRoot)||!equal(m.acceptedEpochs,s.acceptedEpochs))fail('WRITER_CHECKPOINT_STATE_MISMATCH');
     const link={previousIndex:c.previousIndex,nextIndexId:c.nextIndexId,manifestRef:c.manifestRef,cut:c.cut,publishingFrame:{id:f.id,hash:f.hash,revision:f.payload.revision}};
     this._indexPayload(link,c.indexId,c.previousIndex);
     if(s.indexHead?.id!==c.indexId)this._indexAdmission(s.indexLinks);
@@ -1421,7 +2502,7 @@ class ReservedSlotWriter {
   }
   recoveryBarrier(options={}) {
     if(this._recovering)fail('WRITER_RECOVERY_REENTRANT');
-    this._recovering=true;this._persistFrameProgress=options.persistFrameProgress===true;this._frameProgress=null;this._frameProgressStart=0;
+    this._recovering=true;this._persistFrameProgress=options.persistFrameProgress===true||this.progressiveRecovery;this._frameProgress=null;this._frameProgressStart=0;
     try{return this._recover(options);}catch(error){
       if(this._frameProgress&&['STORE_YIELD','OWNER_BUDGET_YIELD','IMPORT_YIELD'].includes(error.code||error.message))Object.assign(error,{recoveryPhase:'frames',recoveredRevision:this._frameProgress.revision,cursorPersisted:true,cursorAdvanced:this._frameProgress.revision>this._frameProgressStart});
       this._state=null;this._cache.clear();this._verifiedPhase=null;throw error;
@@ -1430,11 +2511,11 @@ class ReservedSlotWriter {
   _hintPayload(ref,indexLinks=this._state.indexLinks,protocol=CHECKPOINT_HINT_PROTOCOL){const s=this._state;return {protocol,anchorId:this.anchorId,anchorHash:s.anchorHash,hintFileId:this.checkpointHintId,storeId:this.storeId,writerScriptId:this.writerScriptId,schemaVersion:this.schemaVersion,datasetGeneration:s.datasetGeneration,indexRef:ref,indexLinks};}
   _writeCheckpointHint(ref){
     if(!this.checkpointHintCodec||equal(this._hintRef,ref))return;
-    try{this.io.writeCheckpointHint(this.checkpointHintCodec.encode(this._hintPayload(ref)));this._hintRef=clone(ref);}catch(_){/* Advisory only: the immutable commit and mandatory index already won. */}
+    try{this.io.writeCheckpointHint(this.checkpointHintCodec.encode(this._hintPayload(ref)));this._hintRef=clone(ref);this._frameHintRef=null;}catch(_){/* Advisory only: the immutable commit and mandatory index already won. */}
   }
   _writeIndexScanHint(link,indexLinks){
     if(!this.checkpointHintCodec||!link)return false;
-    try{this.io.writeCheckpointHint(this.checkpointHintCodec.encode(this._hintPayload(pointer(link),indexLinks,INDEX_SCAN_HINT_PROTOCOL)));this._hintRef=null;return true;}
+    try{this.io.writeCheckpointHint(this.checkpointHintCodec.encode(this._hintPayload(pointer(link),indexLinks,INDEX_SCAN_HINT_PROTOCOL)));this._hintRef=pointer(link);this._frameHintRef=null;this._indexProgress={phase:'index',indexLinks,revision:link.payload.publishingFrame.revision,cursorPersisted:true,cursorAdvanced:true};return true;}
     catch(_){/* Lost writes or delayed regressions can cost work, never records. */return false;}
   }
   _recoveryPending(link,indexLinks,scannedLinks){
@@ -1443,61 +2524,90 @@ class ReservedSlotWriter {
     const error=new Error('WRITER_RECOVERY_PENDING');error.code=error.message;error.retryable=true;
     Object.assign(error,{indexLinks,scannedLinks,cursorPersisted});throw error;
   }
-  _authenticatedHint(){
+  _authenticatedHint(recoveryRead=undefined){
     if(!this.checkpointHintCodec)return null;
     let payload;
-    try{const bytes=this.io.readCheckpointHint();if(bytes===null)return null;payload=this.checkpointHintCodec.decode(bytes);}catch(error){if(error?.message==='STORE_YIELD'||error?.message==='STORE_LOCK_REQUIRED')throw error;return null;}
+    try{const bytes=recoveryRead===undefined?this.io.readCheckpointHint():recoveryRead.hintBytes;if(bytes===null)return null;payload=this.checkpointHintCodec.decode(bytes)||this._prepared.decodeHint(bytes);}catch(error){if(error?.message==='STORE_YIELD'||error?.message==='STORE_LOCK_REQUIRED')throw error;return null;}
     const s=this._state,base='anchorHash,anchorId,datasetGeneration,hintFileId,indexLinks,indexRef,protocol,schemaVersion,storeId,writerScriptId';
     if(!payload||payload.anchorId!==this.anchorId||payload.anchorHash!==s.anchorHash||payload.hintFileId!==this.checkpointHintId||payload.storeId!==this.storeId||payload.writerScriptId!==this.writerScriptId||payload.schemaVersion!==this.schemaVersion||payload.datasetGeneration!==s.datasetGeneration||!refOk(payload.indexRef)||!integer(payload.indexLinks))return null;
-    if(payload.protocol===FRAME_SCAN_HINT_PROTOCOL){
-      if(Object.keys(payload).sort().join(',')!==(base+',frameRef,frameRevision,replayFrames').split(',').sort().join(',')||!refOk(payload.frameRef)||!payload.frameRef||!integer(payload.frameRevision)||payload.frameRevision<1||!integer(payload.replayFrames)||payload.replayFrames<1||payload.replayFrames>this.limits.maxReplayFrames||(payload.indexRef===null)!==(payload.indexLinks===0))return null;
+    if([FRAME_SCAN_HINT_PROTOCOL,ATTESTED_FRAME_HINT_PROTOCOL].includes(payload.protocol)){
+      const attested=payload.protocol===ATTESTED_FRAME_HINT_PROTOCOL;if(attested&&![0,2].includes(payload.writerFence))return null;
+      if(Object.keys(payload).sort().join(',')!==(base+',frameRef,frameRevision,replayFrames'+(attested?',writerFence':'')).split(',').sort().join(',')||!refOk(payload.frameRef)||!payload.frameRef||!integer(payload.frameRevision)||payload.frameRevision<1||!integer(payload.replayFrames)||payload.replayFrames<1||payload.replayFrames>this.limits.maxReplayFrames||(payload.indexRef===null)!==(payload.indexLinks===0))return null;
     }else if(![CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL].includes(payload.protocol)||Object.keys(payload).sort().join(',')!==base||!payload.indexRef||payload.indexLinks<1)return null;
     return payload;
   }
   _writeFrameScanHint(){
     const s=this._state;
-    if(!this._persistFrameProgress||!this.checkpointHintCodec||s.revision<1||this._frameProgress?.revision===s.revision)return false;
-    const payload={...this._hintPayload(s.indexHead,s.indexLinks,FRAME_SCAN_HINT_PROTOCOL),frameRef:{id:s.headId,hash:s.headHash},frameRevision:s.revision,replayFrames:s.replayFrames};
-    try{this.io.writeCheckpointHint(this.checkpointHintCodec.encode(payload));this._hintRef=null;this._frameProgress={revision:s.revision};return true;}
+    if((!this._persistFrameProgress&&!this.progressiveRecovery)||!this.checkpointHintCodec||s.revision<1||this._frameProgress?.revision===s.revision||equal(this._frameHintRef,{id:s.headId,hash:s.headHash}))return false;
+    // A verified checkpoint publication already has a durable INDEX accelerator.
+    // Avoid replacing it with a redundant frame cursor on every ordinary read.
+    // Old-key semantic replay needs a current-key transition attestation even
+    // at the publishing frame, or an INDEX-only hint would repeat that proof.
+    if(this.progressiveRecovery&&s.indexHead&&s.replayFrames===1&&!equal(this._prepared.semanticFrame,{id:s.headId,hash:s.headHash}))return false;
+    const payload={...this._hintPayload(s.indexHead,s.indexLinks,this._attestedPrefixReady?ATTESTED_FRAME_HINT_PROTOCOL:FRAME_SCAN_HINT_PROTOCOL),...(this._attestedPrefixReady?{writerFence:s.writerFence}:{}),frameRef:{id:s.headId,hash:s.headHash},frameRevision:s.revision,replayFrames:s.replayFrames};
+    try{this.io.writeCheckpointHint(this.checkpointHintCodec.encode(payload));this._hintRef=null;this._frameHintRef={id:s.headId,hash:s.headHash};this._frameProgress={revision:s.revision};return true;}
     catch(_){return false;} // Only confirmed progress is reported; advice never acknowledges a write.
   }
   _restoreFramePrefix(hint,last){
-    if(hint?.protocol!==FRAME_SCAN_HINT_PROTOCOL||!equal(hint.indexRef,last?pointer(last):null)||hint.indexLinks!==this._state.indexLinks)return false;
+    if(![FRAME_SCAN_HINT_PROTOCOL,ATTESTED_FRAME_HINT_PROTOCOL].includes(hint?.protocol)||!equal(hint.indexRef,last?pointer(last):null)||hint.indexLinks!==this._state.indexLinks)return false;
+    const f=this._read(hint.frameRef.id,'frame',hint.frameRef),p=f.payload,s=this._state;
+    // Verify the exact signed witness BEFORE using any fact it attests. A
+    // matching current INDEX and descendant prefix attest that the publishing
+    // operation's absence was already proven against this immutable cut.
+    const signedCut=last?last.payload.cut.revision:0;
+    if(!frameShape(p)||p.datasetGeneration!==s.datasetGeneration||p.revision!==hint.frameRevision||p.revision<=signedCut||hint.replayFrames!==p.revision-signedCut||!validId(p.nextSlotId)||p.nextSlotId===f.id||!refOk(p.stateRoot)||!refOk(p.receiptRoot))fail('WRITER_FRAME_HINT_INVALID');
+    this._epochs(p.acceptedEpochs);if(fenceOf(p)<(s.writerFence||0))fail('WRITER_FORMAT_FENCE_REQUIRED');
     if(last){
-      // Even an authenticated later prefix must retain the current checkpoint's
-      // mandatory manifest/publication/INDEX proof. Do not overwrite the useful
-      // frame cursor with older advice while checking that publication.
+      // Retain current manifest/publication/INDEX proof and privacy checks. Only
+      // the redundant deep negative-receipt lookup is covered by the verified
+      // prefix; never apply this shortcut to a new or unhinted successor.
       this._hintRef=pointer(last);
       const witness=last.payload.publishingFrame;
-      this._frame(this._read(witness.id,'frame',{id:witness.id,hash:witness.hash}),'recovery');
+      if(hint.frameRevision<witness.revision)fail('WRITER_FRAME_HINT_INVALID');
+      this._frame(this._read(witness.id,'frame',{id:witness.id,hash:witness.hash}),'recovery',{verifiedOperation:true,verifiedTransition:true});
     }
-    const f=this._read(hint.frameRef.id,'frame',hint.frameRef),p=f.payload,s=this._state;
     // The owner signature attests that this exact immutable frame AND all of
     // its transitions/references were already verified. Re-read/hash/identity
     // validation is mandatory; a missing signed witness never falls back.
     const cut=last?last.payload.cut.revision:0;
-    if(!p||Object.keys(p).sort().join(',')!=='acceptedEpochs,changes,checkpoint,committedAt,datasetGeneration,nextSlotId,operation,parent,receiptRoot,references,result,revision,stateRoot'||p.datasetGeneration!==s.datasetGeneration||p.revision!==hint.frameRevision||p.revision<=cut||hint.replayFrames!==p.revision-cut||!validId(p.nextSlotId)||p.nextSlotId===f.id||!refOk(p.stateRoot)||!refOk(p.receiptRoot))fail('WRITER_FRAME_HINT_INVALID');
-    this._epochs(p.acceptedEpochs);
-    Object.assign(s,{revision:p.revision,headId:f.id,headHash:f.hash,nextSlotId:p.nextSlotId,stateRoot:p.stateRoot,receiptRoot:p.receiptRoot,headReceipt:this._receiptFor(f),acceptedEpochs:p.acceptedEpochs.slice(),replayFrames:hint.replayFrames});
-    this._frameProgress={revision:p.revision};this._frameProgressStart=p.revision;this._hintRef=null;return true;
+    if(!frameShape(p)||p.datasetGeneration!==s.datasetGeneration||p.revision!==hint.frameRevision||p.revision<=cut||hint.replayFrames!==p.revision-cut||!validId(p.nextSlotId)||p.nextSlotId===f.id||!refOk(p.stateRoot)||!refOk(p.receiptRoot))fail('WRITER_FRAME_HINT_INVALID');
+    this._epochs(p.acceptedEpochs);if(fenceOf(p)<(s.writerFence||0)||hint.protocol===ATTESTED_FRAME_HINT_PROTOCOL&&fenceOf(p)!==hint.writerFence)fail('WRITER_FORMAT_FENCE_REQUIRED');
+    Object.assign(s,{writerFence:fenceOf(p),revision:p.revision,headId:f.id,headHash:f.hash,nextSlotId:p.nextSlotId,nextPreparationId:p.nextPreparationId||null,stateRoot:p.stateRoot,receiptRoot:p.receiptRoot,headReceipt:this._receiptFor(f),acceptedEpochs:p.acceptedEpochs.slice(),replayFrames:hint.replayFrames});
+    this._frameProgress={revision:p.revision};this._frameProgressStart=p.revision;this._hintRef=null;this._frameHintRef=clone(hint.frameRef);return true;
+  }
+  _restoreAttestedFramePrefix(hint,last,next,indexLinks){
+    // Managed immutable-store contract only. The current-key signature attests
+    // the exact previously verified INDEX and descendant transition prefix.
+    // Reopen these two current witnesses, not every historical proof object.
+    // No absent/old-key/advisory assertion can enter this path.
+    if(!this.io._trustManagedRecoveryPrefix||hint?.protocol!==ATTESTED_FRAME_HINT_PROTOCOL||!equal(hint.indexRef,last?pointer(last):null)||hint.indexLinks!==indexLinks)return false;
+    const f=this._read(hint.frameRef.id,'frame',hint.frameRef),p=f.payload,s=this._state,cut=last?last.payload.cut.revision:0;
+    if(!frameShape(p)||p.datasetGeneration!==s.datasetGeneration||p.revision!==hint.frameRevision||p.revision<=cut||hint.replayFrames!==p.revision-cut||last&&p.revision<last.payload.publishingFrame.revision||!validId(p.nextSlotId)||p.nextSlotId===f.id||!refOk(p.stateRoot)||!refOk(p.receiptRoot))fail('WRITER_FRAME_HINT_INVALID');
+    this._epochs(p.acceptedEpochs);if(fenceOf(p)!==hint.writerFence||last?.payload.cut.nextPreparationId&&fenceOf(p)!==2||fenceOf(p)===2&&!p.nextPreparationId||fenceOf(p)<(s.writerFence||0))fail('WRITER_FORMAT_FENCE_REQUIRED');
+    this._attestedPrefixReady=true;
+    Object.assign(s,{writerFence:fenceOf(p),revision:p.revision,headId:f.id,headHash:f.hash,nextSlotId:p.nextSlotId,nextPreparationId:p.nextPreparationId||null,stateRoot:p.stateRoot,receiptRoot:p.receiptRoot,headReceipt:this._receiptFor(f),acceptedEpochs:p.acceptedEpochs.slice(),replayFrames:hint.replayFrames,indexHead:last?pointer(last):null,nextIndexId:next,indexLinks,checkpoint:last?{manifestRef:last.payload.manifestRef,cut:last.payload.cut,indexRef:pointer(last)}:null});
+    this._frameProgress={revision:p.revision};this._frameProgressStart=p.revision;this._hintRef=null;this._frameHintRef=clone(hint.frameRef);return true;
   }
   _restoreIndex(link,next,indexLinks){
     const p=link.payload,m=this._manifest(p.manifestRef,p.cut);
-    Object.assign(this._state,{revision:p.cut.revision,headId:p.cut.id,headHash:p.cut.hash,nextSlotId:p.cut.nextSlotId,stateRoot:m.stateRoot,receiptRoot:m.receiptRoot,headReceipt:null,acceptedEpochs:m.acceptedEpochs.slice(),indexHead:pointer(link),nextIndexId:next,checkpoint:{manifestRef:p.manifestRef,cut:p.cut,indexRef:pointer(link)},replayFrames:0,indexLinks});
+    Object.assign(this._state,{writerFence:fenceOf(m),revision:p.cut.revision,headId:p.cut.id,headHash:p.cut.hash,nextSlotId:p.cut.nextSlotId,nextPreparationId:p.cut.nextPreparationId||null,stateRoot:m.stateRoot,receiptRoot:m.receiptRoot,headReceipt:null,acceptedEpochs:m.acceptedEpochs.slice(),indexHead:pointer(link),nextIndexId:next,checkpoint:{manifestRef:p.manifestRef,cut:p.cut,indexRef:pointer(link)},replayFrames:0,indexLinks});
   }
   _recover({minimumAcknowledged}={}) {
     this._guard();const phase=typeof this.io.getVerifiedReadPhase==='function'?this.io.getVerifiedReadPhase():null;
+    this._nodeCachePhaseRequired=this._nodeCachePhaseRequired||!!phase;if(this._nodeCachePhase!==phase){this._cache.clear();this._nodeCachePhase=phase;}
     // Reuse only this continuously-held phase's already verified prefix. The
     // successor remains an uncached read, so delayed immutable creates are seen.
     if(phase&&this._state&&this._verifiedPhase===phase){
       const link=this._read(this._state.nextIndexId,'checkpoint-index',null,true);
       if(!link)return this._recoverTail(minimumAcknowledged);
     }
-    this._verifiedPhase=null;this._state=null;this._cache.clear();this._hintRef=null;
+    this._attestedPrefixReady=false;this._verifiedPhase=null;this._state=null;this._cache.clear();this._hintRef=null;this._frameHintRef=null;this._indexProgress=null;this._checkpointProgress=null;
+    const recoveryRead=typeof this.io.prefetchRecoveryRead==='function'?this.io.prefetchRecoveryRead(this.anchorId,this.limits.maxFileBytes):undefined;
     const anchor=this._read(this.anchorId,'bootstrap');this._checkAnchor(anchor);const a=anchor.payload;
-    this._state={anchorHash:anchor.hash,datasetGeneration:a.datasetGeneration,revision:0,headId:anchor.id,headHash:anchor.hash,nextSlotId:a.firstSlotId,stateRoot:null,receiptRoot:null,headReceipt:null,acceptedEpochs:a.acceptedEpochs.slice(),indexHead:null,nextIndexId:a.firstIndexId,checkpoint:null,replayFrames:0,indexLinks:0};
+    this._state={writerFence:0,anchorHash:anchor.hash,datasetGeneration:a.datasetGeneration,revision:0,headId:anchor.id,headHash:anchor.hash,nextSlotId:a.firstSlotId,nextPreparationId:null,stateRoot:null,receiptRoot:null,headReceipt:null,acceptedEpochs:a.acceptedEpochs.slice(),indexHead:null,nextIndexId:a.firstIndexId,checkpoint:null,replayFrames:0,indexLinks:0};
     let next=a.firstIndexId,previous=null,last=null,previousCut=-1,count=0,scanned=0;const seen=new Set();
-    const hint=this._authenticatedHint();
+    const hint=this._authenticatedHint(recoveryRead);
+    if(typeof this.io.prefetchFiles==='function'&&hint){const ids=[hint.indexRef?.id,hint.frameRef?.id];const prep=this._prepared.hint;if(prep&&equal(prep.parent,{id:hint.frameRef?.id,hash:hint.frameRef?.hash,revision:hint.frameRevision}))ids.push(prep.preparation.id,prep.workPage.id);this.io.prefetchFiles(ids.filter(Boolean),this.limits.maxFileBytes);}
     if(hint?.indexRef){
       // INDEX-bearing hint protocols attest ONLY a verified immutable INDEX prefix. Do
       // not open its historical manifest/publication: those may be retired.
@@ -1505,7 +2615,7 @@ class ReservedSlotWriter {
       const link=this._read(hint.indexRef.id,'checkpoint-index',hint.indexRef),p=link.payload;
       this._indexPayload(p,link.id,p?.previousIndex);
       if((hint.indexLinks===1)!==(p.previousIndex===null)||(hint.indexLinks===1&&link.id!==a.firstIndexId)||hint.indexLinks>p.cut.revision+1)fail('WRITER_CHECKPOINT_INDEX_INVALID');
-      if(hint.protocol===CHECKPOINT_HINT_PROTOCOL)this._hintRef=pointer(link);
+      this._hintRef=pointer(link);
       last=link;next=p.nextIndexId;previous=pointer(link);previousCut=p.cut.revision;count=hint.indexLinks;seen.add(link.id);
     }
     const scanLimit=this.checkpointHintCodec?Math.min(this.limits.maxIndexLinks,this.limits.maxIndexScanLinks):this.limits.maxIndexLinks;
@@ -1528,16 +2638,30 @@ class ReservedSlotWriter {
       if(scanned===1||scanned%16===0)this._writeIndexScanHint(last,count);
     }
     this._state.indexLinks=count;
+    if(!this._restoreAttestedFramePrefix(hint,last,next,count)){
+    if(last&&typeof this.io.prefetchFiles==='function'){const ids=[last.payload.manifestRef.id,last.payload.publishingFrame.id];if(hint?.frameRef?.id===last.payload.publishingFrame.id){const head=this._read(hint.frameRef.id,'frame',hint.frameRef);if(head.payload.certificate)ids.push(head.payload.certificate.id);}this.io.prefetchFiles(ids,this.limits.maxFileBytes);}
     if(last)this._restoreIndex(last,next,count);
     this._restoreFramePrefix(hint,last);
+    }
     const result=this._recoverTail(minimumAcknowledged,last?last.payload.publishingFrame.revision:null);
-    this._verifiedPhase=phase;return result;
+    this._attestedPrefixReady=!!this.io._trustManagedRecoveryPrefix;this._verifiedPhase=phase;return result;
   }
 
   _recoverTail(minimumAcknowledged,requiredPublicationRevision=null,replayed=0) {
     const s=this._state;let minSeen=minimumAcknowledged?this._minimumAtState(minimumAcknowledged):true;
     const frameSeen=new Set();
-    while(true){if(frameSeen.has(s.nextSlotId))fail('WRITER_FRAME_CYCLE');frameSeen.add(s.nextSlotId);const f=this._read(s.nextSlotId,'frame',null,true);if(!f)break;if(replayed++>=this.limits.maxReplayFrames||s.replayFrames>=this.limits.maxReplayFrames)fail('WRITER_REPLAY_BUDGET');this._frame(f,'recovery');if(replayed===1||replayed%4===0)this._writeFrameScanHint();if(minimumAcknowledged&&this._minimumAtState(minimumAcknowledged))minSeen=true;}
+    while(true){
+      if(frameSeen.has(s.nextSlotId))fail('WRITER_FRAME_CYCLE');frameSeen.add(s.nextSlotId);
+      const f=this._read(s.nextSlotId,'frame',null,true);if(!f)break;
+      // Mandatory current publication proof retains the full hard budget. Only
+      // optional further tail work yields early to leave room for signed advice.
+      if(this.progressiveRecovery&&(requiredPublicationRevision===null||s.revision>=requiredPublicationRevision)&&!this.canContinueRecovery()){
+        this._writeFrameScanHint();fail('STORE_YIELD',true);
+      }
+      if(replayed++>=this.limits.maxReplayFrames||s.replayFrames>=this.limits.maxReplayFrames)fail('WRITER_REPLAY_BUDGET');
+      this._frame(f,'recovery');if(this.progressiveRecovery||replayed===1||replayed%4===0)this._writeFrameScanHint();
+      if(minimumAcknowledged&&this._minimumAtState(minimumAcknowledged))minSeen=true;
+    }
     if(requiredPublicationRevision!==null&&s.revision<requiredPublicationRevision)fail('WRITER_MISSING_PUBLICATION_FRAME');
     if(minimumAcknowledged&&!minSeen){const r=minimumAcknowledged;const known=this._lookup(s.receiptRoot,'receipts','@revision:'+r.revision);if(!known||known.revision!==r.revision||known.hash!==r.hash)fail('WRITER_ACKNOWLEDGEMENT_UNPROVEN');}
     this._writeFrameScanHint();
@@ -1545,12 +2669,14 @@ class ReservedSlotWriter {
   }
   _minimumAtState(min) {
     if(!min||!integer(min.revision)||!digestOk(min.hash))fail('WRITER_ACKNOWLEDGEMENT_INVALID');
+    if(min.revision===0){if(min.hash!==this._state.anchorHash)fail('WRITER_ACKNOWLEDGEMENT_MISMATCH');return true;}
     if(min.revision===this._state.revision){if(min.hash!==this._state.headHash)fail('WRITER_ACKNOWLEDGEMENT_MISMATCH');return true;}return false;
   }
   // Diagnostic only: a signed verified prefix is not an available business state.
   recoveryProgress() {this._guard();return this._frameProgress?{recoveredRevision:this._frameProgress.revision,cursorPersisted:true,cursorAdvanced:this._frameProgress.revision>this._frameProgressStart}: {recoveredRevision:null,cursorPersisted:false,cursorAdvanced:false};}
+  continuationProgress(){this._guard();if(this._prepared.progress)return clone(this._prepared.progress);const p=this.recoveryProgress();if(p.cursorAdvanced)return {phase:'frames',revision:p.recoveredRevision,cursorPersisted:true,cursorAdvanced:true};return this._checkpointProgress?clone(this._checkpointProgress):this._indexProgress?clone(this._indexProgress):null;}
   status() {this._assertReady();return this._statusSnapshot();}
-  _statusSnapshot() {const s=this._state;return clone({storeId:this.storeId,datasetGeneration:s.datasetGeneration,revision:s.revision,headId:s.headId,headHash:s.headHash,nextSlotId:s.nextSlotId,checkpoint:s.checkpoint,stateRoot:s.stateRoot,receiptRoot:s.receiptRoot,headReceipt:s.headReceipt,acceptedEpochs:s.acceptedEpochs,indexHead:s.indexHead,nextIndexId:s.nextIndexId,indexLinks:s.indexLinks,replayFrames:s.replayFrames});}
+  _statusSnapshot() {const s=this._state;return clone({storeId:this.storeId,writerFence:s.writerFence||0,datasetGeneration:s.datasetGeneration,revision:s.revision,headId:s.headId,headHash:s.headHash,nextSlotId:s.nextSlotId,nextPreparationId:s.nextPreparationId||null,checkpoint:s.checkpoint,stateRoot:s.stateRoot,receiptRoot:s.receiptRoot,headReceipt:s.headReceipt,acceptedEpochs:s.acceptedEpochs,indexHead:s.indexHead,nextIndexId:s.nextIndexId,indexLinks:s.indexLinks,replayFrames:s.replayFrames});}
   _command(command) {
     if(!command||!validId(command.operationId)||!validId(command.epoch||'default')||!digestOk(command.digest)||!Array.isArray(command.changes)||command.changes.length>this.limits.maxChanges)fail('WRITER_COMMAND_INVALID');
     const c=clone({...command,epoch:command.epoch||'default',result:command.result===undefined?null:command.result,references:command.references||[]});
@@ -1573,8 +2699,10 @@ class ReservedSlotWriter {
     }return changes;
   }
   _carryReceipts(slotId) {const s=this._state;if(!s.headReceipt)return s.receiptRoot;return this._putMany(s.receiptRoot,'receipts',[{key:receiptKey(s.headReceipt.epoch,s.headReceipt.operationId),value:s.headReceipt},{key:'@revision:'+s.revision,value:{revision:s.revision,hash:s.headHash}}],slotId);}
-  _append(c,checkpoint=false,nextEpochs=null) {
-    const s=this._state;if(!s.acceptedEpochs.includes(c.epoch))fail('OP_EXPIRED');
+  _append(c,checkpoint=false,nextEpochs=null,targetFence=null) {
+    if(this._state.nextPreparationId)this._prepared.requireVacant();
+    const s=this._state,writerFence=targetFence===null?(s.writerFence||0):targetFence;
+    if(![0,2].includes(writerFence)||writerFence<(s.writerFence||0))fail('WRITER_FORMAT_FENCE_REQUIRED');if(!s.acceptedEpochs.includes(c.epoch))fail('OP_EXPIRED');
     if(checkpoint)this._indexAdmission(s.indexLinks);
     if(typeof this.validateMutation==='function'&&this.validateMutation(clone(c),{getEntity:key=>this._get(s.stateRoot,key),revision:s.revision,slotId:s.nextSlotId})!==true)fail('WRITER_DOMAIN_INVALID');
     const committedAt=this.clock();if(typeof committedAt!=='string'||!Number.isFinite(Date.parse(committedAt)))fail('WRITER_CLOCK_INVALID');
@@ -1585,8 +2713,8 @@ class ReservedSlotWriter {
     const stateRoot=this._putMany(s.stateRoot,'entities',changes.map(change=>({key:change.key,value:change.entity})),slotId);
     const receiptRoot=this._carryReceipts(slotId);
     let publication=null;
-    if(checkpoint){if(changes.length)fail('WRITER_CHECKPOINT_CHANGES');const cut={id:s.headId,hash:s.headHash,revision:s.revision,nextSlotId:slotId};const manifestRef=this._createExact(this._id(),'checkpoint-manifest',{datasetGeneration:s.datasetGeneration,cut,stateRoot,receiptRoot,acceptedEpochs:s.acceptedEpochs});publication={indexId:s.nextIndexId,nextIndexId:this._id(),previousIndex:s.indexHead,manifestRef,cut};}
-    const payload={datasetGeneration:s.datasetGeneration,revision:s.revision+1,parent:{id:s.headId,hash:s.headHash},nextSlotId:this._id(),operation:{operationId:c.operationId,epoch:c.epoch,digest:c.digest},committedAt,changes,stateRoot,receiptRoot,result:c.result,references:c.references,checkpoint:publication,acceptedEpochs:nextEpochs?this._epochs(nextEpochs):s.acceptedEpochs.slice()};
+    if(checkpoint){if(changes.length)fail('WRITER_CHECKPOINT_CHANGES');const cut={id:s.headId,hash:s.headHash,revision:s.revision,nextSlotId:slotId,...(s.nextPreparationId?{nextPreparationId:s.nextPreparationId}:{})};const manifestRef=this._createExact(this._id(),'checkpoint-manifest',{datasetGeneration:s.datasetGeneration,cut,stateRoot,receiptRoot,acceptedEpochs:s.acceptedEpochs,...(writerFence?{writerFence}: {})});publication={indexId:s.nextIndexId,nextIndexId:this._id(),previousIndex:s.indexHead,manifestRef,cut};}
+    const payload={datasetGeneration:s.datasetGeneration,revision:s.revision+1,parent:{id:s.headId,hash:s.headHash},nextSlotId:this._id(),...(writerFence===2?{nextPreparationId:this._id()}:{}),operation:{operationId:c.operationId,epoch:c.epoch,digest:c.digest},committedAt,changes,stateRoot,receiptRoot,result:c.result,references:c.references,checkpoint:publication,acceptedEpochs:nextEpochs?this._epochs(nextEpochs):s.acceptedEpochs.slice(),...(writerFence?{writerFence}: {})};
     const proposal=this._sealed('frame',payload),bytes=this._bytes(proposal);
     let winner=null;
     try {
@@ -1596,7 +2724,7 @@ class ReservedSlotWriter {
     // reserved successor, even when timestamps or generated IDs differ.
     this._frame(winner,'readback');
     const receipt=this._receipt(c.operationId,c.epoch);
-    if(receipt){if(receipt.digest!==c.digest)fail('OP_ID_REUSED');return receipt;}
+    if(receipt){if(receipt.digest!==c.digest)fail('OP_ID_REUSED');this._writeFrameScanHint();return receipt;}
     return null;
     }catch(error){this._state=null;this._cache.clear();this._verifiedPhase=null;throw error;}
   }
@@ -1614,13 +2742,26 @@ class ReservedSlotWriter {
     }fail('WRITER_CONTENTION',true);
   }
   commit(command) {return this.transact(command);}
+  prepareAppCommand(command,digest){return this._prepared.command(command,digest);}
+  // Explicit owner migration only; no public command accepts targetFence.
+  // A durable format2 frame fences old exact-shape readers/writers forever.
+  enableFormatFence(command) {
+    this.recoveryBarrier();const c=this._command(command);
+    for(let i=0;i<this.limits.maxContention;i++){
+      const prior=this._checkReplay(c);if(prior){if(this._state.writerFence!==2)fail('WRITER_FORMAT_FENCE_MISSING');return prior;}
+      if(this._state.writerFence===2)fail('WRITER_FORMAT_FENCE_ALREADY_ENABLED');
+      const receipt=this._append(c,false,null,2);if(receipt)return receipt;this.recoveryBarrier();
+    }fail('WRITER_CONTENTION',true);
+  }
+
   _automaticCheckpoint() {
     const s=this._state,c={operationId:'checkpoint_'+s.revision+'_'+s.headHash.slice(0,16),epoch:s.acceptedEpochs[0],digest:writerDigest({kind:'checkpoint',headId:s.headId,headHash:s.headHash}),changes:[],references:[],result:{checkpoint:true}};
-    if(!this._append(c,true))this.recoveryBarrier();
+    if(s.nextPreparationId&&this.preparationCodec){if(!this._prepared.checkpoint(c))this.recoveryBarrier();}
+    else if(!this._append(c,true))this.recoveryBarrier();
   }
   checkpoint(command) {
     this.recoveryBarrier();const c=this._command({...command,changes:[],references:[]});
-    for(let i=0;i<this.limits.maxContention;i++){const prior=this._checkReplay(c);if(prior)return prior;const receipt=this._append(c,true);if(receipt)return receipt;this.recoveryBarrier();}fail('WRITER_CONTENTION',true);
+    for(let i=0;i<this.limits.maxContention;i++){const prior=this._checkReplay(c);if(prior)return prior;const receipt=this._state.nextPreparationId&&this.preparationCodec?this._prepared.checkpoint(c):this._append(c,true);if(receipt)return receipt;this.recoveryBarrier();}fail('WRITER_CONTENTION',true);
   }
   /** Ordered epoch fence. No receipt deletion is implemented. A late old create
    * may win the current slot first; it is recovered before this fence retries.
@@ -1639,27 +2780,419 @@ class ReservedSlotWriter {
 
 return {WRITER_PROTOCOL,WRITER_ROLES,writerDigest,ReservedSlotWriter};
 })();
-const m7 = (function(){
-const {CHECKPOINT_HINT_MAX_BYTES} = m5;
+const m12 = (function(){
+// Shared data contract. This module performs no IO and never activates a store.
+const SYNC_APP_CHANGE_HEAD='app/change-head';
+const SYNC_APP_CHANGE_CAPACITY=1024;
+function syncAppChangeSlot(seq){return 'app/change-slot/'+(seq%SYNC_APP_CHANGE_CAPACITY);}
+function initialSyncAppChangeHead(){return {protocol:2,seq:0,floor:1,capacity:SYNC_APP_CHANGE_CAPACITY};}
+function validateSyncAppChangeHead(entity){
+ const fail=()=>{const e=Error('APP_JOURNAL_CORRUPT');e.code=e.message;throw e;};
+ if(!entity||entity.deleted)fail();const h=entity.value;
+ if(!h||typeof h!=='object'||Array.isArray(h)||Object.keys(h).sort().join(',')!=='capacity,floor,protocol,seq'||h.protocol!==2||!Number.isSafeInteger(h.seq)||h.seq<0||h.capacity!==SYNC_APP_CHANGE_CAPACITY||h.floor!==Math.max(1,h.seq-SYNC_APP_CHANGE_CAPACITY+1))fail();
+ return h;
+}
+
+return {SYNC_APP_CHANGE_HEAD,SYNC_APP_CHANGE_CAPACITY,syncAppChangeSlot,initialSyncAppChangeHead,validateSyncAppChangeHead};
+})();
+const m13 = (function(){
+/**
+ * Resumable application-command expansion over an engine-verified immutable
+ * parent. The engine owns authentication, receipt-first replay, parent/root
+ * validation, durable cursor publication and the final reserved-slot commit.
+ *
+ * Each advance performs at most one derived-key entity lookup. Cursor state is
+ * compact metadata only: the original command is retained once by the engine,
+ * and large ordinary values are normalized again locally when expansion ends.
+ */
+const {canonical,parseKey,validateEntity} = m1;
+const {utf8ByteLength} = m0;
+const {SYNC_APP_CHANGE_HEAD,SYNC_APP_CHANGE_CAPACITY,syncAppChangeSlot,validateSyncAppChangeHead} = m12;
+
+const HEAD='app/catalog/head',KIND='mypace-prepared-app-command',VERSION=1;
+const PHASES=['validate','business','parent','catalog-node','catalog-head','journal-head','journal-slot','ready'];
+const exact=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.getPrototypeOf(value)===Object.prototype&&Object.keys(value).sort().join(',')===keys.split(',').sort().join(',');
+const integer=value=>Number.isSafeInteger(value)&&value>=0;
+// The writer authenticates the digest against the exact descriptor command.
+// A cursor never carries or re-hashes a duplicate large application value.
+const identity=value=>typeof value==='string'&&/^[-A-Za-z0-9_]{1,128}$/.test(value);
+const fail=code=>{const error=Error(code);error.code=code;throw error;};
+const rejected=error=>({kind:'rejected',error});
+const valueError=error=>/^[A-Z][A-Z0-9_]{1,80}$/.test(error?.code||error?.message)?error.code||error.message:'VALIDATION_FAILED';
+const copy=value=>JSON.parse(canonical(value));
+
+function checkedEntity(entity,key,code){
+ if(entity===null||entity===undefined)return null;
+ if(!exact(entity,'key,version,deleted,value')||entity.key!==key||!Number.isSafeInteger(entity.version)||entity.version<1||typeof entity.deleted!=='boolean'||entity.deleted&&entity.value!==null)fail(code);
+ return entity;
+}
+function checkedDomainKey(key,code){try{parseKey(key);}catch{fail(code);}return key;}
+
+function createPreparedAppCommand({command,digest,base}={}){
+ if(typeof digest!=='string'||!/^[a-f0-9]{64}$/.test(digest)||!exact(base,'storeId,datasetGeneration,acceptedEpochs,writerFence')||!identity(base.storeId)||!identity(base.datasetGeneration)||!Array.isArray(base.acceptedEpochs)||base.acceptedEpochs.length<1||base.acceptedEpochs.length>4||!base.acceptedEpochs.every(identity)||new Set(base.acceptedEpochs).size!==base.acceptedEpochs.length||![0,2].includes(base.writerFence))fail('APP_PREPARATION_CONFIG_INVALID');
+ const boundBase=copy(base),binding=canonical(boundBase);let c,commandError,parsed;
+ try{c=copy(command);}catch(error){commandError=valueError(error);}
+ if(!commandError){
+  if(!exact(c,'operationId,epoch,generation,store,key,expectedVersion,deleted,value,recreate')||typeof c.operationId!=='string'||!/^[-a-zA-Z0-9_]{16,100}$/.test(c.operationId)||typeof c.epoch!=='string'||!/^[-a-zA-Z0-9_]{1,100}$/.test(c.epoch)||typeof c.store!=='string'||typeof c.generation!=='string'||!integer(c.expectedVersion)||typeof c.deleted!=='boolean'||typeof c.recreate!=='boolean')commandError='COMMAND_INVALID';
+  else try{parsed=parseKey(c.key);}catch(error){commandError=valueError(error);}
+ }
+ const initialState=()=>({kind:KIND,version:VERSION,digest,binding,phase:'validate',business:null,catalog:null,journal:null,logValue:null});
+ function checkState(state){
+  if(!exact(state,'kind,version,digest,binding,phase,business,catalog,journal,logValue')||state.kind!==KIND||state.version!==VERSION||state.digest!==digest||state.binding!==binding||!PHASES.includes(state.phase))fail('APP_PREPARATION_STATE_INVALID');
+  if(commandError&&state.phase!=='validate')fail('APP_PREPARATION_STATE_INVALID');
+  const business=state.business,catalog=state.catalog,journal=state.journal;
+  if(business!==null&&(!exact(business,'exists,version')||typeof business.exists!=='boolean'||!integer(business.version)||business.exists!==(business.version>0)||business.version!==c.expectedVersion))fail('APP_PREPARATION_STATE_INVALID');
+  if(['validate','business'].includes(state.phase)?business!==null:business===null)fail('APP_PREPARATION_STATE_INVALID');
+  if(catalog!==null&&(!exact(catalog,'nodeChecked,headVersion,first')||catalog.nodeChecked!==true||!(catalog.headVersion===null||integer(catalog.headVersion))||!(catalog.first===null||typeof catalog.first==='string')))fail('APP_PREPARATION_STATE_INVALID');
+  if(catalog?.first!==null&&catalog?.first!==undefined)checkedDomainKey(catalog.first,'APP_PREPARATION_STATE_INVALID');
+  if(catalog!==null&&business?.exists!==false)fail('APP_PREPARATION_STATE_INVALID');
+  if(journal!==null&&(!exact(journal,'headVersion,seq,slotVersion')||!Number.isSafeInteger(journal.headVersion)||journal.headVersion<1||!Number.isSafeInteger(journal.seq)||journal.seq<1||!(journal.slotVersion===null||integer(journal.slotVersion))))fail('APP_PREPARATION_STATE_INVALID');
+  if(journal!==null&&boundBase.writerFence!==2)fail('APP_PREPARATION_STATE_INVALID');
+  const scalar=typeof state.logValue==='boolean'||typeof state.logValue==='number'&&Number.isFinite(state.logValue)&&state.logValue>=0&&state.logValue<=1000000;
+  if(state.logValue!==null&&(!scalar||parsed?.kind!=='habitLog'||c.deleted||state.logValue!==c.value))fail('APP_PREPARATION_STATE_INVALID');
+  if(['validate','business','parent'].includes(state.phase)&&state.logValue!==null)fail('APP_PREPARATION_STATE_INVALID');
+  if(!['validate','business','parent'].includes(state.phase)&&parsed?.kind==='habitLog'&&!c.deleted&&!scalar)fail('APP_PREPARATION_STATE_INVALID');
+  if(['validate','business','parent','catalog-node'].includes(state.phase)&&catalog!==null)fail('APP_PREPARATION_STATE_INVALID');
+  if(['validate','business','parent','catalog-node','catalog-head','journal-head'].includes(state.phase)&&journal!==null)fail('APP_PREPARATION_STATE_INVALID');
+  if(state.phase==='parent'&&(parsed?.kind!=='habitLog'||c.deleted)||['catalog-node','catalog-head'].includes(state.phase)&&business?.exists!==false)fail('APP_PREPARATION_STATE_INVALID');
+  if(state.phase==='catalog-head'&&(!catalog||catalog.headVersion!==null||catalog.first!==null))fail('APP_PREPARATION_STATE_INVALID');
+  if(['journal-head','journal-slot','ready'].includes(state.phase)&&business?.exists===false&&(!catalog||!integer(catalog.headVersion)))fail('APP_PREPARATION_STATE_INVALID');
+  if(state.phase==='journal-head'&&journal!==null||state.phase==='journal-slot'&&(!journal||journal.slotVersion!==null))fail('APP_PREPARATION_STATE_INVALID');
+  if(['journal-head','journal-slot'].includes(state.phase)&&boundBase.writerFence!==2)fail('APP_PREPARATION_STATE_INVALID');
+  if(catalog&&catalog.first===c?.key)fail('APP_PREPARATION_STATE_INVALID');
+  if(state.phase==='ready'&&boundBase.writerFence===2&&(!journal||!integer(journal.slotVersion)))fail('APP_PREPARATION_STATE_INVALID');
+  return copy(state);
+ }
+ const progress=(state,phase,patch={})=>({kind:'progress',state:{...state,...patch,phase}});
+ const afterValue=state=>state.business.exists?(boundBase.writerFence===2?'journal-head':'ready'):'catalog-node';
+ const afterCatalog=()=>boundBase.writerFence===2?'journal-head':'ready';
+ function normalize(habit){try{const value=validateEntity(c.key,c.value,habit);if(utf8ByteLength(canonical(value))>128*1024)return {error:'WRITER_VALUE_TOO_LARGE'};return {value};}catch(error){return {error:valueError(error)};}}
+ function ready(state){
+  let value=null;
+  if(!c.deleted){if(parsed.kind==='habitLog')value=state.logValue;else{const normalized=normalize();if(normalized.error)return rejected(normalized.error);value=normalized.value;}}
+  const changes=[{key:'app/data/'+c.key,expectedVersion:c.expectedVersion,deleted:c.deleted,value,...(c.recreate?{recreate:true}:{})}];
+  if(!state.business.exists){changes.push({key:'app/catalog/'+c.key,expectedVersion:0,value:{key:c.key,next:state.catalog.first}},{key:HEAD,expectedVersion:state.catalog.headVersion,value:{first:c.key}});}
+  const result={key:c.key,version:c.expectedVersion+1,deleted:c.deleted};
+  if(boundBase.writerFence===2){const seq=state.journal.seq;changes.push({key:syncAppChangeSlot(seq),expectedVersion:state.journal.slotVersion,value:{seq,key:c.key,version:c.expectedVersion+1,deleted:c.deleted}},{key:SYNC_APP_CHANGE_HEAD,expectedVersion:state.journal.headVersion,value:{protocol:2,seq,floor:Math.max(1,seq-SYNC_APP_CHANGE_CAPACITY+1),capacity:SYNC_APP_CHANGE_CAPACITY}});result.appSeq=seq;}
+  return {kind:'ready',changes,result};
+ }
+ function advance(input,readEntity){
+  if(typeof readEntity!=='function')fail('APP_PREPARATION_CONFIG_INVALID');
+  const state=checkState(input);
+  if(state.phase==='validate'){
+   if(commandError)return rejected(commandError);
+   if(c.store!==boundBase.storeId)return rejected('STORE_ID_MISMATCH');
+   if(c.generation!==boundBase.datasetGeneration)return rejected('DATASET_GENERATION_MISMATCH');
+   if(!boundBase.acceptedEpochs.includes(c.epoch))return rejected('OPERATION_EPOCH_EXPIRED');
+   return progress(state,'business');
+  }
+  if(state.phase==='business'){
+   const old=checkedEntity(readEntity('app/data/'+c.key),'app/data/'+c.key,'APP_ENTITY_CORRUPT');
+   if((old?.version??0)!==c.expectedVersion)return rejected('ENTITY_VERSION_CONFLICT');
+   if(c.expectedVersion===Number.MAX_SAFE_INTEGER)fail('APP_ENTITY_VERSION_EXHAUSTED');
+   if(c.deleted&&(c.value!==null||!old||old.deleted))return rejected('ENTITY_MISSING');
+   if(c.deleted&&['settings','garden','habit'].includes(parsed.kind))return rejected('ENTITY_DELETE_FORBIDDEN');
+   if(!c.deleted&&old?.deleted&&!c.recreate)return rejected('ENTITY_TOMBSTONED');
+   const business={exists:!!old,version:old?.version??0},next={...state,business};
+   if(!c.deleted&&parsed.kind==='habitLog')return progress(next,'parent');
+   if(!c.deleted){const normalized=normalize();if(normalized.error)return rejected(normalized.error);if(parsed.kind==='habit'&&old&&!old.deleted){if(!old.value||!['check','number','time'].includes(old.value.type))fail('APP_ENTITY_CORRUPT');if(old.value.type!==normalized.value.type)return rejected('HABIT_TYPE_IMMUTABLE');}}
+   return progress(next,afterValue(next));
+  }
+  if(state.phase==='parent'){
+   const key='app/data/habit:'+parsed.id,habit=checkedEntity(readEntity(key),key,'APP_ENTITY_CORRUPT');
+   if(!habit||habit.deleted)return rejected('HABIT_MISSING');
+   let definition;try{definition=validateEntity('habit:'+parsed.id,habit.value);}catch{fail('APP_ENTITY_CORRUPT');}
+   const normalized=normalize(definition);if(normalized.error)return rejected(normalized.error);
+   return progress(state,afterValue(state),{logValue:normalized.value});
+  }
+  if(state.phase==='catalog-node'){
+   const key='app/catalog/'+c.key,node=checkedEntity(readEntity(key),key,'CATALOG_CORRUPT');
+   if(node!==null)fail('CATALOG_CORRUPT');
+   return progress(state,'catalog-head',{catalog:{nodeChecked:true,headVersion:null,first:null}});
+  }
+  if(state.phase==='catalog-head'){
+   const head=checkedEntity(readEntity(HEAD),HEAD,'CATALOG_CORRUPT');
+   if(head&&(head.deleted||!exact(head.value,'first')||head.value.first!==null&&typeof head.value.first!=='string'))fail('CATALOG_CORRUPT');
+   const first=head?.value.first??null;if(first!==null)checkedDomainKey(first,'CATALOG_CORRUPT');if(first===c.key)fail('CATALOG_CORRUPT');
+   if(head?.version===Number.MAX_SAFE_INTEGER)fail('APP_CATALOG_VERSION_EXHAUSTED');
+   return progress(state,afterCatalog(),{catalog:{nodeChecked:true,headVersion:head?.version??0,first}});
+  }
+  if(state.phase==='journal-head'){
+   const entity=checkedEntity(readEntity(SYNC_APP_CHANGE_HEAD),SYNC_APP_CHANGE_HEAD,'APP_JOURNAL_CORRUPT'),head=validateSyncAppChangeHead(entity),seq=head.seq+1;
+   if(!Number.isSafeInteger(seq))fail('APP_SEQUENCE_EXHAUSTED');
+   return progress(state,'journal-slot',{journal:{headVersion:entity.version,seq,slotVersion:null}});
+  }
+  if(state.phase==='journal-slot'){
+   const seq=state.journal.seq,key=syncAppChangeSlot(seq),slot=checkedEntity(readEntity(key),key,'APP_JOURNAL_CORRUPT');
+   if(seq>SYNC_APP_CHANGE_CAPACITY&&!slot||slot&&(slot.deleted||!exact(slot.value,'seq,key,version,deleted')||slot.value.seq!==seq-SYNC_APP_CHANGE_CAPACITY||!Number.isSafeInteger(slot.value.version)||slot.value.version<1||typeof slot.value.deleted!=='boolean'))fail('APP_JOURNAL_CORRUPT');
+   if(slot)checkedDomainKey(slot.value.key,'APP_JOURNAL_CORRUPT');
+   if(slot?.version===Number.MAX_SAFE_INTEGER)fail('APP_JOURNAL_VERSION_EXHAUSTED');
+   return progress(state,'ready',{journal:{...state.journal,slotVersion:slot?.version??0}});
+  }
+  if(state.phase==='ready')return ready(state);
+  fail('APP_PREPARATION_STATE_INVALID');
+ }
+ return Object.freeze({initialState,advance});
+}
+
+return {createPreparedAppCommand};
+})();
+const m14 = (function(){
+/**
+ * Internal explicit-owner migration, called only after the existing owner setup
+ * has authenticated the editor and loaded the pinned store configuration.
+ * There is no web route, bootstrap, ID/config replacement, or OAuth operation.
+ * All record/receipt/history changes use the existing immutable writer and its
+ * same-project lock. The head and irreversible format fence commit together.
+ */
+const {writerDigest} = m11;
+const {SYNC_APP_CHANGE_HEAD,SYNC_APP_CHANGE_CAPACITY,initialSyncAppChangeHead,validateSyncAppChangeHead} = m12;
+const validId=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
+const fail=(code,ownerAction=false)=>{const e=Error(code);e.code=code;if(ownerAction)e.requiresOwnerAction=true;throw e;};
+function activateSyncV2(runtime){
+ const writer=runtime?.writer;
+ if(typeof runtime?.locked!=='function'||!writer||['recoveryBarrier','status','getEntity','getReceipt','enableFormatFence'].some(k=>typeof writer[k]!=='function'))fail('SYNC_V2_ACTIVATION_CONFIG');
+ return runtime.locked(()=>{
+  // Recovery may preserve authenticated progress or complete an already
+  // committed mandatory publication; it must never create an absent store.
+  writer.recoveryBarrier({persistFrameProgress:true});const before=writer.status();
+  if(!validId(before.storeId)||before.storeId!==writer.storeId||!validId(before.datasetGeneration)||!validId(writer.anchorId)||!validId(writer.writerScriptId)||!Number.isSafeInteger(writer.schemaVersion)||writer.schemaVersion<1||!Array.isArray(before.acceptedEpochs)||before.acceptedEpochs.length<1||!before.acceptedEpochs.every(validId))fail('SYNC_V2_ACTIVATION_CONFIG');
+  const identity={kind:'mypace-enable-incremental-sync',protocol:2,storeId:before.storeId,datasetGeneration:before.datasetGeneration,writerScriptId:writer.writerScriptId,anchorId:writer.anchorId,schemaVersion:writer.schemaVersion,headKey:SYNC_APP_CHANGE_HEAD,capacity:SYNC_APP_CHANGE_CAPACITY};
+  const digest=writerDigest(identity),operationId='sync_v2_enable_'+digest.slice(0,40),epoch=before.acceptedEpochs[before.acceptedEpochs.length-1];
+  const receipt=writer.getReceipt(operationId,epoch);
+  if(receipt&&receipt.digest!==digest)fail('OP_ID_REUSED');
+  const head=writer.getEntity(SYNC_APP_CHANGE_HEAD);
+  if(before.writerFence===2){
+   validateSyncAppChangeHead(head);
+   return {enabled:true,alreadyEnabled:true,...(receipt?{receipt}:{}),storage:writer.status()};
+  }
+  if(before.writerFence!==0)fail('SYNC_V2_FORMAT_UNSUPPORTED',true);
+  if(receipt)fail('WRITER_FORMAT_FENCE_MISSING',true);
+  // An earlier experimental or corrupt head must be investigated by the owner.
+  // It is never overwritten, adopted, reset, or treated as an activation grant.
+  if(head!==null&&head!==undefined)fail('SYNC_V2_UNFENCED_JOURNAL_PRESENT',true);
+  const committed=writer.enableFormatFence({operationId,epoch,datasetGeneration:before.datasetGeneration,digest,changes:[{key:SYNC_APP_CHANGE_HEAD,expectedVersion:0,value:initialSyncAppChangeHead()}],result:{incrementalSyncEnabled:true,protocol:2}});
+  const after=writer.status();if(after.writerFence!==2||after.storeId!==before.storeId||after.datasetGeneration!==before.datasetGeneration)fail('SYNC_V2_ACTIVATION_UNPROVEN');
+  const journal=validateSyncAppChangeHead(writer.getEntity(SYNC_APP_CHANGE_HEAD));
+  if(journal.seq!==0||committed.operationId!==operationId||committed.digest!==digest)fail('SYNC_V2_ACTIVATION_UNPROVEN');
+  return {enabled:true,alreadyEnabled:false,receipt:committed,storage:after};
+ });
+}
+
+return {activateSyncV2};
+})();
+const m15 = (function(){
+/**
+ * Server-internal, one-invocation Drive REST transport for GAS V8.
+ * No retries, new-ID fallback, caller URL, token persistence, or authority checks
+ * are supplied here. GasStoreIO still owns locks, fixed parents/advisory IDs,
+ * permissions, schema/hash validation, and same-ID immutable readback.
+ *
+ * timeoutSeconds is documented for UrlFetchApp (checked 2026-10-07):
+ * https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app
+ * Multipart and pre-generated-ID retry contract:
+ * https://developers.google.com/workspace/drive/api/guides/manage-uploads
+ * https://developers.google.com/workspace/drive/api/reference/rest/v3/files/create
+ * A timed-out write remains ambiguous. A HTTP success ID is NOT byte proof.
+ */
+const {IncrementalSha256,encodeUtf8,decodeUtf8} = m3;
+const REST='https://www.googleapis.com/drive/v3/files';
+const UPLOAD='https://www.googleapis.com/upload/drive/v3/files';
+const MAX_MEDIA=2*1024*1024,MAX_JSON=16*1024;
+const MIME='application/octet-stream';
+const fileId=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
+const record=x=>!!x&&typeof x==='object'&&!Array.isArray(x)&&Object.getPrototypeOf(x)===Object.prototype;
+function restFail(code,status,retryable=false){const e=Error(code);e.code=code;if(Number.isInteger(status)&&status>=100&&status<=599)e.status=status;if(retryable)e.retryable=true;throw e;}
+function boundedBytes(raw,limit,code){
+ if(!raw||!Number.isSafeInteger(raw.length)||raw.length<0||raw.length>limit)restFail(code);
+ const bytes=new Uint8Array(raw.length);
+ for(let i=0;i<raw.length;i++){const n=raw[i];if(!Number.isInteger(n)||n< -128||n>255)restFail(code);bytes[i]=n&255;}
+ return bytes;
+}
+function containsBytes(haystack,needle){
+ outer:for(let i=0;i<=haystack.length-needle.length;i++){for(let j=0;j<needle.length;j++)if(haystack[i+j]!==needle[j])continue outer;return true;}return false;
+}
+function createGasDriveRest({UrlFetchApp,ScriptApp}={},options={}){
+ const {deadlineMs,now=Date.now,checkBudget=()=>true,maxTimeoutSeconds=8,responseReserveMs=1500,advisoryMinMs=7000,onRequest}=options;
+ if(typeof UrlFetchApp?.fetch!=='function'||typeof ScriptApp?.getOAuthToken!=='function'||typeof now!=='function'||typeof checkBudget!=='function'||!Number.isSafeInteger(deadlineMs)||deadlineMs<1||!Number.isSafeInteger(maxTimeoutSeconds)||maxTimeoutSeconds<1||maxTimeoutSeconds>360||!Number.isSafeInteger(responseReserveMs)||responseReserveMs<0||responseReserveMs>30000||(!Number.isSafeInteger(advisoryMinMs)||advisoryMinMs<4000||advisoryMinMs>30000)||(onRequest!==undefined&&typeof onRequest!=='function'))restFail('STORE_REST_CONFIG');
+ let accessToken=null,timeoutCap=maxTimeoutSeconds;
+ function clock(){let n;try{n=now();}catch(_){restFail('STORE_REST_CLOCK_INVALID');}if(!Number.isSafeInteger(n)||n<0)restFail('STORE_REST_CLOCK_INVALID');return n;}
+ function budget(){let allowed;try{allowed=checkBudget('drive-rest');}catch(_){restFail('STORE_YIELD',undefined,true);}if(allowed!==true)restFail('STORE_YIELD',undefined,true);}
+ function timeout(){budget();const seconds=Math.min(timeoutCap,Math.floor((deadlineMs-clock()-responseReserveMs)/1000));if(seconds<1)restFail('STORE_YIELD',undefined,true);return seconds;}
+ function token(){
+  if(accessToken!==null)return accessToken;
+  let value;try{value=ScriptApp.getOAuthToken();}catch(_){restFail('STORE_AUTH_UNRESOLVED',undefined,true);}
+  if(typeof value!=='string'||value.length<1||value.length>16384||/[^\x21-\x7e]/.test(value))restFail('STORE_AUTH_UNRESOLVED',undefined,true);
+  accessToken=value;return value;
+ }
+ function telemetry(operation,method,start,status,outcome){
+  if(!onRequest)return;
+  try{const end=now(),elapsedMs=Number.isSafeInteger(end)&&end>=start?end-start:0;onRequest({operation,method,elapsedMs,...(Number.isInteger(status)?{status}:{}),outcome});}catch(_){}
+ }
+ function request(operation,method,url,{headers={},payload,contentType,maxBytes=MAX_JSON}={}){
+  // Admission before token retrieval and again after it. Body construction is
+  // completed by the caller before this second, final timeout calculation.
+  timeout();const start=clock();let status,outcome='transport-error';
+  try{
+   const credential=token(),seconds=timeout();
+   const params={method,headers:{...headers,Authorization:'Bearer '+credential},muteHttpExceptions:true,followRedirects:false,validateHttpsCertificates:true,timeoutSeconds:seconds};
+   if(payload!==undefined)params.payload=payload;
+   if(contentType!==undefined)params.contentType=contentType;
+   let response;try{response=UrlFetchApp.fetch(url,params);}catch(_){restFail('STORE_REQUEST_UNRESOLVED',undefined,true);}
+   if(!response||typeof response.getResponseCode!=='function'||typeof response.getContent!=='function')restFail('STORE_REST_RESPONSE_INVALID',undefined,true);
+   try{status=response.getResponseCode();}catch(_){restFail('STORE_REST_RESPONSE_INVALID',undefined,true);}
+   if(!Number.isInteger(status)||status<100||status>599)restFail('STORE_REST_RESPONSE_INVALID',undefined,true);
+   if(status>=300&&status<400){outcome='http-error';restFail('STORE_REDIRECT_UNRESOLVED',status,true);}
+   let raw;try{raw=response.getContent();}catch(_){restFail('STORE_REST_RESPONSE_INVALID',status,true);}
+   let bytes;try{bytes=boundedBytes(raw,maxBytes,'STORE_REST_RESPONSE_TOO_LARGE');}catch(e){outcome='response-invalid';throw e;}
+   outcome=status>=200&&status<300?'ok':'http-error';
+   return {response,status,bytes};
+  }catch(e){if(e?.code==='STORE_YIELD')outcome='yield';else if(e?.code?.startsWith('STORE_REST_'))outcome='response-invalid';throw e;}
+  finally{telemetry(operation,method,start,status,outcome);}
+ }
+ function json(result,code,success){
+  if(!success.includes(result.status))restFail(code,result.status,true);
+  let value;try{value=JSON.parse(decodeUtf8(result.bytes));}catch(_){restFail('STORE_REST_JSON_INVALID',result.status,true);}
+  if(!record(value))restFail('STORE_REST_JSON_INVALID',result.status,true);return value;
+ }
+ function mediaBytes(bytes){if(!(bytes instanceof Uint8Array)||bytes.length<1||bytes.length>MAX_MEDIA)restFail('STORE_REST_MEDIA_INVALID');return Uint8Array.from(bytes);}
+ function signed(bytes){return Array.from(bytes,n=>n>127?n-256:n);}
+ function safeHeaders(headers,media){
+  if(!record(headers))restFail('STORE_REST_HEADERS_INVALID');const out={},seen=new Set();
+  for(const key of Object.keys(headers)){
+   const name=key.toLowerCase(),value=headers[key];if(seen.has(name)||typeof value!=='string'||/[\r\n]/.test(value))restFail('STORE_REST_HEADERS_INVALID');seen.add(name);
+   if(name==='accept-encoding'&&value==='identity')out['Accept-Encoding']='identity';
+   else if(name==='range'&&media){const m=/^bytes=(0|[1-9]\d*)-(0|[1-9]\d*)$/.exec(value);if(!m)restFail('STORE_REST_RANGE_INVALID');const lo=Number(m[1]),hi=Number(m[2]);if(!Number.isSafeInteger(lo)||!Number.isSafeInteger(hi)||hi<lo||hi-lo+1>MAX_MEDIA)restFail('STORE_REST_RANGE_INVALID');out.Range=value;}
+   else restFail('STORE_REST_HEADERS_INVALID');
+  }
+  if(media&&!out.Range)restFail('STORE_REST_RANGE_REQUIRED');return out;
+ }
+ function readSpec(id,suffix,headers={}){
+  if(!fileId(id)||typeof suffix!=='string')restFail('STORE_REST_READ_INVALID');
+  let query,media=false;
+  if(suffix==='?alt=media'){query=suffix;media=true;}
+  else if(suffix.startsWith('?fields=')){
+   let fields;try{fields=decodeURIComponent(suffix.slice(8));}catch(_){restFail('STORE_REST_QUERY_INVALID');}
+   if(!fields||fields.length>1024||!/^[A-Za-z0-9_(),/.*]+$/.test(fields))restFail('STORE_REST_QUERY_INVALID');query='?fields='+encodeURIComponent(fields);
+  }else restFail('STORE_REST_QUERY_INVALID');
+  const url=REST+'/'+encodeURIComponent(id)+query;if(url.length>2082)restFail('STORE_REST_QUERY_INVALID');
+  return {operation:media?'read-media':'read-metadata',method:'get',url,headers:safeHeaders(headers,media),maxBytes:media?MAX_MEDIA:MAX_JSON};
+ }
+ function read(id,suffix,headers={}){const r=readSpec(id,suffix,headers);return request(r.operation,'get',r.url,r).response;}
+ function requestMany(specs){
+  if(!specs.length)return [];
+  if(UrlFetchApp.fetchAll===undefined)return specs.map(r=>request(r.operation,r.method,r.url,r));
+  if(typeof UrlFetchApp.fetchAll!=='function')restFail('STORE_REST_BATCH_UNAVAILABLE');
+  timeout();const start=clock();let responses;
+  try{
+   const credential=token(),seconds=timeout();
+   const requests=specs.map(r=>({url:r.url,method:r.method,headers:{...(r.headers||{}),Authorization:'Bearer '+credential},muteHttpExceptions:true,followRedirects:false,validateHttpsCertificates:true,timeoutSeconds:seconds,...(r.payload===undefined?{}:{payload:r.payload}),...(r.contentType===undefined?{}:{contentType:r.contentType})}));
+   try{responses=UrlFetchApp.fetchAll(requests);}catch(e){if((e?.code||e?.message)==='OWNER_BUDGET_YIELD')restFail('STORE_YIELD',undefined,true);restFail('STORE_REQUEST_UNRESOLVED',undefined,true);}
+   if(!Array.isArray(responses)||responses.length!==specs.length)restFail('STORE_REST_RESPONSE_INVALID',undefined,true);
+  }catch(error){for(const r of specs)telemetry(r.operation,r.method,start,undefined,error?.code==='STORE_YIELD'?'yield':error?.code==='STORE_REST_RESPONSE_INVALID'?'response-invalid':'transport-error');throw error;}
+  let firstError=null;const results=[];
+  for(let i=0;i<specs.length;i++){
+   let status,outcome='transport-error';
+   try{
+    const response=responses[i];if(!response||typeof response.getResponseCode!=='function'||typeof response.getContent!=='function')restFail('STORE_REST_RESPONSE_INVALID',undefined,true);
+    try{status=response.getResponseCode();}catch(_){restFail('STORE_REST_RESPONSE_INVALID',undefined,true);}
+    if(!Number.isInteger(status)||status<100||status>599)restFail('STORE_REST_RESPONSE_INVALID',undefined,true);
+    if(status>=300&&status<400){outcome='http-error';restFail('STORE_REDIRECT_UNRESOLVED',status,true);}
+    let bytes;try{bytes=response.getContent();}catch(_){restFail('STORE_REST_RESPONSE_INVALID',status,true);}
+    bytes=boundedBytes(bytes,specs[i].maxBytes??MAX_JSON,'STORE_REST_RESPONSE_TOO_LARGE');outcome=status>=200&&status<300?'ok':'http-error';results.push({response,status,bytes});
+   }catch(error){if(error?.code?.startsWith('STORE_REST_'))outcome='response-invalid';if(!firstError)firstError=error;}
+   finally{telemetry(specs[i].operation,specs[i].method,start,status,outcome);}
+  }
+  if(firstError)throw firstError;
+  return results;
+ }
+ function readMany(reads){
+  if(!Array.isArray(reads)||reads.length>16)restFail('STORE_REST_BATCH_INVALID');
+  // Validate the entire batch before token retrieval or the first network call.
+  const specs=reads.map(r=>{if(!record(r)||Object.keys(r).some(k=>!['id','suffix','headers'].includes(k)))restFail('STORE_REST_BATCH_INVALID');return readSpec(r.id,r.suffix,r.headers===undefined?{}:r.headers);});
+  return requestMany(specs).map(r=>r.response);
+ }
+
+ function generateIds(count){
+  if(!Number.isSafeInteger(count)||count<1||count>1000)restFail('STORE_ID_COUNT');
+  const result=json(request('generate-ids','get',REST+'/generateIds?count='+count+'&space=drive&type=files&fields=ids'),'STORE_IDS_UNRESOLVED',[200]);
+  if(!Array.isArray(result.ids)||result.ids.length!==count||result.ids.some(id=>!fileId(id))||new Set(result.ids).size!==count)restFail('STORE_IDS_INVALID');return result;
+ }
+ function createSpec(metadata,input){
+  if(!record(metadata)||Object.keys(metadata).sort().join(',')!=='appProperties,id,mimeType,name,parents'||!fileId(metadata.id)||metadata.mimeType!==MIME||typeof metadata.name!=='string'||metadata.name.length<1||!Array.isArray(metadata.parents)||metadata.parents.length!==1||!fileId(metadata.parents[0])||!record(metadata.appProperties)||Object.values(metadata.appProperties).some(x=>typeof x!=='string'))restFail('STORE_REST_METADATA_INVALID');
+  let text;try{text=JSON.stringify(metadata);}catch(_){restFail('STORE_REST_METADATA_INVALID');}
+  const meta=encodeUtf8(text);if(meta.length>MAX_JSON)restFail('STORE_REST_METADATA_TOO_LARGE');
+  const bytes=mediaBytes(input);let boundary;
+  for(let attempt=0;attempt<32;attempt++){
+   // A predictable short candidate list lets ordinary content block every
+   // fresh invocation. Bind a full SHA-256 candidate to this exact body; the
+   // independent collision scan is retained. 3 + 64 = 67 MIME boundary chars.
+   const digest=new IncrementalSha256().update(encodeUtf8('MyPace/Drive/multipart-boundary/v1\n'+attempt+'\n')).update(meta).update(bytes).digestHex();
+   const candidate='mp_'+digest,needle=encodeUtf8(candidate);
+   if(!containsBytes(meta,needle)&&!containsBytes(bytes,needle)){boundary=candidate;break;}
+  }
+  if(!boundary)restFail('STORE_REST_BOUNDARY_INVALID');
+  const first=encodeUtf8('--'+boundary+'\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n'+text+'\r\n--'+boundary+'\r\nContent-Type: '+MIME+'\r\n\r\n');
+  const last=encodeUtf8('\r\n--'+boundary+'--\r\n'),payload=new Uint8Array(first.length+bytes.length+last.length);
+  payload.set(first);payload.set(bytes,first.length);payload.set(last,first.length+bytes.length);
+  return {operation:'create',method:'post',url:UPLOAD+'?uploadType=multipart&fields=id,parents,appProperties,size,trashed,mimeType,ownedByMe,shared,version,sha256Checksum&ignoreDefaultVisibility=true',payload:signed(payload),contentType:'multipart/related; boundary='+boundary,maxBytes:MAX_JSON,id:metadata.id};
+ }
+ function createResult(result,id){const value=json(result,'STORE_CREATE_UNRESOLVED',[200,201]);if(value.id!==id)restFail('STORE_CREATE_ID_MISMATCH');return value;}
+ function create(metadata,input){const spec=createSpec(metadata,input);return createResult(request(spec.operation,spec.method,spec.url,spec),spec.id);}
+ function createMany(files){
+  if(!Array.isArray(files)||files.length>4)restFail('STORE_REST_BATCH_INVALID');let total=0;const ids=new Set();
+  for(const file of files){
+   if(!record(file)||Object.keys(file).sort().join(',')!=='bytes,metadata'||!record(file.metadata)||file.metadata.appProperties?.['mypace.role']!=='index-node'||!(file.bytes instanceof Uint8Array)||file.bytes.length<1||file.bytes.length>MAX_MEDIA||ids.has(file.metadata.id))restFail('STORE_REST_BATCH_INVALID');
+   ids.add(file.metadata.id);total+=file.bytes.length;if(total>1048576)restFail('STORE_REST_BATCH_BOUND');
+  }
+  const specs=files.map(file=>createSpec(file.metadata,file.bytes)),results=requestMany(specs);
+  return results.map((result,i)=>createResult(result,specs[i].id));
+ }
+
+ function update(id,input){
+  // Only GasStoreIO may select the separately pinned mutable advisory file.
+  // This is not a public arbitrary-ID mutation surface.
+  if(!fileId(id))restFail('STORE_REST_UPDATE_INVALID');const bytes=mediaBytes(input);
+  const result=json(request('update','patch',UPLOAD+'/'+encodeURIComponent(id)+'?uploadType=media&fields=id',{payload:signed(bytes),contentType:MIME}),'STORE_HINT_WRITE_UNRESOLVED',[200]);
+  if(result.id!==id)restFail('STORE_CREATE_ID_MISMATCH');return result;
+ }
+ function canStartAdvisory(){try{budget();const remaining=deadlineMs-clock();return remaining>=advisoryMinMs&&Math.floor((remaining-responseReserveMs)/1000)>=1;}catch(_){return false;}}
+ function advisory(fn){
+  if(typeof fn!=='function')restFail('STORE_REST_ADVISORY_INVALID');if(!canStartAdvisory())restFail('STORE_YIELD',undefined,true);
+  const previous=timeoutCap;timeoutCap=Math.min(previous,2);try{return fn();}finally{timeoutCap=previous;}
+ }
+ return Object.freeze({read,readMany,generateIds,create,createMany,update,advisory,canStartAdvisory});
+}
+
+return {createGasDriveRest};
+})();
+const m16 = (function(){
+const {IncrementalSha256} = m3;
+const {CHECKPOINT_HINT_MAX_BYTES} = m7;
 // Server-internal Drive IO. No exported web handler or arbitrary-ID client route.
 // Configuration contains fixed IDs only; all authoritative state is in Drive.
 const fail=code=>{throw Error(code);};
 const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 const MAX=2*1024*1024;
 const FIELDS='id,parents,appProperties,size,trashed,mimeType,ownedByMe,shared';
+const CREATE_FIELDS=FIELDS+',version,sha256Checksum';
 const MIME='application/octet-stream';
+const PREFETCH_ROLES=new Set(['bootstrap','frame','index-node','checkpoint-manifest','checkpoint-index','preparation','preparation-work','transition-certificate']);
 const CACHE_DEFAULTS=Object.freeze({mode:'bytes',maxEntries:512,maxBytes:8*1024*1024});
 const retry=(code,status)=>{const e=Error(code);e.retryable=true;if(status)e.status=status;throw e;};
 class GasStoreIO {
- constructor({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId,managedParentId,checkBudget,protocolReadCache=false,checkpointHintId}) {
+ constructor({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId,managedParentId,checkBudget,protocolReadCache=false,checkpointHintId,restTransport=null,canWriteHint=()=>true,managedWritePhase=false,trustManagedRecoveryPrefix=false}) {
   if(!Drive?.Files||typeof Drive.Files.create!=='function'||typeof Drive.Files.generateIds!=='function'||typeof Utilities?.newBlob!=='function'||typeof UrlFetchApp?.fetch!=='function'||typeof ScriptApp?.getOAuthToken!=='function'||typeof ScriptApp?.getScriptId!=='function'||typeof lock?.hasLock!=='function'||!id(storeId)||!id(managedParentId)||typeof checkBudget!=='function')fail('STORE_IO_CONFIG');
   if(checkpointHintId!==undefined&&(!id(checkpointHintId)||checkpointHintId===managedParentId||checkpointHintId===storeId))fail('STORE_HINT_CONFIG');
-  Object.assign(this,{Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId,managedParentId,checkBudget,checkpointHintId});
+  if(restTransport!==null&&['read','generateIds','create','update','advisory','canStartAdvisory'].some(k=>typeof restTransport[k]!=='function')||restTransport!==null&&restTransport.readMany!==undefined&&typeof restTransport.readMany!=='function'||restTransport!==null&&restTransport.createMany!==undefined&&typeof restTransport.createMany!=='function'||typeof canWriteHint!=='function')fail('STORE_IO_CONFIG');
+  Object.assign(this,{Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId,managedParentId,checkBudget,checkpointHintId,restTransport,canWriteHint});
   if(protocolReadCache!==false&&protocolReadCache!==true&&(!protocolReadCache||typeof protocolReadCache!=='object'||Array.isArray(protocolReadCache)))fail('STORE_CACHE_CONFIG');
   this._readCacheLimits=protocolReadCache===false?null:{...CACHE_DEFAULTS,...(protocolReadCache===true?{}:protocolReadCache)};
   const c=this._readCacheLimits;
   if(c&&(Object.keys(c).some(k=>!Object.prototype.hasOwnProperty.call(CACHE_DEFAULTS,k))||!['bytes','lock-phase'].includes(c.mode)||!Number.isSafeInteger(c.maxEntries)||c.maxEntries<1||c.maxEntries>1024||!Number.isSafeInteger(c.maxBytes)||c.maxBytes<1||c.maxBytes>8*1024*1024))fail('STORE_CACHE_CONFIG');
-  this._readCache=new Map();this._readCacheBytes=0;this._readCacheActive=false;this._readPhaseToken=null;
+  if(typeof trustManagedRecoveryPrefix!=='boolean'||trustManagedRecoveryPrefix&&!managedWritePhase)fail('STORE_IO_CONFIG');this._trustManagedRecoveryPrefix=trustManagedRecoveryPrefix;
+  if(typeof managedWritePhase!=='boolean')fail('STORE_IO_CONFIG');this._managedWritePhase=managedWritePhase;
+  this._readCache=new Map();this._readCacheBytes=0;this._readCacheActive=false;this._readPhaseToken=null;this._readParentValidated=false;this._hintParentProofUsed=false;
  }
  // Only runtime-owned, continuously-held lock phases may enable this cache.
  // Immutable protocol bytes are still hash/schema-verified by the writer on
@@ -1667,7 +3200,7 @@ class GasStoreIO {
  // 'bytes' mode freshly validates metadata on every read. Explicit 'lock-phase'
  // mode trusts previously verified positive metadata only until lock release.
  beginReadPhase(){this.endReadPhase();if(this._readCacheLimits){this.assertLockHeld();this._readCacheActive=true;this._readPhaseToken={};}}
- endReadPhase(){this._readCache.clear();this._readCacheBytes=0;this._readCacheActive=false;this._readPhaseToken=null;}
+ endReadPhase(){this._readCache.clear();this._readCacheBytes=0;this._readCacheActive=false;this._readPhaseToken=null;this._readParentValidated=false;this._hintParentProofUsed=false;}
  // An opaque token authorizes verified-prefix reuse only in full positive mode.
  getVerifiedReadPhase(){if(!this._readCacheActive||this._readCacheLimits.mode!=='lock-phase')return null;this.assertLockHeld();this._budget();return this._readPhaseToken;}
  _forget(fileId){const old=this._readCache.get(fileId);if(old){this._readCacheBytes-=old.bytes.length;this._readCache.delete(fileId);}}
@@ -1687,80 +3220,208 @@ class GasStoreIO {
   this.assertLockHeld();
   this._readCache.set(fileId,{bytes:Uint8Array.from(bytes),...(this._readCacheLimits.mode==='bytes'?{version:metadata.version,md5Checksum:metadata.md5Checksum}:{})});this._readCacheBytes+=bytes.length;
  }
+ // Explicit app-managed immutable-store policy. Authority lasts only for this
+ // continuously held lock; CSV/source IO never uses this proof.
+ _writeParent(){if(this._managedWritePhase&&this.getVerifiedReadPhase()&&this._readParentValidated)return;this._parent();if(this._managedWritePhase&&this.getVerifiedReadPhase())this._readParentValidated=true;}
+ _acceptCreate(fileId,bytes,role,result){
+  if(!this._managedWritePhase||!this.getVerifiedReadPhase())return false;
+  // Missing optional fields/checksum safely retain the ordinary exact-ID read.
+  // A complete response must bind server SHA-256 to the exact uploaded bytes.
+  try{if(!result||result.appProperties?.['mypace.role']!==role||typeof result.version!=='string'||!/^[1-9]\d{0,19}$/.test(result.version)||typeof result.sha256Checksum!=='string'||!/^[a-f0-9]{64}$/.test(result.sha256Checksum)||this._checkedMetadata(result,fileId,bytes.length)!==bytes.length||new IncrementalSha256().update(bytes).digestHex()!==result.sha256Checksum)return false;}catch(_){return false;}
+  this._remember(fileId,bytes,result);return true;
+ }
  getScriptId(){return this.ScriptApp.getScriptId();}
  assertLockHeld(){if(this.lock.hasLock()!==true){this.endReadPhase();fail('STORE_LOCK_REQUIRED');}return true;}
  _budget(){if(this.checkBudget('store-io')!==true)retry('STORE_YIELD');}
  _fetch(fileId,suffix,headers={}) {
   this.assertLockHeld();this._budget();if(!id(fileId))fail('STORE_ID_INVALID');
-  let r;try{const token=this.ScriptApp.getOAuthToken();if(typeof token!=='string'||!token)fail('STORE_AUTH');r=this.UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(fileId)+suffix,{method:'get',headers:{Authorization:'Bearer '+token,...headers},muteHttpExceptions:true,followRedirects:false});}catch(e){retry('STORE_READ_UNRESOLVED');}
+  let r;try{if(this.restTransport)r=this.restTransport.read(fileId,suffix,headers);else{const token=this.ScriptApp.getOAuthToken();if(typeof token!=='string'||!token)fail('STORE_AUTH');r=this.UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(fileId)+suffix,{method:'get',headers:{Authorization:'Bearer '+token,...headers},muteHttpExceptions:true,followRedirects:false});}}catch(e){if(e.message==='STORE_YIELD')throw e;retry('STORE_READ_UNRESOLVED',e.status);}
   if(!r||typeof r.getResponseCode!=='function')fail('STORE_RESPONSE_INVALID');return r;
  }
- _metadata(fileId){const r=this._fetch(fileId,'?fields='+encodeURIComponent(FIELDS+(this._readCacheLimits?.mode==='bytes'?',version,md5Checksum':'')));const status=r.getResponseCode();if(status===404)return null;if(status!==200)retry('STORE_METADATA_UNRESOLVED',status);let m;try{const t=r.getContentText();if(typeof t!=='string'||t.length>16384)fail('STORE_METADATA_INVALID');m=JSON.parse(t);if(!m||typeof m!=='object'||Array.isArray(m))fail('STORE_METADATA_INVALID');}catch(e){fail('STORE_METADATA_INVALID');}return m;}
+ _metadataResult(r){if(!r||typeof r.getResponseCode!=='function')fail('STORE_RESPONSE_INVALID');const status=r.getResponseCode();if(status===404)return null;if(status!==200)retry('STORE_METADATA_UNRESOLVED',status);let m;try{const t=r.getContentText();if(typeof t!=='string'||t.length>16384)fail('STORE_METADATA_INVALID');m=JSON.parse(t);if(!m||typeof m!=='object'||Array.isArray(m))fail('STORE_METADATA_INVALID');}catch(e){fail('STORE_METADATA_INVALID');}return m;}
+ _metadata(fileId){return this._metadataResult(this._fetch(fileId,'?fields='+encodeURIComponent(FIELDS+(this._readCacheLimits?.mode==='bytes'?',version,md5Checksum':''))));}
+ _checkedMetadata(m,fileId,maxBytes,hint=false){
+  if(m.id!==fileId||m.trashed!==false||m.ownedByMe!==true||m.shared!==false||m.mimeType!==MIME||!Array.isArray(m.parents)||m.parents.length!==1||m.parents[0]!==this.managedParentId||m.appProperties?.['mypace.store']!==this.storeId)fail('STORE_METADATA_MISMATCH');
+  if(hint&&m.appProperties?.['mypace.role']!=='checkpoint-hint')fail('STORE_HINT_ROLE_MISMATCH');
+  if(!/^\d+$/.test(String(m.size)))fail('STORE_SIZE_INVALID');const n=Number(m.size);if(!Number.isSafeInteger(n)||n<1||n>maxBytes)fail('STORE_SIZE_INVALID');return n;
+ }
+ _mediaResult(r,n){
+  if(!r||typeof r.getResponseCode!=='function')fail('STORE_RESPONSE_INVALID');if(r.getResponseCode()!==206)retry('STORE_RANGE_STATUS',r.getResponseCode());
+  const h=r.getAllHeaders();if(!h||typeof h!=='object'||Array.isArray(h))fail('STORE_HEADERS_INVALID');
+  const header=name=>{const keys=Object.keys(h).filter(k=>k.toLowerCase()===name);if(!keys.length)return null;if(keys.length!==1||!['string','number'].includes(typeof h[keys[0]]))fail('STORE_HEADERS_INVALID');return String(h[keys[0]]).trim();};
+  if(header('content-range')!==`bytes 0-${n-1}/${n}`)fail('STORE_RANGE_INVALID');const length=header('content-length'),encoding=header('content-encoding');if((length!==null&&length!==String(n))||(encoding!==null&&encoding.toLowerCase()!=='identity'))fail('STORE_HEADERS_INVALID');
+  const raw=r.getContent();if(!raw||raw.length!==n)fail('STORE_BYTES_INVALID');const b=new Uint8Array(n);for(let i=0;i<n;i++){if(!Number.isInteger(raw[i])||raw[i]<-128||raw[i]>255)fail('STORE_BYTES_INVALID');b[i]=raw[i]&255;}return b;
+ }
+ _fetchMany(requests){
+  this.assertLockHeld();this._budget();
+  if(!this.restTransport||this.restTransport.readMany===undefined)return requests.map(r=>this._fetch(r.id,r.suffix,r.headers||{}));
+  let responses;try{responses=this.restTransport.readMany(requests);}catch(e){if((e.code||e.message)==='STORE_YIELD')throw e;retry('STORE_READ_UNRESOLVED',e.status);}
+  if(!Array.isArray(responses)||responses.length!==requests.length)fail('STORE_RESPONSE_INVALID');return responses;
+ }
+ prefetchRecoveryRead(anchorId,maxBytes=MAX){
+  if(!id(anchorId)||anchorId===this.checkpointHintId||anchorId===this.managedParentId)fail('STORE_ID_INVALID');
+  if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>MAX)fail('STORE_READ_BOUND');
+  this.assertLockHeld();this._budget();
+  if(!this.checkpointHintId||!this._readCacheActive||this._readCacheLimits.mode!=='lock-phase')return undefined;
+  const phase=this._readPhaseToken,check=()=>{this.assertLockHeld();this._budget();if(!this._readCacheActive||this._readPhaseToken!==phase)fail('STORE_READ_PHASE_CHANGED');};
+  const batch=reads=>{try{return this._fetchMany(reads);}catch(error){
+   if(error?.message!=='STORE_READ_UNRESOLVED'||error.retryable!==true)throw error;
+   check();this._forget(anchorId);this._hintParentProofUsed=true;return null;
+  }};
+  try{
+   this._parent();check();this._readParentValidated=true;
+   const metadata=batch([anchorId,this.checkpointHintId].map(id=>({id,suffix:'?fields='+encodeURIComponent(FIELDS)})));if(metadata===null)return {hintBytes:null};check();
+   const anchor=this._metadataResult(metadata[0]);if(anchor===null)return undefined;
+   const size=this._checkedMetadata(anchor,anchorId,maxBytes);if(anchor.appProperties['mypace.role']!=='bootstrap')fail('STORE_RECOVERY_ANCHOR_INVALID');
+   let hint=null,hintSize=0;
+   try{hint=this._metadataResult(metadata[1]);if(hint)hintSize=this._checkedMetadata(hint,this.checkpointHintId,CHECKPOINT_HINT_MAX_BYTES,true);}catch(_){hint=null;hintSize=0;}
+   // A denied, corrupt, foreign or oversized advisory hint has no authority.
+   // Skip its media entirely; never retry it through another read route.
+   const reads=[{id:anchorId,suffix:'?alt=media',headers:{Range:'bytes=0-'+(size-1),'Accept-Encoding':'identity'}}];
+   if(hint)reads.push({id:this.checkpointHintId,suffix:'?alt=media',headers:{Range:'bytes=0-'+(hintSize-1),'Accept-Encoding':'identity'}});
+   check();const media=batch(reads);if(media===null)return {hintBytes:null};check();
+   const bytes=this._mediaResult(media[0],size);let hintBytes=null;
+   if(hint)try{hintBytes=this._mediaResult(media[1],hintSize);}catch(_){/* Bad advisory media cannot invalidate a strictly verified anchor. */}
+   check();
+   // Publish only after the complete admitted batch validates. The hint is
+   // returned for one immediate use and is never put in any immutable cache.
+   this._remember(anchorId,bytes,anchor);this._hintParentProofUsed=true;
+   return {hintBytes};
+  }catch(error){this.endReadPhase();throw error;}
+ }
+ prefetchFiles(fileIds,maxBytes=MAX){
+  if(!Array.isArray(fileIds)||fileIds.length>16)fail('STORE_PREFETCH_BOUND');
+  if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>MAX)fail('STORE_READ_BOUND');
+  if(fileIds.some(fileId=>!id(fileId)))fail('STORE_ID_INVALID');
+  if(fileIds.includes(this.checkpointHintId))fail('STORE_HINT_ROLE_REQUIRED');
+  this.assertLockHeld();this._budget();
+  // Prefetch is useful only while a runtime-owned uninterrupted lock can keep
+  // positive metadata/bytes valid. Other cache modes use ordinary reads.
+  if(!this._readCacheActive||this._readCacheLimits.mode!=='lock-phase')return 0;
+  const phase=this._readPhaseToken,check=()=>{this.assertLockHeld();this._budget();if(!this._readCacheActive||this._readPhaseToken!==phase)fail('STORE_READ_PHASE_CHANGED');};
+  const wanted=[...new Set(fileIds)].filter(fileId=>!this._cached(fileId,maxBytes));if(!wanted.length)return 0;
+  try{
+   if(!this._readParentValidated){this._parent();check();this._readParentValidated=true;}
+   const metadata=this._fetchMany(wanted.map(id=>({id,suffix:'?fields='+encodeURIComponent(FIELDS)})));check();
+   const present=[];for(let i=0;i<wanted.length;i++){const m=this._metadataResult(metadata[i]);if(m===null)continue;const n=this._checkedMetadata(m,wanted[i],maxBytes);if(!PREFETCH_ROLES.has(m.appProperties['mypace.role']))fail('STORE_PREFETCH_ROLE_INVALID');present.push({id:wanted[i],m,n});}
+   if(!present.length)return 0;check();
+   const media=this._fetchMany(present.map(item=>({id:item.id,suffix:'?alt=media',headers:{Range:'bytes=0-'+(item.n-1),'Accept-Encoding':'identity'}})));check();
+   const bytes=media.map((r,i)=>this._mediaResult(r,present[i].n));check();
+   // Publish no partial batch on validation failure, and never cache absence.
+   for(let i=0;i<present.length;i++)this._remember(present[i].id,bytes[i],present[i].m);
+   return present.length;
+  }catch(error){this.endReadPhase();throw error;}
+ }
+
  _parent(){const m=this._metadata(this.managedParentId);if(!m||m.id!==this.managedParentId||m.mimeType!=='application/vnd.google-apps.folder'||m.trashed!==false||m.ownedByMe!==true||m.shared!==false)fail('STORE_PARENT_NOT_PRIVATE');}
- allocateIds(n){this.assertLockHeld();this._budget();if(!Number.isSafeInteger(n)||n<1||n>1000)fail('STORE_ID_COUNT');let r;try{r=this.Drive.Files.generateIds({count:n,space:'drive',type:'files'});}catch(e){retry('STORE_IDS_UNRESOLVED');}if(!r||!Array.isArray(r.ids)||r.ids.length!==n||r.ids.some(x=>!id(x))||new Set(r.ids).size!==n)fail('STORE_IDS_INVALID');return r.ids;}
+ allocateIds(n){this.assertLockHeld();this._budget();if(!Number.isSafeInteger(n)||n<1||n>1000)fail('STORE_ID_COUNT');let r;try{r=this.restTransport?this.restTransport.generateIds(n):this.Drive.Files.generateIds({count:n,space:'drive',type:'files'});}catch(e){retry('STORE_IDS_UNRESOLVED');}if(!r||!Array.isArray(r.ids)||r.ids.length!==n||r.ids.some(x=>!id(x))||new Set(r.ids).size!==n)fail('STORE_IDS_INVALID');return r.ids;}
  readFile(fileId,maxBytes=MAX){
   if(fileId===this.checkpointHintId)fail('STORE_HINT_ROLE_REQUIRED');
   return this._readFile(fileId,maxBytes);
  }
  _readFile(fileId,maxBytes=MAX,hint=false){
   if(!Number.isSafeInteger(maxBytes)||maxBytes<1||maxBytes>MAX)fail('STORE_READ_BOUND');
+  if(!id(fileId))fail('STORE_ID_INVALID');
+  // A frozen-cut continuation starts a fresh lock phase too. Folder privacy
+  // must be re-established before serving even an immutable child file.
+  if(!this._readParentValidated){this._parent();if(this._readCacheActive)this._readParentValidated=true;}
   const hit=hint?null:this._cached(fileId,maxBytes);if(hit&&this._readCacheLimits.mode==='lock-phase')return Uint8Array.from(hit.bytes);
   const m=this._metadata(fileId);if(m===null){this._forget(fileId);return null;}
-  if(m.id!==fileId||m.trashed!==false||m.ownedByMe!==true||m.shared!==false||m.mimeType!==MIME||!Array.isArray(m.parents)||m.parents.length!==1||m.parents[0]!==this.managedParentId||m.appProperties?.['mypace.store']!==this.storeId)fail('STORE_METADATA_MISMATCH');
-  if(hint&&m.appProperties?.['mypace.role']!=='checkpoint-hint')fail('STORE_HINT_ROLE_MISMATCH');
-  if(!/^\d+$/.test(String(m.size)))fail('STORE_SIZE_INVALID');const n=Number(m.size);if(!Number.isSafeInteger(n)||n<1||n>maxBytes)fail('STORE_SIZE_INVALID');
+  const n=this._checkedMetadata(m,fileId,maxBytes,hint);
   if(hit&&hit.bytes.length===n&&hit.version===m.version&&hit.md5Checksum===m.md5Checksum)return Uint8Array.from(hit.bytes);
   this._forget(fileId);
-  const r=this._fetch(fileId,'?alt=media',{Range:'bytes=0-'+(n-1),'Accept-Encoding':'identity'});if(r.getResponseCode()!==206)retry('STORE_RANGE_STATUS',r.getResponseCode());
-  const h=r.getAllHeaders();if(!h||typeof h!=='object'||Array.isArray(h))fail('STORE_HEADERS_INVALID');
-  const header=name=>{const keys=Object.keys(h).filter(k=>k.toLowerCase()===name);if(!keys.length)return null;if(keys.length!==1||!['string','number'].includes(typeof h[keys[0]]))fail('STORE_HEADERS_INVALID');return String(h[keys[0]]).trim();};
-  if(header('content-range')!==`bytes 0-${n-1}/${n}`)fail('STORE_RANGE_INVALID');const length=header('content-length'),encoding=header('content-encoding');if((length!==null&&length!==String(n))||(encoding!==null&&encoding.toLowerCase()!=='identity'))fail('STORE_HEADERS_INVALID');
-  const raw=r.getContent();if(!raw||raw.length!==n)fail('STORE_BYTES_INVALID');const b=new Uint8Array(n);for(let i=0;i<n;i++){if(!Number.isInteger(raw[i])||raw[i]<-128||raw[i]>255)fail('STORE_BYTES_INVALID');b[i]=raw[i]&255;}if(!hint)this._remember(fileId,b,m);return b;
+  const r=this._fetch(fileId,'?alt=media',{Range:'bytes=0-'+(n-1),'Accept-Encoding':'identity'}),b=this._mediaResult(r,n);if(!hint)this._remember(fileId,b,m);return b;
  }
  // The only mutable IO surface has NO ID argument. It is bound to an optional
  // bootstrap pin, never accepts metadata/parent/role from callers, and is never
  // cached as immutable protocol data. Failure is safe: recovery uses the anchor.
  readCheckpointHint(){
-  this.assertLockHeld();if(!this.checkpointHintId)return null;this._parent();
-  return this._readFile(this.checkpointHintId,CHECKPOINT_HINT_MAX_BYTES,true);
+  this.assertLockHeld();if(!this.checkpointHintId)return null;
+  // The first hint read shares the parent's fresh proof established by the
+  // anchor in this lock phase. A second hint read still rechecks parent privacy
+  // so revisiting mutable advisory state cannot silently reuse an older proof.
+  if(this._readCacheActive&&this._hintParentProofUsed)this._parent();
+  const bytes=this._readFile(this.checkpointHintId,CHECKPOINT_HINT_MAX_BYTES,true);
+  if(this._readCacheActive)this._hintParentProofUsed=true;return bytes;
  }
  writeCheckpointHint(bytes){
+  this.assertLockHeld();this._budget();if(this.canWriteHint()!==true)retry('STORE_YIELD');
+  return this.restTransport?this.restTransport.advisory(()=>this._writeCheckpointHintNow(bytes)):this._writeCheckpointHintNow(bytes);
+ }
+ _writeCheckpointHintNow(bytes){
   this.assertLockHeld();this._budget();
   if(!this.checkpointHintId||!(bytes instanceof Uint8Array)||bytes.length<1||bytes.length>CHECKPOINT_HINT_MAX_BYTES)fail('STORE_HINT_WRITE_INVALID');
-  this._parent();const fileId=this.checkpointHintId,m=this._metadata(fileId);
+  this._writeParent();const fileId=this.checkpointHintId,m=this._metadata(fileId);
   if(m&&(m.id!==fileId||m.trashed!==false||m.ownedByMe!==true||m.shared!==false||m.mimeType!==MIME||!Array.isArray(m.parents)||m.parents.length!==1||m.parents[0]!==this.managedParentId||m.appProperties?.['mypace.store']!==this.storeId||m.appProperties?.['mypace.role']!=='checkpoint-hint'))fail('STORE_HINT_METADATA_MISMATCH');
-  const name='mypace-checkpoint-hint-'+fileId,blob=this.Utilities.newBlob(Array.from(bytes,n=>n>127?n-256:n),MIME,name);
+  const name='mypace-checkpoint-hint-'+fileId,blob=this.restTransport?null:this.Utilities.newBlob(Array.from(bytes,n=>n>127?n-256:n),MIME,name);
   this.assertLockHeld();this._budget();
   // One attempt only. Response loss never allocates a new ID or retries a stale
   // payload; a late update may regress this hint and successors repair recovery.
   let result;
-  if(m){if(typeof this.Drive.Files.update!=='function')fail('STORE_HINT_UPDATE_UNAVAILABLE');result=this.Drive.Files.update({},fileId,blob,{fields:'id'});}
-  else result=this.Drive.Files.create({id:fileId,name,mimeType:MIME,parents:[this.managedParentId],appProperties:{'mypace.store':this.storeId,'mypace.role':'checkpoint-hint'}},blob,{fields:'id',ignoreDefaultVisibility:true});
+  if(m){if(this.restTransport)result=this.restTransport.update(fileId,bytes);else{if(typeof this.Drive.Files.update!=='function')fail('STORE_HINT_UPDATE_UNAVAILABLE');result=this.Drive.Files.update({},fileId,blob,{fields:'id'});}}
+  else {const metadata={id:fileId,name,mimeType:MIME,parents:[this.managedParentId],appProperties:{'mypace.store':this.storeId,'mypace.role':'checkpoint-hint'}};result=this.restTransport?this.restTransport.create(metadata,bytes):this.Drive.Files.create(metadata,blob,{fields:this._managedWritePhase?CREATE_FIELDS:'id',ignoreDefaultVisibility:true});}
   if(!result||result.id!==fileId)fail('STORE_HINT_WRITE_UNRESOLVED');
   return true;
  }
+ createMany(files){
+  if(!Array.isArray(files)||files.length>4)fail('STORE_CREATE_BATCH_INVALID');
+  const ids=new Set();let total=0;
+  const admitted=files.map(file=>{
+   if(!file||typeof file!=='object'||Array.isArray(file)||Object.keys(file).sort().join(',')!=='bytes,id,role'||!id(file.id)||file.id===this.checkpointHintId||file.id===this.managedParentId||ids.has(file.id)||file.role!=='index-node'||!(file.bytes instanceof Uint8Array)||file.bytes.length<1||file.bytes.length>MAX)fail('STORE_CREATE_BATCH_INVALID');
+   ids.add(file.id);total+=file.bytes.length;if(total>1048576)fail('STORE_CREATE_BATCH_BOUND');return {id:file.id,role:file.role,bytes:Uint8Array.from(file.bytes)};
+  });
+  if(!admitted.length)return [];
+  this.assertLockHeld();this._budget();for(const file of admitted)this._forget(file.id);
+  // One bounded lock-phase parent proof for app-managed immutable outputs.
+  // Legacy/maintenance callers retain the previous per-output policy.
+  if(this._managedWritePhase)this._writeParent();else{
+   const parents=this._fetchMany(admitted.map(()=>({id:this.managedParentId,suffix:'?fields='+encodeURIComponent(FIELDS)})));
+   this.assertLockHeld();this._budget();
+   for(const response of parents){const m=this._metadataResult(response);if(!m||m.id!==this.managedParentId||m.mimeType!=='application/vnd.google-apps.folder'||m.trashed!==false||m.ownedByMe!==true||m.shared!==false)fail('STORE_PARENT_NOT_PRIVATE');}
+  }
+  const proposals=admitted.map(file=>({metadata:{id:file.id,name:'mypace-index-node-'+file.id,mimeType:MIME,parents:[this.managedParentId],appProperties:{'mypace.store':this.storeId,'mypace.role':'index-node'}},bytes:file.bytes}));
+  this.assertLockHeld();this._budget();
+  const ambiguous=status=>{const error=Error('STORE_CREATE_UNRESOLVED');error.code=error.message;error.retryable=true;error.mayHaveCreated=true;if(Number.isInteger(status))error.status=status;throw error;};
+  const attempted=create=>{try{return create();}catch(error){
+   const code=error?.code||error?.message;if(['STORE_YIELD','OWNER_BUDGET_YIELD','STORE_LOCK_REQUIRED'].includes(code))throw error;
+   // The immutable IDs were admitted and pinned before this call. A raw
+   // Advanced Drive timeout/409 is ambiguous too; only same-ID readback can
+   // establish its result. Never convert earlier privacy/lock validation.
+   ambiguous(Number.isInteger(error?.status)?error.status:Number.isInteger(error?.code)?error.code:undefined);
+  }};
+  const result=this.restTransport?.createMany?attempted(()=>this.restTransport.createMany(proposals)):proposals.map(proposal=>{
+   this.assertLockHeld();this._budget();this._writeParent();
+   const blob=this.restTransport?null:this.Utilities.newBlob(Array.from(proposal.bytes,n=>n>127?n-256:n),MIME,proposal.metadata.name);
+   this.assertLockHeld();this._budget();
+   return attempted(()=>this.restTransport?this.restTransport.create(proposal.metadata,proposal.bytes):this.Drive.Files.create(proposal.metadata,blob,{fields:this._managedWritePhase?CREATE_FIELDS:'id',ignoreDefaultVisibility:true}));
+  });
+  this.assertLockHeld();
+  if(!Array.isArray(result)||result.length!==admitted.length||result.some((r,i)=>!r||r.id!==admitted[i].id))ambiguous();
+  for(let i=0;i<admitted.length;i++)this._acceptCreate(admitted[i].id,admitted[i].bytes,admitted[i].role,result[i]);
+  return result;
+ }
  createFile(fileId,bytes,role){
   this.assertLockHeld();this._budget();if(fileId===this.checkpointHintId||role==='checkpoint-hint')fail('STORE_HINT_ROLE_REQUIRED');if(!id(fileId)||typeof role!=='string'||! /^[a-z][a-z0-9-]{0,63}$/.test(role)||!(bytes instanceof Uint8Array)||bytes.length<1||bytes.length>MAX)fail('STORE_CREATE_INVALID');
-  this._forget(fileId);this._parent();const metadata={id:fileId,name:'mypace-'+role+'-'+fileId,mimeType:MIME,parents:[this.managedParentId],appProperties:{'mypace.store':this.storeId,'mypace.role':role}};
-  const blob=this.Utilities.newBlob(Array.from(bytes,n=>n>127?n-256:n),MIME,metadata.name);
+  this._forget(fileId);this._writeParent();const metadata={id:fileId,name:'mypace-'+role+'-'+fileId,mimeType:MIME,parents:[this.managedParentId],appProperties:{'mypace.store':this.storeId,'mypace.role':role}};
+  const blob=this.restTransport?null:this.Utilities.newBlob(Array.from(bytes,n=>n>127?n-256:n),MIME,metadata.name);
   // Caller MUST read this same ID after any result, including timeout or 409.
   // No new-ID fallback or authoritative object updates exist in this adapter.
-  this.assertLockHeld();this._budget();const result=this.Drive.Files.create(metadata,blob,{fields:'id',ignoreDefaultVisibility:true});if(!result||result.id!==fileId)fail('STORE_CREATE_ID_MISMATCH');return result;
+  this.assertLockHeld();this._budget();const result=this.restTransport?this.restTransport.create(metadata,bytes):this.Drive.Files.create(metadata,blob,{fields:this._managedWritePhase?CREATE_FIELDS:'id',ignoreDefaultVisibility:true});if(!result||result.id!==fileId)fail('STORE_CREATE_ID_MISMATCH');this._acceptCreate(fileId,bytes,role,result);return result;
  }
 }
 
 return {GasStoreIO};
 })();
-const m8 = (function(){
+const m17 = (function(){
 // GAS V8-compatible import domain binding. Drive persistence is supplied only by
 // the reserved-slot writer. Every public method must run under its ONE script lock;
 // ImportCheckpointCoordinator supplies that lock for its two bounded phases.
 // No original source is mutated, no job list/snapshot grows in a single entity.
-const {encodeUtf8, decodeUtf8, IncrementalSha256} = m1;
-const {initialCheckpoint, checkpointBytes, checkpointPointLimit, mappingHash, LIMITS} = m2;
-const {PARSER_VERSION, sourceKey} = m0;
-const {validateSourceIdentity, SOURCE_FOLDER_ID} = m3;
-const {hashAssetBytes} = m4;
+const {encodeUtf8, decodeUtf8, IncrementalSha256} = m3;
+const {initialCheckpoint, checkpointBytes, checkpointPointLimit, mappingHash, LIMITS} = m4;
+const {PARSER_VERSION, sourceKey} = m2;
+const {validateSourceIdentity, SOURCE_FOLDER_ID} = m5;
+const {hashAssetBytes} = m6;
 
 const IMPORT_STORE_LIMITS=Object.freeze({entityBytes:65536,scanPageBytes:65536,scanFiles:100,assets:66});
 const fail=code=>{throw Error(code);};
@@ -2072,12 +3733,12 @@ class ImportStoreBinding {
 
 return {IMPORT_STORE_LIMITS,importKeys,ImportStoreBinding};
 })();
-const m9 = (function(){
+const m18 = (function(){
 // Bounded server-internal orchestration. The caller provides one script-lock
 // helper shared by writer, reservations and coordinator. No timer is installed.
-const {prepareRange,buildStagedPayloads,LIMITS} = m2;
-const {decodeUtf8,encodeUtf8} = m1;
-const {hashAssetBytes} = m4;
+const {prepareRange,buildStagedPayloads,LIMITS} = m4;
+const {decodeUtf8,encodeUtf8} = m3;
+const {hashAssetBytes} = m6;
 const fail=code=>{throw Error(code);};
 const operation=(jobId,stage,marker)=>'imp_'+hashAssetBytes(encodeUtf8(JSON.stringify([jobId,stage,marker])));
 class ImportRunner {
@@ -2168,15 +3829,16 @@ class ImportRunner {
 
 return {ImportRunner};
 })();
-const m10 = (function(){
+const m19 = (function(){
 // Composition root for the one owner-authorized Apps Script project. Constructing
 // this runtime does not bootstrap, import, publish, deploy or install a trigger.
-const {GasStoreIO} = m7;
-const {ReservedSlotWriter} = m6;
-const {ImportStoreBinding} = m8;
-const {ImportCheckpointCoordinator,ImmutableAssetAdapter,createGasAssetMediaReader} = m4;
-const {createDriveSourceTransport} = m3;
-const {ImportRunner} = m9;
+const {GasStoreIO} = m16;
+const {ReservedSlotWriter} = m11;
+const {ImportStoreBinding} = m17;
+const {ImportCheckpointCoordinator,ImmutableAssetAdapter,createGasAssetMediaReader} = m6;
+const {createDriveSourceTransport} = m5;
+const {ImportRunner} = m18;
+const {createPreparedAppCommand} = m13;
 const fail=code=>{throw Error(code);};
 function createGasImportRuntime(globals,config){
  const {Drive,Utilities,UrlFetchApp,ScriptApp,LockService}=globals||{};
@@ -2192,8 +3854,8 @@ function createGasImportRuntime(globals,config){
   releaseLock(){io?.endReadPhase();return scriptLock.releaseLock();}
  };
  const locked=fn=>{if(lock.hasLock())return fn();let acquired=false;try{acquired=lock.tryLock(1000)===true;if(!acquired){const e=Error('WRITER_BUSY');e.retryable=true;throw e;}return fn();}finally{if(acquired)lock.releaseLock();}};
- io=new GasStoreIO({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId:config.storeId,managedParentId:config.metadataParentId,checkBudget:config.checkBudget,protocolReadCache:config.protocolReadCache,checkpointHintId:config.checkpointHintId});
- const writer=new ReservedSlotWriter({io,storeId:config.storeId,writerScriptId:config.writerScriptId,anchorId:config.anchorId,limits:config.writerLimits,checkpointHintId:config.checkpointHintId,checkpointHintCodec:config.checkpointHintCodec,checkpointHintAnchorHash:config.checkpointHintAnchorHash});
+ io=new GasStoreIO({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId:config.storeId,managedParentId:config.metadataParentId,checkBudget:config.checkBudget,protocolReadCache:config.protocolReadCache,checkpointHintId:config.checkpointHintId,restTransport:config.restTransport,canWriteHint:config.canWriteHint,managedWritePhase:config.managedWritePhase,trustManagedRecoveryPrefix:config.trustManagedRecoveryPrefix});
+ const writer=new ReservedSlotWriter({io,storeId:config.storeId,writerScriptId:config.writerScriptId,anchorId:config.anchorId,limits:config.writerLimits,checkpointHintId:config.checkpointHintId,checkpointHintCodec:config.checkpointHintCodec,checkpointHintAnchorHash:config.checkpointHintAnchorHash,progressiveRecovery:config.progressiveRecovery,canContinueRecovery:config.canContinueRecovery,preparationCodec:config.preparationCodec,preparedAppAdapter:config.preparedAppAdapter??createPreparedAppCommand,canContinuePreparation:config.canContinuePreparation});
  const source=createDriveSourceTransport(globals,{pageSize:32});
  const budget=()=>{if(config.checkBudget('runtime')!==true){const e=Error('IMPORT_YIELD');e.retryable=true;throw e;}};
  const validateSource=s=>{budget();source.getSource(s,{deadlineMs:config.deadlineMs});return true;};
@@ -2216,11 +3878,11 @@ function createGasImportRuntime(globals,config){
 
 return {createGasImportRuntime};
 })();
-const m11 = (function(){
+const m20 = (function(){
 // Explicit owner repair only. It never imports CSV, changes store identity,
 // deletes history or changes application entities. Repeated completed calls are
 // no-ops; ambiguous checkpoint commits are resolved through existing recovery.
-const {writerDigest} = m6;
+const {writerDigest} = m11;
 function prepareWebRead(runtime){
  if(!runtime?.writer||typeof runtime.locked!=='function')throw Error('WEB_PREPARATION_CONFIG');
  return runtime.locked(()=>{
@@ -2238,7 +3900,7 @@ function prepareWebRead(runtime){
 
 return {prepareWebRead};
 })();
-const m12 = (function(){
+const m21 = (function(){
 /**
  * Server-internal owner provisioning for the EXISTING authorized Apps Script.
  * Not an HTTP handler, public RPC, trigger installer or OAuth setup flow.
@@ -2252,9 +3914,11 @@ const m12 = (function(){
  * receipt or phase flag is stored there. A lost response resumes the SAME IDs.
  * No folder name search/adoption, update, sharing change, source write or delete.
  */
-const {GasStoreIO} = m7;
-const {ReservedSlotWriter,writerDigest} = m6;
-const {createGasCheckpointHintCodec} = m5;
+const {GasStoreIO} = m16;
+const {ReservedSlotWriter,writerDigest} = m11;
+const {createGasCheckpointHintCodec} = m7;
+const {createGasPreparationCodec} = m8;
+const {createPreparedAppCommand} = m13;
 
 const OWNER_STORE_PROPERTY='mypace.production.store.v1';
 const OWNER_BOOTSTRAP_PROTOCOL='mypace-owner-store-v1';
@@ -2362,7 +4026,18 @@ function createOwnerBootstrap(globals,options){
   }
   fail('OWNER_BOOTSTRAP_CREATE_UNRESOLVED',true);
  }
- function writer(lock,c){const io=new GasStoreIO({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId:c.storeId,managedParentId:c.metadataParentId,checkBudget,checkpointHintId:c.checkpointHintId});return new ReservedSlotWriter({io,storeId:c.storeId,writerScriptId:c.writerScriptId,anchorId:c.anchorId,checkpointHintId:c.checkpointHintId,checkpointHintAnchorHash:c.checkpointHintAnchorHash});}
+ function writer(lock,c,{recover=false}={}){
+  // Read-only configuration inspection needs only the anchor. An explicit
+  // bootstrap retry also recovers current history and therefore needs the same
+  // known adapter and existing-key proofs as owner/scheduled/web runtimes.
+  let proofs={};
+  if(recover&&c.checkpointHintId){
+   const p=properties(lock);let secret;try{secret=p.getProperty('MYPACE_WRITER_SECRET');}catch(_){fail('OWNER_RECOVERY_SECRET_UNRESOLVED',true);}
+   if(secret!==null&&secret!==undefined&&secret!=='')proofs={checkpointHintCodec:createGasCheckpointHintCodec({Utilities,secret}),preparationCodec:createGasPreparationCodec({Utilities,secret})};
+  }
+  const io=new GasStoreIO({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId:c.storeId,managedParentId:c.metadataParentId,checkBudget,checkpointHintId:c.checkpointHintId});
+  return new ReservedSlotWriter({io,storeId:c.storeId,writerScriptId:c.writerScriptId,anchorId:c.anchorId,checkpointHintId:c.checkpointHintId,checkpointHintAnchorHash:c.checkpointHintAnchorHash,preparedAppAdapter:createPreparedAppCommand,...proofs});
+ }
  function configure(lock,p){
   const myDriveRootId=driveRoot(lock);assertHeld(lock);let r;
   try{r=Drive.Files.generateIds({count:8,space:'drive',type:'files'});}catch(_){fail('OWNER_BOOTSTRAP_IDS_UNRESOLVED',true);}
@@ -2379,7 +4054,7 @@ function createOwnerBootstrap(globals,options){
  }
  function inspect(lock,c,allowCreate){
   for(const role of ['root','metadata','assets'])folder(lock,c,role,allowCreate);
-  const w=writer(lock,c);
+  const w=writer(lock,c,{recover:allowCreate});
   if(allowCreate)w.bootstrap({datasetGeneration:c.datasetGeneration,acceptedEpochs:c.acceptedEpochs,firstSlotId:c.firstSlotId,firstIndexId:c.firstIndexId});
   else {
    // bootstrap() creates a missing anchor; recoveryBarrier() may publish missing
@@ -2435,12 +4110,12 @@ function createOwnerBootstrap(globals,options){
 
 return {OWNER_STORE_PROPERTY,OWNER_BOOTSTRAP_PROTOCOL,parsePinnedOwnerStoreConfig,createOwnerBootstrap};
 })();
-const m13 = (function(){
+const m22 = (function(){
 // Fixed-size, owner-private advisory source-discovery cursor. This is not an
 // app/job checkpoint. Loss or invalid authentication restarts source discovery;
 // only the immutable import protocol may register, resume or publish a job.
-const {encodeUtf8,decodeUtf8} = m1;
-const {SOURCE_FOLDER_ID,normalizeGasBytes} = m3;
+const {encodeUtf8,decodeUtf8} = m3;
+const {SOURCE_FOLDER_ID,normalizeGasBytes} = m5;
 const DISCOVERY_STATE_PROTOCOL='mypace-source-discovery-v1';
 const DISCOVERY_STATE_MAX_BYTES=8192;
 const DOMAIN='MyPace/Drive/source-discovery/HMAC-SHA256/v1\n';
@@ -2501,15 +4176,15 @@ function createDiscoveryStateIO(globals,config,{checkBudget=()=>true,now=()=>Dat
 
 return {DISCOVERY_STATE_PROTOCOL,DISCOVERY_STATE_MAX_BYTES,createDiscoveryStateCodec,createGasDiscoveryStateCodec,createDiscoveryStateIO};
 })();
-const m14 = (function(){
+const m23 = (function(){
 // Read-only completion reconciliation. CacheService holds a short-lived throttle,
 // never jobs, pagination progress, app data, source snapshots, or authority.
-const {encodeUtf8} = m1;
-const {hashAssetBytes} = m4;
-const {mappingHash} = m2;
-const {PARSER_VERSION,sourceKey} = m0;
-const {importKeys} = m8;
-const {validateSourceIdentity} = m3;
+const {encodeUtf8} = m3;
+const {hashAssetBytes} = m6;
+const {mappingHash} = m4;
+const {PARSER_VERSION,sourceKey} = m2;
+const {importKeys} = m17;
+const {validateSourceIdentity} = m5;
 const hash=x=>hashAssetBytes(encodeUtf8(JSON.stringify(x)));
 const terminal=s=>['completed','duplicate','cancelled'].includes(s);
 const RECONCILIATION_LIMITS=Object.freeze({pages:4,sources:128,jobs:32,additionalCalls:48,maxThrottleMs:3600000});
@@ -2584,14 +4259,14 @@ function createIdleScanThrottle(globals,config,{now,intervalMs}){
 
 return {RECONCILIATION_LIMITS,importDirectoryVersion,sourceIsCurrentlySettled,completedQueueIsSettled,reconcileCompletedSources,createIdleScanThrottle};
 })();
-const m15 = (function(){
+const m24 = (function(){
 // Owner-editor only. No web handler, timer, trigger installer, or ambient work.
-const {createGasImportRuntime} = m10;
-const {encodeUtf8} = m1;
-const {hashAssetBytes} = m4;
-const {importKeys} = m8;
-const {createDiscoveryStateIO} = m13;
-const {RECONCILIATION_LIMITS,importDirectoryVersion,completedQueueIsSettled,reconcileCompletedSources,createIdleScanThrottle} = m14;
+const {createGasImportRuntime} = m19;
+const {encodeUtf8} = m3;
+const {hashAssetBytes} = m6;
+const {importKeys} = m17;
+const {createDiscoveryStateIO} = m22;
+const {RECONCILIATION_LIMITS,importDirectoryVersion,completedQueueIsSettled,reconcileCompletedSources,createIdleScanThrottle} = m23;
 const KEY='import/owner-scheduler';
 const hash=x=>hashAssetBytes(encodeUtf8(JSON.stringify(x)));
 const fail=c=>{throw Error(c);};
@@ -2618,7 +4293,8 @@ function meteredGas(globals,{now=()=>Date.now(),limits=OWNER_LIMITS,reserveMs=0,
  const allowed=()=>{const t=now();return !closed&&Number.isSafeInteger(t)&&t>=start&&calls<(closing?ceiling:ceiling-reserveCalls)&&t<(closing?hardDeadline:hardDeadline-reserveMs);};
  const call=fn=>function(...args){if(!allowed())fail('OWNER_BUDGET_YIELD');calls++;return fn(...args);};
  const Files={};for(const key of ['get','list','create','generateIds','update'])Files[key]=call((...a)=>globals.Drive.Files[key](...a));
- return {globals:{...globals,Drive:{...globals.Drive,Files},UrlFetchApp:{...globals.UrlFetchApp,fetch:call((...a)=>globals.UrlFetchApp.fetch(...a))},now},checkBudget:allowed,get deadlineMs(){return hardDeadline-reserveMs;},get hardDeadlineMs(){return hardDeadline;},setRuntimeMs:(ms,headroomMs=reserveMs)=>{if(!Number.isSafeInteger(ms)||!Number.isSafeInteger(headroomMs)||headroomMs<0||ms<=headroomMs||ms>limits.runtimeMs||closing)fail('OWNER_BUDGET_INVALID');reserveMs=headroomMs;hardDeadline=Math.min(start+ms,absoluteCeiling);},usage:()=>({calls,elapsedMs:Math.max(0,now()-start)}),limitRemaining:n=>{if(!Number.isSafeInteger(n)||n<0)fail('OWNER_BUDGET_INVALID');ceiling=Math.min(ceiling,calls+n);closing=true;return ceiling;},close:()=>{closed=true;}};
+ const fetchAll=typeof globals.UrlFetchApp.fetchAll==='function'?requests=>{if(!Array.isArray(requests)||!requests.length||!allowed()||calls+requests.length>(closing?ceiling:ceiling-reserveCalls))fail('OWNER_BUDGET_YIELD');calls+=requests.length;return globals.UrlFetchApp.fetchAll(requests);}:globals.UrlFetchApp.fetchAll;
+ return {globals:{...globals,Drive:{...globals.Drive,Files},UrlFetchApp:{...globals.UrlFetchApp,fetch:call((...a)=>globals.UrlFetchApp.fetch(...a)),...(fetchAll===undefined?{}:{fetchAll})},now},checkBudget:allowed,get deadlineMs(){return hardDeadline-reserveMs;},get hardDeadlineMs(){return hardDeadline;},setRuntimeMs:(ms,headroomMs=reserveMs)=>{if(!Number.isSafeInteger(ms)||!Number.isSafeInteger(headroomMs)||headroomMs<0||ms<=headroomMs||ms>limits.runtimeMs||closing)fail('OWNER_BUDGET_INVALID');reserveMs=headroomMs;hardDeadline=Math.min(start+ms,absoluteCeiling);},usage:()=>({calls,elapsedMs:Math.max(0,now()-start)}),limitRemaining:n=>{if(!Number.isSafeInteger(n)||n<0)fail('OWNER_BUDGET_INVALID');ceiling=Math.min(ceiling,calls+n);closing=true;return ceiling;},close:()=>{closed=true;}};
 }
 function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LIMITS,deadlineMs,scanIntervalMs=0,reserveMs,scheduledPolicy,settleCalls=256}={}){
  if(!Number.isSafeInteger(settleCalls)||settleCalls<16||settleCalls>256)fail('OWNER_SETTLE_CALLS_INVALID');
@@ -2841,15 +4517,16 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
 
 return {OWNER_LIMITS,deriveImportBudgetWait,meteredGas,createOwnerScheduler};
 })();
-const m16 = (function(){
+const m25 = (function(){
 // Trusted owner time-trigger boundary. No HTTP dispatcher, trigger installer,
 // background work on load, or progress in ScriptProperties. Event shape rejects
 // accidental/wrong entry paths; it is NOT authentication. The actual effective
 // execution identity and immutable script/store pins remain authoritative.
-const {OWNER_STORE_PROPERTY,parsePinnedOwnerStoreConfig} = m12;
-const {createGasCheckpointHintCodec} = m5;
-const {createGasDiscoveryStateCodec} = m13;
-const {createOwnerScheduler,OWNER_LIMITS} = m15;
+const {OWNER_STORE_PROPERTY,parsePinnedOwnerStoreConfig} = m21;
+const {createGasCheckpointHintCodec} = m7;
+const {createGasPreparationCodec} = m8;
+const {createGasDiscoveryStateCodec} = m22;
+const {createOwnerScheduler,OWNER_LIMITS} = m24;
 const SCHEDULED_OWNER_EMAIL='yakitorihanbagu0412@gmail.com';
 const SCHEDULED_DEFAULTS=Object.freeze({sliceMs:60000,calls:750,steps:3,rangeBytes:1048576,scanIntervalMs:3600000,catchUp:true});
 const fail=code=>{const e=Error(code);e.code=code;throw e;};
@@ -2889,7 +4566,7 @@ function guardedConfig(globals,event){
  // properties. Legacy stores/no secret keep conservative anchor recovery.
  if(config.checkpointHintId||config.discoveryStateId){
   const secret=PropertiesService.getScriptProperties().getProperty('MYPACE_WRITER_SECRET');
-  if(secret!==null&&secret!==undefined&&secret!=='')return {...config,...(config.checkpointHintId?{checkpointHintCodec:createGasCheckpointHintCodec({Utilities:globals.Utilities,secret})}:{}),...(config.discoveryStateId?{discoveryStateCodec:createGasDiscoveryStateCodec({Utilities:globals.Utilities,secret})}:{})};
+  if(secret!==null&&secret!==undefined&&secret!=='')return {...config,...(config.checkpointHintId?{checkpointHintCodec:createGasCheckpointHintCodec({Utilities:globals.Utilities,secret}),preparationCodec:createGasPreparationCodec({Utilities:globals.Utilities,secret})}:{}),...(config.discoveryStateId?{discoveryStateCodec:createGasDiscoveryStateCodec({Utilities:globals.Utilities,secret})}:{})};
  }
  return config;
 }
@@ -2906,14 +4583,14 @@ function createScheduledImportRuntime(globals,options={}){
 
 return {SCHEDULED_OWNER_EMAIL,SCHEDULED_DEFAULTS,createScheduledImportRuntime};
 })();
-const m17 = (function(){
+const m26 = (function(){
 // Authenticated dispatcher read adapter. Cursors must be authenticated by the
 // trusted caller; no Drive file ID or checkpoint reference is accepted from UI.
-const {importKeys} = m8;
-const {decodeUtf8,encodeUtf8} = m1;
-const {LIMITS} = m2;
+const {importKeys} = m17;
+const {decodeUtf8,encodeUtf8} = m3;
+const {LIMITS} = m4;
 const ROUTE_POINTS=1024,ROUTE_BYTES=262144,ROUTE_HEADROOM=32768;
-const {deriveImportBudgetWait,OWNER_LIMITS} = m15;
+const {deriveImportBudgetWait,OWNER_LIMITS} = m24;
 const fail=c=>{throw Error(c);};
 const token=(x,max=100)=>typeof x==='string'&&x.length>0&&x.length<=max&&/^[A-Za-z0-9_-]+$/.test(x);
 const scalar=(x,min=0)=>Number.isSafeInteger(x)&&x>=min;
@@ -3010,7 +4687,7 @@ function createImportReader({runtime,sealCursor,openCursor,now=()=>Date.now()}){
 
 return {createImportReader};
 })();
-return Object.assign({},m0,m1,m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17);
+return Object.assign({},m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18,m19,m20,m21,m22,m23,m24,m25,m26);
 })();
 
 // Paste this complete kit only into the existing owner-authorized Apps Script
@@ -3030,7 +4707,7 @@ function myPaceOwnerRuntimeConfig_(globals,config) {
   if(!config.checkpointHintId&&!config.discoveryStateId) return config;
   var secret=globals.PropertiesService.getScriptProperties().getProperty('MYPACE_WRITER_SECRET');
   if(secret===null||secret===undefined||secret==='') return config;
-  return Object.assign({},config,config.checkpointHintId?{checkpointHintCodec:MyPaceFolderImport.createGasCheckpointHintCodec({Utilities:globals.Utilities,secret:secret})}:{},config.discoveryStateId?{discoveryStateCodec:MyPaceFolderImport.createGasDiscoveryStateCodec({Utilities:globals.Utilities,secret:secret})}:{});
+  return Object.assign({},config,config.checkpointHintId?{checkpointHintCodec:MyPaceFolderImport.createGasCheckpointHintCodec({Utilities:globals.Utilities,secret:secret}),preparationCodec:MyPaceFolderImport.createGasPreparationCodec({Utilities:globals.Utilities,secret:secret})}:{},config.discoveryStateId?{discoveryStateCodec:MyPaceFolderImport.createGasDiscoveryStateCodec({Utilities:globals.Utilities,secret:secret})}:{});
 }
 function myPaceOwnerReport_(result) { console.log(JSON.stringify(result)); return result; }
 function myPaceOwnerRun_(method) {
@@ -3122,6 +4799,30 @@ function MyPacePrepareWebSync() {
     var code=error.code||error.message;
     if(code==='WRITER_RECOVERY_PENDING')return myPaceOwnerReport_({status:'recovering',code:code,indexLinks:error.indexLinks,scannedLinks:error.scannedLinks,cursorPersisted:error.cursorPersisted===true,nextAction:'A bounded INDEX slice was checked. Continue only if its persisted cursor is advancing.',usage:meter.usage()});
     if(['OWNER_BOOTSTRAP_YIELD','OWNER_BUDGET_YIELD','STORE_YIELD','IMPORT_YIELD'].indexOf(code)>=0)return myPaceOwnerReport_({status:error.cursorAdvanced===true?'recovering':'recovery-budget-blocked',code:code,recoveredRevision:error.recoveredRevision||null,cursorPersisted:error.cursorPersisted===true,cursorAdvanced:error.cursorAdvanced===true,nextAction:error.cursorAdvanced===true?'Verified frame progress was saved. Run MyPacePrepareWebSync again to continue.':'No new recovery cursor was confirmed. Report this result rather than repeating the same work.',usage:meter.usage()});
+    return myPaceOwnerMaintenanceSetup_(error,meter);
+  }
+}
+
+// Explicit, irreversible format migration. Run from the existing owner's editor
+// only AFTER the owner accepts that older storage bundles will fail closed.
+// This does not create a store, change IDs/generation, rotate a key, or delete
+// records. Repeat this same function after an ambiguous response; its migration
+// operation identity is deterministic and the original receipt is reused.
+function MyPaceEnableIncrementalSync() {
+  var meter=MyPaceFolderImport.meteredGas(myPaceOwnerGlobals_());
+  try {
+    var config=myPaceOwnerBootstrap_(meter).loadRecoveryConfiguration();
+    if(!config)throw new Error('OWNER_BOOTSTRAP_REQUIRED');
+    if(!config.checkpointHintId)throw new Error('OWNER_RECOVERY_CONFIGURATION_REQUIRED');
+    var runtimeConfig=myPaceOwnerRuntimeConfig_(meter.globals,config);
+    if(!runtimeConfig.checkpointHintCodec)throw new Error('OWNER_RECOVERY_SECRET_REQUIRED');
+    var rest=MyPaceFolderImport.createGasDriveRest(meter.globals,{deadlineMs:meter.hardDeadlineMs,checkBudget:meter.checkBudget});
+    var runtime=MyPaceFolderImport.createGasImportRuntime(meter.globals,Object.assign({},runtimeConfig,{checkBudget:meter.checkBudget,deadlineMs:meter.hardDeadlineMs,protocolReadCache:{mode:'lock-phase'},restTransport:rest,progressiveRecovery:true,canContinueRecovery:function(){return Date.now()<meter.hardDeadlineMs-7000;},canWriteHint:function(){return rest.canStartAdvisory();}}));
+    var result=MyPaceFolderImport.activateSyncV2(runtime);
+    return myPaceOwnerReport_({status:'incremental-sync-enabled',alreadyEnabled:result.alreadyEnabled,storeId:result.storage.storeId,datasetGeneration:result.storage.datasetGeneration,revision:result.storage.revision,writerFence:result.storage.writerFence,compatibility:'Older storage bundles must not be restored. Use only a fence-aware writer for fixes or rollback.',usage:meter.usage()});
+  } catch(error) {
+    var code=error&& (error.code||error.message);
+    if(['WRITER_RECOVERY_PENDING','OWNER_BOOTSTRAP_YIELD','OWNER_BUDGET_YIELD','STORE_YIELD','IMPORT_YIELD','WRITER_COMMIT_UNRESOLVED','STORE_REQUEST_UNRESOLVED'].indexOf(code)>=0)return myPaceOwnerReport_({status:'activation-pending',code:code,requiresOwnerAction:true,nextAction:'The result is not confirmed. Keep the existing project, store, IDs and secret; run MyPaceEnableIncrementalSync again to recover its original operation.',usage:meter.usage()});
     return myPaceOwnerMaintenanceSetup_(error,meter);
   }
 }

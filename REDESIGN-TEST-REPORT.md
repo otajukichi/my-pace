@@ -1,3 +1,5 @@
+> 過去の実装・検証資料です。本文中の手順・時間予算・制限・試験数は当時の記録で、今回の導入やロールバックを指示しません。現在の手順は [PRACTICAL-SYNC-INSTALL.md](PRACTICAL-SYNC-INSTALL.md)、設計は PRACTICAL-SYNC-DESIGN.md を優先してください。旧インストーラー、初期 bootstrap、ストア移動、秘密情報・OAuth・公開権限・トリガーの変更を今回の更新で繰り返さないでください。
+
 # Daily-scenes redesign verification
 
 2026-10-07. Baseline: the latest local release with the GAS compatibility repair and OAuth disclosure pages. Apply the disclosure-page update before this design update.

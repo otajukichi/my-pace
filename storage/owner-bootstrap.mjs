@@ -14,6 +14,8 @@
 import {GasStoreIO} from './gas-store-io.mjs';
 import {ReservedSlotWriter,writerDigest} from './reserved-writer.mjs';
 import {createGasCheckpointHintCodec} from './checkpoint-hint.mjs';
+import {createGasPreparationCodec} from './preparation-codec.mjs';
+import {createPreparedAppCommand} from '../gas/prepared-app-domain.mjs';
 
 export const OWNER_STORE_PROPERTY='mypace.production.store.v1';
 export const OWNER_BOOTSTRAP_PROTOCOL='mypace-owner-store-v1';
@@ -121,7 +123,18 @@ export function createOwnerBootstrap(globals,options){
   }
   fail('OWNER_BOOTSTRAP_CREATE_UNRESOLVED',true);
  }
- function writer(lock,c){const io=new GasStoreIO({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId:c.storeId,managedParentId:c.metadataParentId,checkBudget,checkpointHintId:c.checkpointHintId});return new ReservedSlotWriter({io,storeId:c.storeId,writerScriptId:c.writerScriptId,anchorId:c.anchorId,checkpointHintId:c.checkpointHintId,checkpointHintAnchorHash:c.checkpointHintAnchorHash});}
+ function writer(lock,c,{recover=false}={}){
+  // Read-only configuration inspection needs only the anchor. An explicit
+  // bootstrap retry also recovers current history and therefore needs the same
+  // known adapter and existing-key proofs as owner/scheduled/web runtimes.
+  let proofs={};
+  if(recover&&c.checkpointHintId){
+   const p=properties(lock);let secret;try{secret=p.getProperty('MYPACE_WRITER_SECRET');}catch(_){fail('OWNER_RECOVERY_SECRET_UNRESOLVED',true);}
+   if(secret!==null&&secret!==undefined&&secret!=='')proofs={checkpointHintCodec:createGasCheckpointHintCodec({Utilities,secret}),preparationCodec:createGasPreparationCodec({Utilities,secret})};
+  }
+  const io=new GasStoreIO({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId:c.storeId,managedParentId:c.metadataParentId,checkBudget,checkpointHintId:c.checkpointHintId});
+  return new ReservedSlotWriter({io,storeId:c.storeId,writerScriptId:c.writerScriptId,anchorId:c.anchorId,checkpointHintId:c.checkpointHintId,checkpointHintAnchorHash:c.checkpointHintAnchorHash,preparedAppAdapter:createPreparedAppCommand,...proofs});
+ }
  function configure(lock,p){
   const myDriveRootId=driveRoot(lock);assertHeld(lock);let r;
   try{r=Drive.Files.generateIds({count:8,space:'drive',type:'files'});}catch(_){fail('OWNER_BOOTSTRAP_IDS_UNRESOLVED',true);}
@@ -138,7 +151,7 @@ export function createOwnerBootstrap(globals,options){
  }
  function inspect(lock,c,allowCreate){
   for(const role of ['root','metadata','assets'])folder(lock,c,role,allowCreate);
-  const w=writer(lock,c);
+  const w=writer(lock,c,{recover:allowCreate});
   if(allowCreate)w.bootstrap({datasetGeneration:c.datasetGeneration,acceptedEpochs:c.acceptedEpochs,firstSlotId:c.firstSlotId,firstIndexId:c.firstIndexId});
   else {
    // bootstrap() creates a missing anchor; recoveryBarrier() may publish missing

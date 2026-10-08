@@ -6,6 +6,7 @@ import {ImportStoreBinding} from './import-store.mjs';
 import {ImportCheckpointCoordinator,ImmutableAssetAdapter,createGasAssetMediaReader} from './immutable-assets.mjs';
 import {createDriveSourceTransport} from './transport.mjs';
 import {ImportRunner} from './import-runner.mjs';
+import {createPreparedAppCommand} from '../gas/prepared-app-domain.mjs';
 const fail=code=>{throw Error(code);};
 export function createGasImportRuntime(globals,config){
  const {Drive,Utilities,UrlFetchApp,ScriptApp,LockService}=globals||{};
@@ -21,8 +22,8 @@ export function createGasImportRuntime(globals,config){
   releaseLock(){io?.endReadPhase();return scriptLock.releaseLock();}
  };
  const locked=fn=>{if(lock.hasLock())return fn();let acquired=false;try{acquired=lock.tryLock(1000)===true;if(!acquired){const e=Error('WRITER_BUSY');e.retryable=true;throw e;}return fn();}finally{if(acquired)lock.releaseLock();}};
- io=new GasStoreIO({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId:config.storeId,managedParentId:config.metadataParentId,checkBudget:config.checkBudget,protocolReadCache:config.protocolReadCache,checkpointHintId:config.checkpointHintId});
- const writer=new ReservedSlotWriter({io,storeId:config.storeId,writerScriptId:config.writerScriptId,anchorId:config.anchorId,limits:config.writerLimits,checkpointHintId:config.checkpointHintId,checkpointHintCodec:config.checkpointHintCodec,checkpointHintAnchorHash:config.checkpointHintAnchorHash});
+ io=new GasStoreIO({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId:config.storeId,managedParentId:config.metadataParentId,checkBudget:config.checkBudget,protocolReadCache:config.protocolReadCache,checkpointHintId:config.checkpointHintId,restTransport:config.restTransport,canWriteHint:config.canWriteHint,managedWritePhase:config.managedWritePhase,trustManagedRecoveryPrefix:config.trustManagedRecoveryPrefix});
+ const writer=new ReservedSlotWriter({io,storeId:config.storeId,writerScriptId:config.writerScriptId,anchorId:config.anchorId,limits:config.writerLimits,checkpointHintId:config.checkpointHintId,checkpointHintCodec:config.checkpointHintCodec,checkpointHintAnchorHash:config.checkpointHintAnchorHash,progressiveRecovery:config.progressiveRecovery,canContinueRecovery:config.canContinueRecovery,preparationCodec:config.preparationCodec,preparedAppAdapter:config.preparedAppAdapter??createPreparedAppCommand,canContinuePreparation:config.canContinuePreparation});
  const source=createDriveSourceTransport(globals,{pageSize:32});
  const budget=()=>{if(config.checkBudget('runtime')!==true){const e=Error('IMPORT_YIELD');e.retryable=true;throw e;}};
  const validateSource=s=>{budget();source.getSource(s,{deadlineMs:config.deadlineMs});return true;};

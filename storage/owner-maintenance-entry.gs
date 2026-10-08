@@ -68,3 +68,27 @@ function MyPacePrepareWebSync() {
     return myPaceOwnerMaintenanceSetup_(error,meter);
   }
 }
+
+// Explicit, irreversible format migration. Run from the existing owner's editor
+// only AFTER the owner accepts that older storage bundles will fail closed.
+// This does not create a store, change IDs/generation, rotate a key, or delete
+// records. Repeat this same function after an ambiguous response; its migration
+// operation identity is deterministic and the original receipt is reused.
+function MyPaceEnableIncrementalSync() {
+  var meter=MyPaceFolderImport.meteredGas(myPaceOwnerGlobals_());
+  try {
+    var config=myPaceOwnerBootstrap_(meter).loadRecoveryConfiguration();
+    if(!config)throw new Error('OWNER_BOOTSTRAP_REQUIRED');
+    if(!config.checkpointHintId)throw new Error('OWNER_RECOVERY_CONFIGURATION_REQUIRED');
+    var runtimeConfig=myPaceOwnerRuntimeConfig_(meter.globals,config);
+    if(!runtimeConfig.checkpointHintCodec)throw new Error('OWNER_RECOVERY_SECRET_REQUIRED');
+    var rest=MyPaceFolderImport.createGasDriveRest(meter.globals,{deadlineMs:meter.hardDeadlineMs,checkBudget:meter.checkBudget});
+    var runtime=MyPaceFolderImport.createGasImportRuntime(meter.globals,Object.assign({},runtimeConfig,{checkBudget:meter.checkBudget,deadlineMs:meter.hardDeadlineMs,protocolReadCache:{mode:'lock-phase'},restTransport:rest,progressiveRecovery:true,canContinueRecovery:function(){return Date.now()<meter.hardDeadlineMs-7000;},canWriteHint:function(){return rest.canStartAdvisory();}}));
+    var result=MyPaceFolderImport.activateSyncV2(runtime);
+    return myPaceOwnerReport_({status:'incremental-sync-enabled',alreadyEnabled:result.alreadyEnabled,storeId:result.storage.storeId,datasetGeneration:result.storage.datasetGeneration,revision:result.storage.revision,writerFence:result.storage.writerFence,compatibility:'Older storage bundles must not be restored. Use only a fence-aware writer for fixes or rollback.',usage:meter.usage()});
+  } catch(error) {
+    var code=error&& (error.code||error.message);
+    if(['WRITER_RECOVERY_PENDING','OWNER_BOOTSTRAP_YIELD','OWNER_BUDGET_YIELD','STORE_YIELD','IMPORT_YIELD','WRITER_COMMIT_UNRESOLVED','STORE_REQUEST_UNRESOLVED'].indexOf(code)>=0)return myPaceOwnerReport_({status:'activation-pending',code:code,requiresOwnerAction:true,nextAction:'The result is not confirmed. Keep the existing project, store, IDs and secret; run MyPaceEnableIncrementalSync again to recover its original operation.',usage:meter.usage()});
+    return myPaceOwnerMaintenanceSetup_(error,meter);
+  }
+}

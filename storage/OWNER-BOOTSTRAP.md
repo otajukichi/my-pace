@@ -1,3 +1,5 @@
+> 過去の実装・検証資料です。本文中の手順・時間予算・制限・試験数は当時の記録で、今回の導入やロールバックを指示しません。現在の手順は [../PRACTICAL-SYNC-INSTALL.md](../PRACTICAL-SYNC-INSTALL.md)、設計は ../PRACTICAL-SYNC-DESIGN.md を優先してください。旧インストーラー、初期 bootstrap、ストア移動、秘密情報・OAuth・公開権限・トリガーの変更を今回の更新で繰り返さないでください。
+
 # Private owner-store bootstrap
 
 Local-only implementation and simulator evidence. This code has not run against live Drive, changed consent, deployed an Apps Script, or installed a trigger.

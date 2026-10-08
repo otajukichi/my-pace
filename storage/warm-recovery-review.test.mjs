@@ -148,7 +148,9 @@ test('budget exhaustion in a later batch preserves the original group cursor for
  let checkpoints=0,exhausted=false;const get=f.globals.Drive.Files.get;
  f.globals.Drive.Files.get=(id,args)=>{const m=get(id,args);if(m.appProperties?.['mypace.role']==='checkpoint'&&++checkpoints===3)exhausted=true;return m;};
  f.config.checkBudget=()=>!exhausted;r.writer.io.checkBudget=f.config.checkBudget;
- assert.throws(()=>runner.finalizeJobStep('job'),/IMPORT_YIELD/);
+ // A fresh node-cache phase check may observe the same exhausted budget
+ // before the runner's next guard. Both yields must preserve the group cursor.
+ assert.throws(()=>runner.finalizeJobStep('job'),e=>e.retryable===true&&['IMPORT_YIELD','STORE_YIELD'].includes(e.code||e.message));
  f.globals.Drive.Files.get=get;exhausted=false;
  const cold=createGasImportRuntime(f.globals,f.config);assert.deepEqual(cold.locked(()=>cold.store.getJob('job')).finalization,before.finalization);
  cold.runner.finalizeJobStep('job');assert.equal(cold.locked(()=>cold.store.getJob('job')).finalization.visited,4);

@@ -1,3 +1,5 @@
+> 過去の実装・検証資料です。本文中の手順・時間予算・制限・試験数は当時の記録で、今回の導入やロールバックを指示しません。現在の手順は [../PRACTICAL-SYNC-INSTALL.md](../PRACTICAL-SYNC-INSTALL.md)、設計は ../PRACTICAL-SYNC-DESIGN.md を優先してください。旧インストーラー、初期 bootstrap、ストア移動、秘密情報・OAuth・公開権限・トリガーの変更を今回の更新で繰り返さないでください。
+
 # Current synthetic scheduled import evidence
 
 Local mocks only. No live Google requests, source data, credentials, deployment or trigger. Both models use a 15-minute cadence, 12,000-call work admission, 120-second hard invocation cap, versioned output packing and authenticated checkpoint/discovery advice. The second 31 MiB file is added after the first finishes on the same retained store and ledger.

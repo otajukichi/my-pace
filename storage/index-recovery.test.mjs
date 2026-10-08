@@ -46,7 +46,13 @@ test('lost hint scans across calls without ready state, immutable writes or lost
  const cursor=f.codec.decode(f.hint);assert.equal(cursor.protocol,INDEX_SCAN_HINT_PROTOCOL);assert.equal(cursor.indexLinks,2);
  const recovered=finish(f,{minimumAcknowledged:{revision:original.revision,hash:original.frameHash}});
  assert.equal(recovered.pendingCalls,4);assert.equal(recovered.writer.status().headHash,head.headHash);assert.deepEqual(recovered.writer.get('record').value,{kept:true});assert.deepEqual(recovered.writer.getReceipt('original'),original);assert.equal(creates(f),before);
- assert.equal(f.codec.decode(f.hint).protocol,CHECKPOINT_HINT_PROTOCOL);assert.deepEqual(recovered.writer.transact(put('original','record',{kept:true})),original);
+ const finalHint=f.codec.decode(f.hint),finalState=recovered.writer.status();
+ // A fully verified recovery may retain the already-persisted authenticated
+ // INDEX prefix instead of spending another advisory write to relabel it.
+ // Both protocols still require current manifest/publication/tail validation.
+ assert([CHECKPOINT_HINT_PROTOCOL,INDEX_SCAN_HINT_PROTOCOL].includes(finalHint.protocol));assert.deepEqual(finalHint.indexRef,finalState.indexHead);assert.equal(finalHint.indexLinks,finalState.indexLinks);
+ const cold=f.fresh();cold.recoveryBarrier({minimumAcknowledged:{revision:original.revision,hash:original.frameHash}});assert.equal(cold.status().headHash,head.headHash);assert.deepEqual(cold.get('record').value,{kept:true});assert.deepEqual(cold.getReceipt('original'),original);
+ assert.deepEqual(recovered.writer.transact(put('original','record',{kept:true})),original);
 });
 
 test('old signed checkpoint hints and scan cursors never require retired intermediate bodies',()=>{

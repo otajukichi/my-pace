@@ -8,6 +8,7 @@ import {createInitialState, serializeBackup, todayKey, addDays} from '../src/lib
 import {STORAGE_KEY} from '../src/lib/storage.js';
 import {indexedDBDouble} from './helpers/indexeddb-double.js';
 import {stateToEntities} from '../src/lib/entity-codec.js';
+import {createIndexedDBStorage} from '../src/lib/cloud-local-storage.js';
 
 let instance=0;
 class EventNode {
@@ -23,7 +24,10 @@ class EventNode {
   querySelector(selector){if(!this.fields.has(selector))this.fields.set(selector,new EventNode());return this.fields.get(selector);}
   click(){this.clicked=true;}
 }
-async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home',denyRead=false,width=1280,height=900,idb,fetcher,modePreference=null,timers}={}) {
+async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home',denyRead=false,width=1280,height=900,idb,fetcher,modePreference=null,timers,pullSupported=false,legacySchema=false}={}) {
+  // Ordinary controller fixtures represent an already upgraded cache. Explicit
+  // legacySchema tests exercise the app migration consent boundary separately.
+  if(idb?.version===1&&!legacySchema){const migrated=createIndexedDBStorage(idb);await migrated.read();migrated.close();}
   const originals=new Map(), app=new EventNode(), editor=new EventNode(), notice=new EventNode(), main=new EventNode();
   const document=new EventNode(), window=new EventNode(), created=[];
   window.innerWidth=width;window.innerHeight=height;
@@ -33,7 +37,7 @@ async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home
   document.createElement=tag=>{const node=new EventNode();node.tag=tag;created.push(node);return node;};
   const localStorage={getItem(key){if(key==='mypace.persistence.mode.v1')return modePreference;assert.equal(key,STORAGE_KEY);if(deniedRead)throw new Error('Storage denied');return raw;},setItem(key,value){if(key==='mypace.persistence.mode.v1'){modePreference=value;return;}assert.equal(key,STORAGE_KEY);if(deniedWrite)throw new Error('Quota exceeded');raw=value;writes++;}};
   const FormData=class{constructor(form){this.values=form.values;}get(key){return this.values[key]??null;}getAll(key){return this.values[key]??[];}};
-  for(const [key,value] of Object.entries({document,window,location,localStorage,FormData,indexedDB:idb,fetch:fetcher||globalThis.fetch,requestAnimationFrame:callback=>callback(),addEventListener:window.addEventListener.bind(window),removeEventListener:window.removeEventListener.bind(window),...(timers?{setInterval:(callback,delay)=>{const timer={callback,delay,unref(){}};timers.push(timer);return timer;},clearInterval:timer=>{const i=timers.indexOf(timer);if(i>=0)timers.splice(i,1);}}:{})})) {
+  for(const [key,value] of Object.entries({document,window,location,localStorage,FormData,indexedDB:idb,fetch:async(path,options)=>{if(!pullSupported&&path==='/api/sync'&&['pull','recover'].includes(JSON.parse(options.body).action))return Response.json({ok:false,error:'ACTION_INVALID'},{status:400});return (fetcher||originals.get('fetch')?.value)(path,options);},requestAnimationFrame:callback=>callback(),addEventListener:window.addEventListener.bind(window),removeEventListener:window.removeEventListener.bind(window),...(timers?{setInterval:(callback,delay)=>{const timer={callback,delay,unref(){}};timers.push(timer);return timer;},clearInterval:timer=>{const i=timers.indexOf(timer);if(i>=0)timers.splice(i,1);}}:{})})) {
     originals.set(key,Object.getOwnPropertyDescriptor(globalThis,key));Object.defineProperty(globalThis,key,{value,writable:true,configurable:true});
   }
   t.after(()=>{for(const [key,descriptor] of originals){if(descriptor)Object.defineProperty(globalThis,key,descriptor);else delete globalThis[key];}});
@@ -337,7 +341,7 @@ test('an external local update during async dispatch prevents stale candidate ov
 });
 
 
-test('STORE_YIELD blocks timer, visibility and online retries while explicit sync remains available',async t=>{
+test('STORE_YIELD backs off timer, visibility and online retries while explicit sync remains available',async t=>{
  const initial={...createInitialState(),wake:{[todayKey()]:'06:25'}},idb=cachedCloud(initial),timers=[],requests=[];let failure=true;
  const fetcher=async(path,options)=>{
   requests.push(path);
@@ -349,7 +353,7 @@ test('STORE_YIELD blocks timer, visibility and online retries while explicit syn
   return Response.json({ok:true,result});
  };
  const ui=await launch(t,{idb,fetcher,timers,modePreference:'cloud',hash:'#settings'}),legacy=ui.raw;await ui.click('view-tab',{tab:'drive'});
- assert.match(ui.app.innerHTML,/復旧を要確認.*自動同期は停止中/);assert.doesNotMatch(ui.app.innerHTML,/Google Drive に保存済み/);
+ assert.match(ui.app.innerHTML,/Drive の記録をまだ確認できていません/);assert.doesNotMatch(ui.app.innerHTML,/Google Drive に保存済み/);
  const at=requests.length;ui.document.hidden=false;
  await ui.document.emit('visibilitychange');await ui.window.emit('online');timers.find(timer=>timer.delay===60000).callback();await Promise.resolve();
  assert.equal(requests.length,at);assert.equal(idb.read().outbox.length,0);assert.equal(ui.raw,legacy);
@@ -374,4 +378,73 @@ test('successful login with unready recovery leaves legacy state intact and expl
  assert.equal(ui.editor.open,false);assert.equal(ui.raw,legacy);assert.equal(ui.writes,0);
  assert.match(ui.notice.innerHTML,/クラウドの記録はまだ取得できていません/);assert.match(ui.app.innerHTML,/今すぐ同期/);
  assert.doesNotMatch(ui.app.innerHTML,/Google Drive に保存済み/);assert.match(ui.app.innerHTML,/このブラウザーのみ/);
+});
+
+test('valid large cloud records remain displayable beyond the JSON backup byte limit',async t=>{
+ const large=createInitialState();for(let i=0;i<1100;i++)large.diary[addDays('2000-01-01',i)]={text:'あ'.repeat(4000),mood:null};
+ assert.throws(()=>serializeBackup(large),/12MiB/);const idb=indexedDBDouble({...cachedCloud(large).read(),syncProtocol:2,syncCheckpoint:{store:'owner',generation:'generation',seq:0},minimumObserved:{revision:1,hash:'a'.repeat(64)}});let authenticated=false;
+ const fetcher=async(path,options)=>{
+  if(path==='/api/auth/session')return Response.json({ok:true,authenticated,csrf:'test'});
+  const {action}=JSON.parse(options.body);
+  if(action==='pull')return Response.json({ok:true,result:{protocol:2,mode:'delta',store:'owner',generation:'generation',epoch:'epoch',revision:2,headHash:'b'.repeat(64),fromSeq:0,targetSeq:1,throughSeq:1,entries:[{key:'wake:'+todayKey(),version:1,deleted:false,value:'06:05'}],nextCursor:null,checkpoint:{store:'owner',generation:'generation',seq:1},syncMeta:{format:1,imports:{ok:true,result:{revision:2,runs:[],nextCursor:null}},importStatus:{ok:true,result:{status:'idle'}}}}});
+  throw Error('Unexpected request');
+ };
+ const ui=await launch(t,{idb,fetcher,modePreference:'cloud',pullSupported:true,timers:[]});
+ // The delta leaves the large diary baseline intact while changing a single
+ // visible record. The cloud read must not use the export-size gate.
+ authenticated=true;await ui.click('cloud-sync');
+ assert.match(ui.app.innerHTML,/06:05/);assert.equal(idb.read().outbox.length,0);assert.equal(Object.keys(idb.read().entities).filter(key=>key.startsWith('diary:')).length,1100);assert.equal(ui.writes,0);
+});
+
+function draftSyncServer(initial){
+ let state=structuredClone(initial),seq=0,revision=1,changed=[];const versions=new Map(Object.keys(stateToEntities(initial)).map(key=>[key,1]));
+ const entries=()=>Object.entries(stateToEntities(state)).map(([key,value])=>({key,value,version:versions.get(key)||1,deleted:false}));
+ return {change(next,keys){state=structuredClone(next);seq++;revision++;changed=keys.map(key=>{versions.set(key,(versions.get(key)||0)+1);const value=stateToEntities(state)[key];return {key,version:versions.get(key),deleted:value===undefined,value:value??null};});},fetcher:async(path,options)=>{
+  if(path==='/api/auth/session')return Response.json({ok:true,authenticated:true,csrf:'test'});
+  const {action,payload}=JSON.parse(options.body);
+  if(action==='command')return Response.json({ok:false,error:'WRITER_BUSY',retryable:true},{status:503});
+  if(action!=='pull')throw Error('Unexpected action '+action);
+  const snapshot=payload.since===null;
+  return Response.json({ok:true,result:{protocol:2,mode:snapshot?'snapshot':'delta',store:'owner',generation:'generation',epoch:'epoch',revision,headHash:revision.toString(16).padStart(64,'0'),fromSeq:snapshot?null:payload.since.seq,targetSeq:seq,throughSeq:seq,entries:snapshot?entries():payload.since.seq<seq?changed:[],nextCursor:null,checkpoint:{store:'owner',generation:'generation',seq},syncMeta:{format:1,imports:{ok:true,result:{revision,runs:[],nextCursor:null}},importStatus:{ok:true,result:{status:'idle'}}}}});
+ }};
+}
+
+test('remote change to an open diary preserves its typed draft and blocks stale save/delete until fresh review',async t=>{
+ const date=todayKey(),initial={...createInitialState(),diary:{[date]:{text:'original',mood:null}}},idb=cachedCloud(initial),server=draftSyncServer(initial),ui=await launch(t,{idb,fetcher:server.fetcher,modePreference:'cloud',hash:'#diary',pullSupported:true,timers:[]});
+ await ui.click('diary-edit');const textarea=ui.editor.querySelector('textarea');textarea.value='unsaved typed draft';const writes=ui.editor.htmlWrites;
+ server.change({...initial,diary:{[date]:{text:'new remote entry',mood:null}}},['diary:'+date]);await ui.click('cloud-sync');
+ assert.equal(ui.editor.open,true);assert.equal(ui.editor.htmlWrites,writes);assert.equal(ui.editor.querySelector('textarea'),textarea);assert.equal(textarea.value,'unsaved typed draft');assert.match(ui.editor.querySelector('#form-error').textContent,/入力中の内容は残しています/);
+ await ui.submit('diary',{text:'unsaved typed draft',mood:''});assert.equal(ui.editor.open,true);assert.equal(idb.read().outbox.length,0);assert.equal(idb.read().entities['diary:'+date].value.text,'new remote entry');
+ await ui.click('diary-delete');assert.equal(ui.editor.htmlWrites,writes);assert.equal(ui.editor.open,true);assert.equal(idb.read().outbox.length,0);
+ await ui.click('dialog-close');await ui.click('diary-edit');assert.match(ui.editor.innerHTML,/new remote entry/);await ui.submit('diary',{text:'reviewed saved draft',mood:''});assert.equal(idb.read().outbox.length,1);assert.equal(idb.read().outbox[0].command.value.text,'reviewed saved draft');
+});
+
+test('an unrelated remote change keeps a diary draft editable and its save preserves the remote record',async t=>{
+ const date=todayKey(),initial={...createInitialState(),diary:{[date]:{text:'original',mood:null}}},idb=cachedCloud(initial),server=draftSyncServer(initial),ui=await launch(t,{idb,fetcher:server.fetcher,modePreference:'cloud',hash:'#diary',pullSupported:true,timers:[]});
+ await ui.click('diary-edit');const textarea=ui.editor.querySelector('textarea');textarea.value='unrelated update must keep this';const writes=ui.editor.htmlWrites;
+ server.change({...initial,wake:{[date]:'05:15'}},['wake:'+date]);await ui.click('cloud-sync');assert.equal(ui.editor.open,true);assert.equal(ui.editor.htmlWrites,writes);assert.equal(textarea.value,'unrelated update must keep this');
+ await ui.submit('diary',{text:'save after unrelated update',mood:''});assert.equal(ui.editor.open,false);assert.equal(idb.read().outbox.length,1);assert.equal(idb.read().outbox[0].command.key,'diary:'+date);assert.equal(idb.read().entities['wake:'+date].value,'05:15');
+});
+
+for(const kind of ['wake','target','run','habit','habit-log','event'])test(`remote ${kind} changes preserve the matching open editor and prevent stale submission`,async t=>{
+ const date=todayKey(),initial=createInitialState();initial.wake[date]='07:00';initial.settings.wakeTarget='07:30';initial.runs=[{id:'run1',date,distanceKm:5,durationSec:1800,note:'original',points:[]}];initial.habits=[{id:'read',name:'Reading',type:'number',unit:'pages',target:10,archived:false}];initial.habitLogs={read:{[date]:2}};initial.events=[{id:'event1',date,time:null,title:'Original event',note:''}];
+ const next=structuredClone(initial);let action,context={},key,values;
+ if(kind==='wake'){action='wake-edit';key='wake:'+date;next.wake[date]='08:00';values={time:'06:00'};}
+ if(kind==='target'){action='target-edit';key='settings:wakeTarget';next.settings.wakeTarget='08:00';values={target:'06:00'};}
+ if(kind==='run'){action='run-edit';context={id:'run1'};key='run:run1';next.runs[0].note='Remote run';values={id:'run1',date,distance:'5',minutes:'30',seconds:'0',note:'Typed run'};}
+ if(kind==='habit'){action='habit-edit';context={id:'read'};key='habit:read';next.habits[0].name='Remote habit';values={id:'read',name:'Typed habit',type:'number',unit:'pages',target:'12'};}
+ if(kind==='habit-log'){action='habit-log';context={id:'read'};key='habitLog:read:'+date;next.habitLogs.read[date]=9;values={id:'read',value:'5'};}
+ if(kind==='event'){action='event-edit';context={id:'event1'};key='event:event1';next.events[0].title='Remote event';values={id:'event1',date,time:'',title:'Typed event',note:''};}
+ const idb=cachedCloud(initial),server=draftSyncServer(initial),ui=await launch(t,{idb,fetcher:server.fetcher,modePreference:'cloud',pullSupported:true,timers:[]});await ui.click(action,context);const field=ui.editor.querySelector('input');field.value='retained draft';const writes=ui.editor.htmlWrites;
+ server.change(next,[key]);await ui.click('cloud-sync');assert.equal(ui.editor.open,true);assert.equal(ui.editor.htmlWrites,writes);assert.equal(field.value,'retained draft');assert.match(ui.editor.querySelector('#form-error').textContent,/入力中の内容は残しています/);
+ await ui.submit(kind,values);assert.equal(ui.editor.open,true);assert.equal(idb.read().outbox.length,0);assert.equal(ui.editor.htmlWrites,writes);
+});
+
+test('advisory cloud renders retain the active date control node until focus leaves',async t=>{
+ const initial=createInitialState(),idb=cachedCloud(initial),server=draftSyncServer(initial),ui=await launch(t,{idb,fetcher:server.fetcher,modePreference:'cloud',pullSupported:true,timers:[]});
+ const input=ui.app.querySelector('#selected-date');input.matches=()=>true;input.value='';input.partialNativeSegment='2026-__-08';ui.app.contains=node=>node===input;ui.document.activeElement=input;
+ const before=ui.app.htmlWrites;
+ server.change({...initial,wake:{[todayKey()]:'06:20'}},['wake:'+todayKey()]);await ui.click('cloud-sync');
+ assert.equal(ui.app.htmlWrites,before,'status and remote-state callbacks do not replace the control');assert.equal(ui.app.querySelector('#selected-date'),input);assert.equal(input.partialNativeSegment,'2026-__-08');
+ ui.document.activeElement=null;await ui.document.emit('focusout');await Promise.resolve();assert(ui.app.htmlWrites>before);assert.match(ui.app.innerHTML,/06:20/);
 });

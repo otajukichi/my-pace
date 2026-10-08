@@ -46,16 +46,17 @@ import {renderGarden} from './views/garden.js';
 import {eventDialog,diaryDialog} from './journal-dialogs.js';
 import {pageCapacity,habitPageCapacity} from './lib/workspace.js';
 import {gardenProgress,GARDEN_THEMES} from './lib/garden.js';
-import {createCloudSync} from './lib/cloud-sync.js';
-import {cloudStatus,renderCloudPanel,migrationDialog,loadGoogleIdentity,renderImportedRuns} from './lib/cloud-panel.js';
+import {createCloudSync,createIndexedDBStorage} from './lib/cloud-sync.js';
+import {cloudStatus,cloudErrorText,renderCloudPanel,migrationDialog,loadGoogleIdentity,renderImportedRuns} from './lib/cloud-panel.js';
 const app=document.querySelector('#app'), editor=document.querySelector('#editor'), notice=document.querySelector('#notice');
 bindNavigationTooltips(document);
 const loaded=loadState();
 let state=loaded.state||createInitialState(), storageBlocked=!loaded.ok;
 const MODE_KEY='mypace.persistence.mode.v1';
 let preferredMode=null;try{preferredMode=localStorage.getItem(MODE_KEY);}catch{}
-function rememberMode(value){preferredMode=value;try{localStorage.setItem(MODE_KEY,value);}catch{}}
-let mode='local',initializing=true,commitPending=false,cloudOperation=false;
+function rememberMode(value){preferredMode=value;try{localStorage.setItem(MODE_KEY,value);return localStorage.getItem(MODE_KEY)===value;}catch{return false;}}
+let mode='local',initializing=true,commitPending=false,cloudOperation=false,advisoryRenderPending=false;
+let loginAttempt=null,authUiGeneration=0,authRequestPending=null,localUpgradePrompt=null,legacyUpgradeApproved=null;
 let legacyState=loaded.ok?structuredClone(state):null;
 let selectedDate=todayKey(), previousToday=todayKey(), period=7, undoState=null, dialogContext=null, fileSequence=0, editorNeedsFocus=false;
 const viewState={};
@@ -70,19 +71,57 @@ const routes={
   garden:{label:'暮らしの庭',title:'暮らしの庭',subtitle:'記録した日が、小さな庭を育てる。',icon:'leaf',render:renderGarden,tabs:[['garden','庭をながめる'],['collection','模様替え'],['guide','育つしくみ']]},
   settings:{label:'設定',title:'設定',subtitle:'大切な記録を、これからも。',icon:'settings',render:context=>context.tab==='drive'?renderCloudPanel(cloudView(),mode):renderSettings({...context,mode}),tabs:[['backup','保存と復元'],['drive','Google Drive'],['about','このアプリ']]}
 };
-const cloud=createCloudSync({onChange:()=>render(),onRemoteState(candidate){
+// Keep typed drafts separate from newly received cloud state. A changed record
+// requires a fresh review; unrelated remote records can update behind the dialog.
+function editorRecord(context,candidate){
+  if(!context)return undefined;
+  const type=context.type?.replace(/-delete$/,'');
+  if(type==='wake'||type==='diary')return candidate[type][context.date]??null;
+  if(type==='target')return candidate.settings.wakeTarget;
+  if(type==='run'||type==='habit'||type==='event')return candidate[type==='run'?'runs':type==='habit'?'habits':'events'].find(item=>item.id===context.id)??null;
+  if(type==='habit-log')return {habit:candidate.habits.find(item=>item.id===context.id)??null,value:candidate.habitLogs[context.id]?.[context.date]??null};
+  if(type==='backup-restore')return candidate;
+  return undefined;
+}
+function legacyBackupText(owner){return JSON.stringify({format:1,kind:'mypace-legacy-owner-backup',database:'mypace.owner-sync.v1',schema:1,owner:owner??null},null,2);}
+function requestLocalUpgrade(owner){
+ const text=legacyBackupText(owner);
+ if(legacyUpgradeApproved===text)return true;
+ legacyUpgradeApproved=null;localUpgradePrompt={text,exported:false};
+ showDialog('<div class="dialog-top"><h2 id="dialog-title">この端末の保存形式を更新する前に</h2><button class="icon-button" data-action="dialog-close" aria-label="閉じる">閉じる</button></div><p>旧版のクラウド記録がこのブラウザーに残っています。まず、未送信の変更と競合を含む退避ファイルを保存してください。</p><p>更新すると、このブラウザーの保存形式は旧版では開けなくなります。ほかの端末・ブラウザーの記録はこの退避に含まれません。これは通常の JSON 復元用ではなく、障害時の復旧用ファイルです。旧版を開いているタブは閉じてください。</p><p>ファイルには個人の記録が含まれます。安全な場所に保存し、保存したファイルを確認してから更新してください。</p><div class="dialog-actions"><button class="btn secondary" data-action="cloud-storage-export">この端末の旧データを退避</button><button class="btn primary" data-action="cloud-storage-upgrade">退避ファイルを確認したので更新する</button><button class="btn secondary" data-action="dialog-close">今は更新しない</button></div><p id="form-error" class="form-error" hidden></p>',{type:'cloud-storage-upgrade'});
+ return false;
+}
+const cloud=createCloudSync({storage:createIndexedDBStorage(globalThis.indexedDB,{onLegacyMigration:requestLocalUpgrade}),onChange:()=>render({advisory:true}),onRemoteState(candidate){
   if(mode!=='cloud')return;
   const next=validateState(candidate);
-  if(serializeBackup(next)!==serializeBackup(state)){state=next;undoState=null;closeDialog();}
-  storageBlocked=false;render();
+  // Cloud display is independent of the bounded JSON backup/import format.
+  if(JSON.stringify(next)!==JSON.stringify(state)){
+    const previousEntry=editorRecord(dialogContext,state),nextEntry=editorRecord(dialogContext,next);
+    state=next;undoState=null;
+    if(editor.open&&previousEntry!==undefined){
+      if(JSON.stringify(previousEntry)!==JSON.stringify(nextEntry)){
+        dialogContext.cloudChanged=true;++fileSequence;formError('EDITOR_REMOTE_CHANGED');
+      }
+    }else closeDialog();
+  }
+  storageBlocked=false;render({advisory:true});
 }});
-function cloudView(){const view=cloud.view();return preferredMode==='signed-out'||mode!=='cloud'&&!view.authenticated?{...view,authenticated:false,ready:false,importedRuns:[],conflicts:[],importStatus:null}:view;}
+function cloudView(){const view=cloud.view();return preferredMode==='signed-out'||mode!=='cloud'&&!view.authenticated?{...view,authenticated:false,ready:false,recordsConfirmed:false,importedRuns:[],conflicts:[],importStatus:null,importErrors:{}}:view;}
 const routeKey=()=>Object.hasOwn(routes,location.hash.slice(1))?location.hash.slice(1):'home';
 function activeView() {
   const key=routeKey();
   return viewState[key]||(viewState[key]={tab:routes[key].tabs[0][0],page:0});
 }
-function render({focus=false}={}) {
+function render({focus=false,advisory=false}={}) {
+  // A native date control can contain uncommitted segments that its value
+  // property cannot represent. Keep the actual node until editing ends.
+  if(advisory&&app.contains?.(document.activeElement)&&document.activeElement?.matches?.('input,textarea,select,[contenteditable="true"]')){
+    advisoryRenderPending=true;
+    const indicator=app.querySelector('.local-indicator');
+    if(indicator)indicator.innerHTML=`<i></i> ${e(cloudStatus(cloud.view(),mode,initializing))}`;
+    return;
+  }
+  advisoryRenderPending=false;
   const restoreFocus=Boolean(app.contains?.(document.activeElement));
   const focusSnapshot=captureFocus(app,document.activeElement);
   if(editor.open)editorNeedsFocus=true;
@@ -118,6 +157,7 @@ async function commit(candidate,message, {
   const before=state,context=dialogContext,commitMode=mode;
   try  {
     await Promise.resolve(); // Keep repeated dispatches locked through durable acknowledgement.
+    if(mode==='cloud'&&context?.cloudChanged)throw Error('EDITOR_REMOTE_CHANGED');
     if(state!==before)throw Error('LOCAL_STATE_CHANGED');
     let next=validateState(candidate);
     if(mode==='cloud'){
@@ -158,7 +198,13 @@ async function commitAndClose(candidate,message,options){
   if(saved&&dialogContext===context)closeDialog();
   return saved;
 }
+function releaseCloudOperation(owner){if(cloudOperation===owner)cloudOperation=false;}
+function cancelLoginAttempt(){const attempt=loginAttempt;if(!attempt)return;loginAttempt=null;++authUiGeneration;releaseCloudOperation(attempt.operation);}
+function currentLoginAttempt(attempt){return loginAttempt===attempt&&attempt.generation===authUiGeneration&&dialogContext===attempt.context&&fileSequence===attempt.sequence&&editor.open;}
+async function authRequest(owner,request){authRequestPending=owner;try{return await request();}finally{if(authRequestPending===owner)authRequestPending=null;}}
 function showDialog(markup,context = {}) {
+  if(dialogContext?.cloudChanged&&context.type?.endsWith('-delete'))throw Error('EDITOR_REMOTE_CHANGED');
+  cancelLoginAttempt();
   ++fileSequence;
   const previousTheme=editor.open?editor.dataset.theme:routeKey();
   if(editor.open)editor.close();
@@ -170,13 +216,14 @@ function showDialog(markup,context = {}) {
   requestAnimationFrame(()=>editor.querySelector('[autofocus],input:not([type=hidden]),button')?.focus());
 }
 function closeDialog() {
+  cancelLoginAttempt();
   ++fileSequence;
   editor.close();
   dialogContext=null;
   if(editorNeedsFocus){editorNeedsFocus=false;document.querySelector('main')?.focus();}
 }
 function formError(text) {
-  text=({RECORD_TOO_LARGE_USE_FOLDER_IMPORT:'この記録は大きすぎます。大きな GPS データは Drive の CSV フォルダーから取り込んでください。',LOCAL_STATE_CHANGED:'別のタブで記録が更新されました。内容を控えてから再読み込みしてください。',MIGRATION_PREVIEW_CHANGED:'移行先が更新されました。いったん閉じて、移行内容をもう一度確認してください。',CONFLICT_CHANGED:'競合の内容が変わりました。閉じて最新の内容を確認してください。'})[text]||text;
+  text=({CLOUD_STATE_UNDISPLAYABLE:cloudErrorText('CLOUD_STATE_UNDISPLAYABLE'),EDITOR_REMOTE_CHANGED:'この記録が別の場所で更新されました。入力中の内容は残しています。内容を控えてからいったん閉じ、最新の記録を確認してください。',RECORD_TOO_LARGE_USE_FOLDER_IMPORT:'この記録は大きすぎます。大きな GPS データは Drive の CSV フォルダーから取り込んでください。',LOCAL_STATE_CHANGED:'別のタブで記録が更新されました。内容を控えてから再読み込みしてください。',MIGRATION_PREVIEW_CHANGED:'移行先が更新されました。いったん閉じて、移行内容をもう一度確認してください。',CONFLICT_CHANGED:'比べている記録が変わりました。閉じて最新の内容を確認してください。',CONFLICT_PREVIEW_CHANGED:'比べている間に記録が更新されました。閉じて最新の内容を確認してください。',CONFLICT_REFRESH_REQUIRED:'削除済みかを確認できませんでした。変更は端末に残っています。接続が戻ってから同期し、もう一度内容を確認してください。',SESSION_LOCKED:'ログアウトしています。Google でログインし直してください。',CLOUD_NOT_READY:'保存先の記録をまだ確認できていません。少し待ってからもう一度保存してください。',INDEXEDDB_BLOCKED_CLOSE_OTHER_TABS:cloudErrorText('INDEXEDDB_BLOCKED_CLOSE_OTHER_TABS'),INDEXEDDB_VERSION_CHANGED_RELOAD_REQUIRED:cloudErrorText('INDEXEDDB_VERSION_CHANGED_RELOAD_REQUIRED')})[text]||text;
   const target=editor.open?editor.querySelector('#form-error'):null;
   if(target) {
     target.textContent=text;
@@ -410,9 +457,72 @@ const actions= {
   }
   ,
 };
+async function openCloudLogin(){
+ if(authRequestPending){toast('ログイン状態の確認が終わるのを待っています。少し待ってから、もう一度ログインしてください。');return;}
+ showDialog('<div class="dialog-top"><h2 id="dialog-title">Google でログイン</h2><button class="icon-button" data-action="dialog-close" aria-label="閉じる">閉じる</button></div><p>オーナーの Google アカウントを選んでください。</p><div id="google-signin"></div><p id="form-error" class="form-error" hidden></p>',{type:'cloud-login'});
+ const operation={},attempt={context:dialogContext,sequence:fileSequence,generation:++authUiGeneration,operation};loginAttempt=attempt;cloudOperation=operation;
+ try{
+  const challenge=await authRequest(operation,()=>cloud.login());if(!currentLoginAttempt(attempt))return;
+  const identity=await loadGoogleIdentity();if(!currentLoginAttempt(attempt))return;
+  identity.initialize({client_id:challenge.clientId,nonce:challenge.nonce,callback:async response=>{
+   if(!currentLoginAttempt(attempt)||cloudOperation||authRequestPending)return;
+   const completion={};attempt.operation=completion;cloudOperation=completion;
+   try{
+    const result=await authRequest(completion,()=>cloud.completeLogin(response.credential,challenge.csrf,{isCurrent:()=>currentLoginAttempt(attempt)}));
+    if(!currentLoginAttempt(attempt))return;
+    if(result.provisioningRequired){formError(`オーナー設定が必要です。導入手順に従って、この Google の識別子をサーバー設定に登録してください: ${result.ownerSubject}`);return;}
+    if(result.authenticated){
+     const cached=cloud.state();
+     if(!cached){closeDialog();render();toast('ログインしました。クラウドの記録はまだ取得できていません。設定の Google Drive で同期状況を確認してください。');return;}
+     mode='cloud';rememberMode('cloud');state=validateState(cached);storageBlocked=false;undoState=null;closeDialog();render();
+     toast(cloud.view().error?'この端末に残っているクラウドの記録を開きました。設定の Google Drive で同期状況を確認してください。':'クラウドの記録を開きました。旧記録の移行は設定から確認できます。');
+    }
+   }catch(error){if(currentLoginAttempt(attempt))formError(error.message);}finally{releaseCloudOperation(completion);}
+  }});
+  if(currentLoginAttempt(attempt))identity.renderButton(editor.querySelector('#google-signin'),{theme:'outline',size:'large',text:'signin_with'});
+ }catch(error){if(currentLoginAttempt(attempt))formError(error.message);}finally{releaseCloudOperation(operation);}
+}
+function showSignedOutState(){const local=loadState();mode='local';const remembered=rememberMode('signed-out');state=local.state||createInitialState();storageBlocked=!local.ok;undoState=null;closeDialog();render();return remembered;}
+function logoutMessage(remembered,result){
+ const server=result==='pending'?'サーバー側のログアウトを確認しています。':result==='confirmed'?'サーバー側のログアウトは確認できました。':'サーバー側のログアウトは確認できていません。';
+ if(!remembered)return `このページのクラウド表示は閉じました。ログアウト状態をこのブラウザーに保存できませんでした。ほかのタブや、再読み込み・開き直しで、端末に残る記録が表示される可能性があります。${server}記録を失わないよう、このサイトのデータは消さないでください。`;
+ return result==='pending'?'クラウドの表示を閉じました。サーバー側のログアウトを確認しています。端末にある記録は残っています。':result==='confirmed'?'マイペースからログアウトしました。端末内の記録と確認待ちの変更は残っています。':'クラウドの表示は閉じました。サーバー側のログアウトは確認できていません。端末内の記録と確認待ちの変更は残っています。';
+}
+async function closeCloudView(){
+ if(authRequestPending?.kind==='logout')return;
+ const authenticationPending=!!authRequestPending;cancelLoginAttempt();const generation=++authUiGeneration,operation={kind:'logout'};
+ if(authenticationPending){
+  // Local logout takes effect even during a prior sign-in. Do not race a new
+  // cookie-changing request with that request or later clear a newer session.
+  cloud.lock();const remembered=showSignedOutState();toast(logoutMessage(remembered,'unconfirmed'));return;
+ }
+ // logout captures its CSRF value before locking the sync session. Hide the
+ // cached display in this same turn, without waiting for its HTTP response.
+ const pending=authRequest(operation,()=>cloud.logout());
+ const remembered=showSignedOutState();
+ toast(logoutMessage(remembered,'pending'));const originalNotice=notice.innerHTML;
+ try{
+  await pending;
+  if(generation===authUiGeneration&&preferredMode==='signed-out'&&!notice.hidden&&notice.innerHTML===originalNotice)toast(logoutMessage(remembered,'confirmed'));
+ }catch{
+  if(generation===authUiGeneration&&preferredMode==='signed-out'&&!notice.hidden&&notice.innerHTML===originalNotice)toast(logoutMessage(remembered,'unconfirmed'));
+ }
+}
 async function handleCloud(button){
  const action=button.dataset.action;
- if(cloudOperation||commitPending)return;
+ if(action==='cloud-storage-export'||action==='cloud-storage-upgrade'){
+  if(dialogContext?.type!=='cloud-storage-upgrade'||!localUpgradePrompt)return;
+  if(action==='cloud-storage-export'){download(localUpgradePrompt.text,`my-pace-owner-v1-recovery-${todayKey()}.json`);localUpgradePrompt.exported=true;return;}
+  if(!localUpgradePrompt.exported){formError('先に退避ファイルを保存し、そのファイルを確認してください。');return;}
+  legacyUpgradeApproved=localUpgradePrompt.text;closeDialog();
+  try{const initial=await cloud.init({resume:preferredMode!=='signed-out'});if(initial.state&&(initial.authenticated||preferredMode==='cloud')&&!['local','signed-out'].includes(preferredMode)){mode='cloud';if(initial.authenticated)rememberMode('cloud');state=validateState(initial.state);storageBlocked=false;}render();}
+  catch(error){legacyUpgradeApproved=null;toast(error.message==='INDEXEDDB_LEGACY_CHANGED_REVIEW_REQUIRED'?'旧データが別のタブで変わりました。更新していません。ほかのタブを閉じて、もう一度退避してから更新してください。':error.message);}
+  return;
+ }
+ if(commitPending)return;
+ if(action==='cloud-logout'&&(!cloudOperation||cloudOperation===loginAttempt?.operation||cloudOperation.kind==='sync')){await closeCloudView();return;}
+ if(cloudOperation)return;
+ if(action==='cloud-login'){await openCloudLogin();return;}
  if(action==='cloud-local'){
    const local=loadState();mode='local';rememberMode('local');state=local.state||createInitialState();legacyState=local.ok?structuredClone(state):null;storageBlocked=!local.ok;undoState=null;closeDialog();render();return;
  }
@@ -445,40 +555,15 @@ async function handleCloud(button){
      showDialog(`<div class="dialog-top"><h2 id="dialog-title">CSV のルート</h2><button class="icon-button" data-action="dialog-close" aria-label="閉じる">${icon('close')}</button></div>${routeMap(page.points,'CSV')}<p>${page.points.length} サンプルを表示。大きなルートは分割して読み込みます。ページ間の線は連結しません。</p><p class="hint">このデータから距離・ペースは算出していません。背景地図なし。</p>${page.nextCursor?'<button class="btn primary" data-action="cloud-route-next">次の区間を読む</button>':'<p>最後の区間です。</p>'}`,{type:'cloud-route',runId:id,nextCursor:page.nextCursor,revision:page.revision});
    }finally{cloudOperation=false;}return;
  }
- cloudOperation=true;
+ const operation={kind:action==='cloud-sync'?'sync':'mutation'};cloudOperation=operation;
  try{
    if(action==='cloud-sync'){await cloud.refreshSession({automatic:false});return;}
-   if(action==='cloud-logout'){
-     try{await cloud.logout();}finally{cloud.lock();const local=loadState();mode='local';rememberMode('signed-out');state=local.state||createInitialState();storageBlocked=!local.ok;undoState=null;closeDialog();render();}
-     toast('ログアウトしました。クラウドの表示を閉じました。端末内のキャッシュと未送信データは保持しています。');return;
-   }
    if(action.startsWith('cloud-resolve-')){
      if(dialogContext?.type!=='cloud-conflict')return;
      const context=dialogContext;await cloud.resolveConflict(context.key,action==='cloud-resolve-local'?'local':'remote',context.conflict);
      if(context===dialogContext)closeDialog();return;
    }
-   if(action==='cloud-login'){
-     showDialog('<div class="dialog-top"><h2 id="dialog-title">Google でログイン</h2><button class="icon-button" data-action="dialog-close" aria-label="閉じる">閉じる</button></div><p>オーナーの Google アカウントを選んでください。</p><div id="google-signin"></div><p id="form-error" class="form-error" hidden></p>',{type:'cloud-login'});
-     const context=dialogContext,seq=fileSequence;
-     const challenge=await cloud.login(),identity=await loadGoogleIdentity();
-     if(context!==dialogContext||seq!==fileSequence||!editor.open)return;
-     identity.initialize({client_id:challenge.clientId,nonce:challenge.nonce,callback:async response=>{
-       if(context!==dialogContext||seq!==fileSequence||!editor.open||cloudOperation)return;
-       cloudOperation=true;
-       try{const result=await cloud.completeLogin(response.credential,challenge.csrf);
-         if(context!==dialogContext||seq!==fileSequence)return;
-         if(result.provisioningRequired){formError(`オーナー設定が必要です。導入手順に従って、この Google の識別子をサーバー設定に登録してください: ${result.ownerSubject}`);return;}
-         if(result.authenticated){
-           const cached=cloud.state();
-           if(!cached){closeDialog();render();toast('ログインしました。クラウドの記録はまだ取得できていません。設定の Google Drive で同期状況を確認してください。');return;}
-           mode='cloud';rememberMode('cloud');state=validateState(cached);storageBlocked=false;undoState=null;closeDialog();render();
-           toast(cloud.view().error?'この端末に残っているクラウドの記録を開きました。設定の Google Drive で同期状況を確認してください。':'クラウドの記録を開きました。旧記録の移行は設定から確認できます。');
-         }
-       }catch(error){if(context===dialogContext)formError(error.message);}finally{cloudOperation=false;}
-     }});
-     identity.renderButton(editor.querySelector('#google-signin'),{theme:'outline',size:'large',text:'signin_with'});
-   }
- }finally{cloudOperation=false;}
+ }finally{releaseCloudOperation(operation);}
 }
 
 async function onClick(event) {
@@ -577,7 +662,7 @@ editor.addEventListener('submit',async event=> {
 }
 );
 editor.addEventListener('close',()=> {
-  if(!editor.open){dialogContext=null;++fileSequence;}
+  if(!editor.open){cancelLoginAttempt();dialogContext=null;++fileSequence;}
 }
 );
 window.addEventListener('hashchange',()=> {
@@ -609,6 +694,7 @@ window.addEventListener('storage',event=> {
   }
 }
 );
+document.addEventListener('focusout',()=>{queueMicrotask(()=>{if(advisoryRenderPending)render({advisory:true});});});
 document.addEventListener('visibilitychange',()=> {
   if(document.hidden)return;
   if(mode==='cloud')void cloud.refreshSession({automatic:true});
@@ -627,8 +713,8 @@ window.addEventListener('resize',()=>{
   if(capacity!==pageSize||habits!==habitSize){pageSize=capacity;habitSize=habits;render();}
 });
 render();
-try{const initial=await cloud.init({resume:preferredMode!=='signed-out'});if(initial.state&&(initial.authenticated||preferredMode==='cloud')&&!['local','signed-out'].includes(preferredMode)){mode='cloud';if(initial.authenticated)rememberMode('cloud');state=validateState(initial.state);storageBlocked=false;}}catch(error){toast('クラウド用の端末保存を利用できません。ローカルの記録はそのままです。');}finally{initializing=false;render();}
+try{const initial=await cloud.init({resume:preferredMode!=='signed-out'});if(initial.state&&(initial.authenticated||preferredMode==='cloud')&&!['local','signed-out'].includes(preferredMode)){mode='cloud';if(initial.authenticated)rememberMode('cloud');state=validateState(initial.state);storageBlocked=false;}}catch(error){toast(error.message==='INDEXEDDB_UPGRADE_APPROVAL_REQUIRED'?'旧データは更新していません。この端末の退避と確認が済むまで、クラウド保存形式の更新を待ちます。':['INDEXEDDB_BLOCKED_CLOSE_OTHER_TABS','INDEXEDDB_VERSION_CHANGED_RELOAD_REQUIRED','CLOUD_STATE_UNDISPLAYABLE'].includes(error.message)?cloudErrorText(error.message):'クラウド用の端末保存を利用できません。ローカルの記録はそのままです。');}finally{initializing=false;render();}
 
-const refreshTimer=setInterval(()=>{if(!document.hidden&&mode==='cloud'&&!commitPending&&!cloudOperation)void cloud.refreshSession({automatic:true});},60000);
+const refreshTimer=setInterval(()=>{if(!document.hidden&&mode==='cloud'&&!commitPending&&!cloudOperation)void cloud.refreshSession({automatic:true,poll:true});},60000);
 refreshTimer?.unref?.();
 window.addEventListener('pagehide',event=>{if(!event.persisted){clearInterval(refreshTimer);cloud.destroy();}});

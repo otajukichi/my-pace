@@ -13,10 +13,11 @@
     "test": "node scripts/test-all.mjs",
     "check": "node scripts/check.mjs",
     "build": "node scripts/build.mjs",
-    "verify": "npm run check && npm test && npm run build",
+    "verify": "npm run build:gas && npm run check:gas && npm run check && npm test && npm run build",
     "test:storage": "node --test storage/*.test.mjs",
     "test:heavy": "node scripts/test-all.mjs --heavy",
-    "build:gas": "node storage/build-gas.mjs && node scripts/build-gas.mjs"
+    "build:gas": "node storage/build-gas.mjs && node scripts/build-gas.mjs",
+    "check:gas": "node storage/build-gas.mjs --check && node scripts/build-gas.mjs --check"
   },
   "dependencies": {
     "google-auth-library": "10.9.1"

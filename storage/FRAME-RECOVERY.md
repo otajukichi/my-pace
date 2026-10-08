@@ -1,3 +1,5 @@
+> 過去の実装・検証資料です。本文中の手順・時間予算・制限・試験数は当時の記録で、今回の導入やロールバックを指示しません。現在の手順は [../PRACTICAL-SYNC-INSTALL.md](../PRACTICAL-SYNC-INSTALL.md)、設計は ../PRACTICAL-SYNC-DESIGN.md を優先してください。旧インストーラー、初期 bootstrap、ストア移動、秘密情報・OAuth・公開権限・トリガーの変更を今回の更新で繰り返さないでください。
+
 # Short web reads after interrupted manual import
 
 This patch addresses a reproducible local failure mode, not a confirmed diagnosis of a specific live Drive history. Authentication success and `STORE_YIELD` distinguish the storage work budget from Google login rejection. The web endpoint still has a 20-second between-call work budget, the server request still times out after 25 seconds, and Vercel still permits at most 60 seconds. A slow in-flight Google call is not interruptible by the between-call check.

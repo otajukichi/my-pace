@@ -1,3 +1,5 @@
+> 過去の実装・検証資料です。本文中の手順・時間予算・制限・試験数は当時の記録で、今回の導入やロールバックを指示しません。現在の手順は [../PRACTICAL-SYNC-INSTALL.md](../PRACTICAL-SYNC-INSTALL.md)、設計は ../PRACTICAL-SYNC-DESIGN.md を優先してください。旧インストーラー、初期 bootstrap、ストア移動、秘密情報・OAuth・公開権限・トリガーの変更を今回の更新で繰り返さないでください。
+
 > Current recovery revision: historical absolute4,096-lifetime-cap descriptions below are superseded by `BOUNDED-INDEX-RECOVERY.md`. Authenticated stores traverse INDEX history in durable bounded64-link slices with no lifetime checkpoint halt. Only the latest discovered checkpoint publication/manifest is mandatory; intermediate retired publications are not reopened. Current cadence/budget and idle behavior are in `OWNER-SCHEDULING.md`. Older performance results remain historical evidence.
 
 # Drive-only storage integration milestone

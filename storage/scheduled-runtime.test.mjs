@@ -83,3 +83,13 @@ test('scheduled work reserves closing calls before the hard call cap',()=>{
  meter.globals.Drive.Files.get('source');meter.globals.Drive.Files.get('source');assert.throws(()=>meter.globals.Drive.Files.get('source'),/OWNER_BUDGET_YIELD/);
  assert.equal(meter.limitRemaining(1),3);meter.globals.Drive.Files.get('source');assert.equal(meter.usage().calls,3);assert.throws(()=>meter.globals.Drive.Files.get('source'),/OWNER_BUDGET_YIELD/);
 });
+
+test('metered fetchAll reserves every subrequest before launch and never bypasses closing call allowance',()=>{
+ const f=fixture();let batches=0;f.globals.UrlFetchApp.fetchAll=requests=>{batches++;return requests.map(()=>({}));};const meter=meteredGas(f.globals,{limits:{...OWNER_LIMITS,calls:3},reserveCalls:1});
+ assert.equal(meter.globals.UrlFetchApp.fetchAll([{},{}]).length,2);assert.equal(meter.usage().calls,2);assert.equal(batches,1);assert.throws(()=>meter.globals.UrlFetchApp.fetchAll([{}]),/OWNER_BUDGET_YIELD/);assert.equal(batches,1);assert.equal(meter.usage().calls,2);
+ meter.limitRemaining(1);assert.throws(()=>meter.globals.UrlFetchApp.fetchAll([{},{}]),/OWNER_BUDGET_YIELD/);assert.equal(batches,1);meter.globals.UrlFetchApp.fetchAll([{}]);assert.equal(meter.usage().calls,3);assert.equal(batches,2);
+});
+
+test('a thrown fetchAll still consumes every launched subrequest and is never retried by the meter',()=>{
+ const f=fixture();let calls=0;f.globals.UrlFetchApp.fetchAll=()=>{calls++;throw Error('ambiguous network failure');};const meter=meteredGas(f.globals,{limits:{...OWNER_LIMITS,calls:5}});assert.throws(()=>meter.globals.UrlFetchApp.fetchAll([{},{}]),/ambiguous network failure/);assert.equal(calls,1);assert.equal(meter.usage().calls,2);
+});

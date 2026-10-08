@@ -8,7 +8,7 @@ function memory(){let value={format:1,store:null,generation:null,epoch:null,revi
 function network(f){const n={failure:null,status:503,paths:[],actions:[],commands:[],hold:null};n.fetcher=async(path,opts)=>{
  n.paths.push(path);
  if(path==='/api/auth/session'||path==='/api/auth/login')return Response.json({ok:true,authenticated:true,csrf:'test'});
- const {action,payload}=JSON.parse(opts.body);n.actions.push(action);
+ const {action,payload}=JSON.parse(opts.body);if(['pull','recover'].includes(action))return Response.json({ok:false,error:'ACTION_INVALID'},{status:400});n.actions.push(action);
  if(n.hold)await n.hold(action);
  if(n.failure)return Response.json({ok:false,error:n.failure},{status:n.status});
  let result;
@@ -19,7 +19,7 @@ function network(f){const n={failure:null,status:503,paths:[],actions:[],command
  return Response.json({ok:true,result});
 };return n;}
 
-for(const code of ['STORE_YIELD','WRITER_RECOVERY_SETUP_REQUIRED'])test(`${code} pauses automatic calls without losing edits; manual success clears pause`,async()=>{
+for(const code of ['WRITER_RECOVERY_SETUP_REQUIRED'])test(`${code} pauses automatic calls without losing edits; manual success clears pause`,async()=>{
  const f=fixture(),storage=memory(),n=network(f);let now=0;const a=createCloudSync({storage,fetcher:n.fetcher,now:()=>now});await a.init();
  n.failure=code;await a.refreshSession({automatic:true});assert.equal(a.view().automaticPaused,true);assert.equal(a.view().verified,false);
  const at=n.paths.length;
@@ -37,8 +37,8 @@ for(const code of ['STORE_YIELD','WRITER_RECOVERY_SETUP_REQUIRED'])test(`${code}
  const recovered=n.paths.length;await a.refreshSession({automatic:true});assert(n.paths.length>recovered);a.destroy();
 });
 
-test('ordinary recovery failures back off exponentially with a fifteen-minute cap and allow manual retry',async()=>{
- const f=fixture(),n=network(f);let now=100;const a=createCloudSync({storage:memory(),fetcher:n.fetcher,now:()=>now});await a.init();n.failure='WRITER_RECOVERY_PENDING';
+for(const failure of ['STORE_YIELD','WRITER_BUSY','WRITER_RECOVERY_PENDING'])test(`${failure} backs off exponentially with a fifteen-minute cap and allows manual retry`,async()=>{
+ const f=fixture(),n=network(f);let now=100;const a=createCloudSync({storage:memory(),fetcher:n.fetcher,now:()=>now});await a.init();n.failure=failure;
  for(const delay of [60000,120000,240000,480000,900000,900000]){
   await a.refreshSession({automatic:true});assert.equal(a.view().automaticPaused,false);assert.equal(a.view().retryAt,now+delay);
   const at=n.paths.length;now+=delay-1;await a.refreshSession({automatic:true});assert.equal(n.paths.length,at);
@@ -54,7 +54,7 @@ test('overlapping automatic events and explicit retry join one in-flight request
  const again=[a.refreshSession({automatic:true}),a.refreshSession({automatic:true}),a.refreshSession({automatic:false}),a.sync()];
  assert.deepEqual(n.actions,['snapshot']);assert.equal(n.paths.filter(p=>p==='/api/auth/session').length,1);
  n.failure='STORE_YIELD';release();await Promise.all([first,...again]);
- assert.deepEqual(n.actions,['snapshot']);assert.equal(a.view().error,'STORE_YIELD');assert.equal(a.view().automaticPaused,true);
+ assert.deepEqual(n.actions,['snapshot']);assert.equal(a.view().error,'STORE_YIELD');assert.equal(a.view().automaticPaused,false);assert(a.view().retryAt>0);
  n.hold=null;n.failure=null;await a.refreshSession();assert.equal(n.actions.filter(x=>x==='snapshot').length,2);assert.equal(a.view().automaticPaused,false);a.destroy();
 });
 
@@ -65,7 +65,7 @@ test('a new durable edit during manual recovery is drained after its in-flight s
 });
 
 test('legacy 400 recovery replies never turn a pending command into a conflict',async()=>{
- for(const code of ['STORE_YIELD','WRITER_RECOVERY_PENDING','WRITER_RECOVERY_SETUP_REQUIRED']){
+ for(const code of ['STORE_YIELD','WRITER_BUSY','WRITER_RECOVERY_PENDING','WRITER_RECOVERY_SETUP_REQUIRED','SYNC_V2_MIGRATION_REQUIRED','WRITER_FORMAT_FENCE_REQUIRED','WRITER_FRAME_INVALID']){
   const f=fixture(),n=network(f),storage=memory(),a=createCloudSync({storage,fetcher:n.fetcher});await a.init();n.failure=code;n.status=400;
   await a.commit(a.state(),{...a.state(),wake:{'2026-10-06':'06:55'}});await a.sync();
   assert.equal(a.view().pending,1);assert.equal(a.view().conflicts.length,0);assert.equal((await storage.read()).outbox[0].status,'pending');assert.equal(a.view().error,code);a.destroy();
@@ -75,7 +75,7 @@ test('legacy 400 recovery replies never turn a pending command into a conflict',
 test('zero pending items, authentication, and cached state do not claim saved during recovery',async()=>{
  const f=fixture(),n=network(f),statuses=[],a=createCloudSync({storage:memory(),fetcher:n.fetcher,onChange:view=>statuses.push(cloudStatus(view,'cloud'))});
  n.failure='STORE_YIELD';await a.init();assert.equal(a.view().ready,false);assert.equal(a.view().pending,0);assert.equal(a.view().authenticated,true);
- assert.match(cloudStatus(a.view(),'cloud'),/復旧を要確認.*自動同期は停止中/);assert.match(cloudErrorText(a.view().error),/今すぐ同期/);assert.match(renderCloudPanel(a.view(),'cloud'),/data-action="cloud-sync"/);
+ assert.match(cloudStatus(a.view(),'cloud'),/Drive の記録をまだ確認できていません/);assert.match(cloudErrorText(a.view().error),/今すぐ同期/);assert.match(renderCloudPanel(a.view(),'cloud'),/data-action="cloud-sync"/);
  await a.refreshSession({automatic:true});await a.refreshSession();assert(statuses.every(text=>!text.includes('Google Drive に保存済み')));
  assert.doesNotMatch(cloudStatus({conflicts:[],pending:0,authenticated:true,ready:false,error:null},'cloud'),/保存済み/);
  a.destroy();

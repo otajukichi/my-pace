@@ -17,27 +17,27 @@ function cachedFixture(cache={mode:'lock-phase'}) {
 
 test('protocol positive cache is opt-in, with no effect until a phase starts',()=>{
  for(const option of [false,true,{mode:'lock-phase'}]){
-  const f=cachedFixture(option);f.io.endReadPhase();f.add('one');f.io.readFile('one');f.io.readFile('one');assert.equal(f.count(),4);
+  const f=cachedFixture(option);f.io.endReadPhase();f.add('one');f.io.readFile('one');f.io.readFile('one');assert.equal(f.count(),6);
  }
- const f=cachedFixture(false);f.add('one');f.io.readFile('one');f.io.readFile('one');assert.equal(f.count(),4);
+ const f=cachedFixture(false);f.add('one');f.io.readFile('one');f.io.readFile('one');assert.equal(f.count(),6);
 });
 test('lock-phase cache stores only complete verified positive reads and returns defensive copies',()=>{
- const f=cachedFixture();f.add('one');const first=f.io.readFile('one');first[0]=99;const second=f.io.readFile('one');assert.deepEqual(second,Uint8Array.of(1,2));second[1]=99;assert.deepEqual(f.io.readFile('one'),Uint8Array.of(1,2));assert.equal(f.count(),2);
+ const f=cachedFixture();f.add('one');const first=f.io.readFile('one');first[0]=99;const second=f.io.readFile('one');assert.deepEqual(second,Uint8Array.of(1,2));second[1]=99;assert.deepEqual(f.io.readFile('one'),Uint8Array.of(1,2));assert.equal(f.count(),3);
 });
 test('strict byte mode revalidates privacy metadata even inside the same phase',()=>{
- const f=cachedFixture(true),entry=f.add('one');f.io.readFile('one');f.io.readFile('one');assert.equal(f.count(),3);entry.meta.shared=true;assert.throws(()=>f.io.readFile('one'),/STORE_METADATA_MISMATCH/);assert.equal(f.count(),4);
+ const f=cachedFixture(true),entry=f.add('one');f.io.readFile('one');f.io.readFile('one');assert.equal(f.count(),4);entry.meta.shared=true;assert.throws(()=>f.io.readFile('one'),/STORE_METADATA_MISMATCH/);assert.equal(f.count(),5);
 });
 test('strict byte mode downloads changed version or checksum again',()=>{
- for(const key of ['version','md5Checksum']){const f=cachedFixture(true),entry=f.add('one');entry.meta[key]=key==='version'?'1':'a'.repeat(32);f.io.readFile('one');entry.meta[key]=key==='version'?'2':'b'.repeat(32);entry.bytes[0]=3;assert.deepEqual(f.io.readFile('one'),Uint8Array.of(3,2));assert.equal(f.count(),4);}
+ for(const key of ['version','md5Checksum']){const f=cachedFixture(true),entry=f.add('one');entry.meta[key]=key==='version'?'1':'a'.repeat(32);f.io.readFile('one');entry.meta[key]=key==='version'?'2':'b'.repeat(32);entry.bytes[0]=3;assert.deepEqual(f.io.readFile('one'),Uint8Array.of(3,2));assert.equal(f.count(),5);}
 });
 test('missing slots are never cached and later positive visibility is discovered',()=>{
- const f=cachedFixture();assert.equal(f.io.readFile('one'),null);assert.equal(f.io.readFile('one'),null);f.add('one');assert.deepEqual(f.io.readFile('one'),Uint8Array.of(1,2));assert.equal(f.count(),4);
+ const f=cachedFixture();assert.equal(f.io.readFile('one'),null);assert.equal(f.io.readFile('one'),null);f.add('one');assert.deepEqual(f.io.readFile('one'),Uint8Array.of(1,2));assert.equal(f.count(),5);
 });
 test('failed metadata and media responses cannot become cached success',()=>{
- const f=cachedFixture(),entry=f.add('one');entry.meta.shared=true;assert.throws(()=>f.io.readFile('one'),/STORE_METADATA_MISMATCH/);entry.meta.shared=false;entry.bytes=Uint8Array.of(1);assert.throws(()=>f.io.readFile('one'),/STORE_RANGE_INVALID/);entry.bytes=Uint8Array.of(1,2);assert.deepEqual(f.io.readFile('one'),entry.bytes);assert.equal(f.count(),5);
+ const f=cachedFixture(),entry=f.add('one');entry.meta.shared=true;assert.throws(()=>f.io.readFile('one'),/STORE_METADATA_MISMATCH/);entry.meta.shared=false;entry.bytes=Uint8Array.of(1);assert.throws(()=>f.io.readFile('one'),/STORE_RANGE_INVALID/);entry.bytes=Uint8Array.of(1,2);assert.deepEqual(f.io.readFile('one'),entry.bytes);assert.equal(f.count(),6);
 });
 test('cache hits obey narrower caller bounds, lock ownership and current budget',()=>{
- const f=cachedFixture();f.add('one');f.io.readFile('one');assert.throws(()=>f.io.readFile('one',1),/STORE_SIZE_INVALID/);f.state.allowed=false;assert.throws(()=>f.io.readFile('one'),/STORE_YIELD/);f.state.allowed=true;f.lock.releaseLock();assert.throws(()=>f.io.readFile('one'),/STORE_LOCK_REQUIRED/);assert.equal(f.io._readCache.size,0);assert.equal(f.count(),2);
+ const f=cachedFixture();f.add('one');f.io.readFile('one');assert.throws(()=>f.io.readFile('one',1),/STORE_SIZE_INVALID/);f.state.allowed=false;assert.throws(()=>f.io.readFile('one'),/STORE_YIELD/);f.state.allowed=true;f.lock.releaseLock();assert.throws(()=>f.io.readFile('one'),/STORE_LOCK_REQUIRED/);assert.equal(f.io._readCache.size,0);assert.equal(f.count(),3);
 });
 test('entry-count cap evicts least recently used positive file',()=>{
  const f=cachedFixture({mode:'lock-phase',maxEntries:2,maxBytes:8});for(const id of ['one','two','three'])f.add(id);f.io.readFile('one');f.io.readFile('two');f.io.readFile('one');f.io.readFile('three');assert.equal(f.io._readCache.size,2);assert.equal(f.io._readCacheBytes,4);f.io.readFile('one');assert.equal(f.count('one'),2);f.io.readFile('two');assert.equal(f.count('two'),4);
@@ -46,10 +46,10 @@ test('aggregate byte cap evicts before retaining another file',()=>{
  const f=cachedFixture({mode:'lock-phase',maxEntries:10,maxBytes:3});f.add('one');f.add('two');f.io.readFile('one');f.io.readFile('two');assert.equal(f.io._readCache.size,1);assert.equal(f.io._readCacheBytes,2);f.io.readFile('one');assert.equal(f.count('one'),4);
 });
 test('files larger than total cache byte cap remain uncached',()=>{
- const f=cachedFixture({mode:'lock-phase',maxBytes:1});f.add('one');f.io.readFile('one');f.io.readFile('one');assert.equal(f.io._readCacheBytes,0);assert.equal(f.count(),4);
+ const f=cachedFixture({mode:'lock-phase',maxBytes:1});f.add('one');f.io.readFile('one');f.io.readFile('one');assert.equal(f.io._readCacheBytes,0);assert.equal(f.count(),5);
 });
 test('ending or restarting a phase drops every retained byte',()=>{
- const f=cachedFixture();f.add('one');f.io.readFile('one');f.io.endReadPhase();assert.equal(f.io._readCache.size,0);assert.equal(f.io._readCacheBytes,0);f.io.beginReadPhase();f.io.readFile('one');f.io.beginReadPhase();f.io.readFile('one');assert.equal(f.count(),6);
+ const f=cachedFixture();f.add('one');f.io.readFile('one');f.io.endReadPhase();assert.equal(f.io._readCache.size,0);assert.equal(f.io._readCacheBytes,0);f.io.beginReadPhase();f.io.readFile('one');f.io.beginReadPhase();f.io.readFile('one');assert.equal(f.count(),9);
 });
 test('create result never seeds cache, and same-ID create invalidates earlier readback',()=>{
  const f=cachedFixture();f.io.createFile('one',Uint8Array.of(1,2),'frame');assert.equal(f.io._readCache.size,0);f.io.readFile('one');assert.equal(f.count('one'),2);assert.throws(()=>f.io.createFile('one',Uint8Array.of(3,4),'frame'),/conflict/);f.io.readFile('one');assert.equal(f.count('one'),4);
@@ -61,12 +61,12 @@ for(const cache of [null,0,'yes',[],{mode:'all'},{maxBytes:0},{maxBytes:8388609}
 
 function runtimeSetup(){const f=runtimeFixture();f.config.protocolReadCache={mode:'lock-phase'};const r=createGasImportRuntime(f.globals,f.config);r.locked(()=>r.writer.bootstrap());return {f,r};}
 test('runtime invalidates cache at release, reacquisition and exceptional exit',()=>{
- const {f,r}=runtimeSetup();const before=f.calls.length;r.locked(()=>{r.writer.readBootstrap();r.locked(()=>r.writer.readBootstrap());});assert.equal(f.calls.length-before,2);assert.equal(r.writer.io._readCache.size,0);
+ const {f,r}=runtimeSetup();const before=f.calls.length;r.locked(()=>{r.writer.readBootstrap();r.locked(()=>r.writer.readBootstrap());});assert.equal(f.calls.length-before,3);assert.equal(r.writer.io._readCache.size,0);
  assert.throws(()=>r.locked(()=>{r.writer.readBootstrap();throw Error('stop');}),/stop/);assert.equal(f.lock.hasLock(),false);assert.equal(r.writer.io._readCache.size,0);
  f.files.get('anchor').meta.shared=true;assert.throws(()=>r.locked(()=>r.writer.readBootstrap()),/STORE_METADATA_MISMATCH/);assert.equal(f.lock.hasLock(),false);
 });
 test('externally acquired lock never enables a runtime cache it cannot invalidate',()=>{
- const {f,r}=runtimeSetup();f.lock.tryLock();const before=f.calls.length;r.locked(()=>r.writer.readBootstrap());r.locked(()=>r.writer.readBootstrap());assert.equal(f.calls.length-before,4);assert.equal(r.writer.io._readCache.size,0);f.lock.releaseLock();
+ const {f,r}=runtimeSetup();f.lock.tryLock();const before=f.calls.length;r.locked(()=>r.writer.readBootstrap());r.locked(()=>r.writer.readBootstrap());assert.equal(f.calls.length-before,6);assert.equal(r.writer.io._readCache.size,0);f.lock.releaseLock();
 });
 test('corrupted protocol content is re-read and rejected on the next lock phase',()=>{
  const {f,r}=runtimeSetup();r.locked(()=>r.writer.readBootstrap());f.files.get('anchor').bytes[0]=0;assert.throws(()=>r.locked(()=>r.writer.readBootstrap()),/WRITER_FILE_INVALID/);assert.equal(r.writer.io._readCache.size,0);
@@ -86,4 +86,4 @@ test('failed recovery of an uncached successor still invalidates writer state',(
  const {f,r}=runtimeSetup();r.locked(()=>{r.writer.recoveryBarrier();const next=r.writer.status().nextSlotId,fetch=f.globals.UrlFetchApp.fetch;f.globals.UrlFetchApp.fetch=(url,o)=>{if(new URL(url).pathname.endsWith('/'+next))throw Error('outage');return fetch(url,o);};assert.throws(()=>r.writer.recoveryBarrier(),/STORE_READ_UNRESOLVED/);assert.throws(()=>r.writer.status(),/WRITER_RECOVERY_REQUIRED/);});
 });
 
-test('strict byte cache refuses absent or malformed immutable revision evidence',()=>{for(const patch of [{version:undefined},{md5Checksum:undefined},{version:'0'},{version:'x'},{md5Checksum:'abc'}]){const f=cachedFixture(true),entry=f.add('one');Object.assign(entry.meta,patch);f.io.readFile('one');f.io.readFile('one');assert.equal(f.count(),4);assert.equal(f.io._readCache.size,0);}});
+test('strict byte cache refuses absent or malformed immutable revision evidence',()=>{for(const patch of [{version:undefined},{md5Checksum:undefined},{version:'0'},{version:'x'},{md5Checksum:'abc'}]){const f=cachedFixture(true),entry=f.add('one');Object.assign(entry.meta,patch);f.io.readFile('one');f.io.readFile('one');assert.equal(f.count(),5);assert.equal(f.io._readCache.size,0);}});

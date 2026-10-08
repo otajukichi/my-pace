@@ -8,6 +8,9 @@ export const INDEX_SCAN_HINT_PROTOCOL='mypace-index-scan-hint-v1';
 // Owner recovery attests a fully verified immutable frame prefix. Roots and
 // receipts remain in the referenced immutable frame, never in mutable advice.
 export const FRAME_SCAN_HINT_PROTOCOL='mypace-frame-scan-hint-v1';
+// Emitted only by the managed runtime after full recovery, or after extending
+// an exact already-attested prefix. Distinct from older generic frame advice.
+export const ATTESTED_FRAME_HINT_PROTOCOL='mypace-attested-frame-prefix-v1';
 export const CHECKPOINT_HINT_MAX_BYTES=4096;
 export const CHECKPOINT_HINT_DOMAIN='MyPace/Drive/checkpoint-hint/HMAC-SHA256/v1\n';
 const hash=x=>typeof x==='string'&&/^[0-9a-f]{64}$/.test(x);

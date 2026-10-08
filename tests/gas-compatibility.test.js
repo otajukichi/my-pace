@@ -37,7 +37,7 @@ test('portable UTF-8 byte count matches Encoding API including lone surrogates',
 });
 test('generated domain and codec round trip habits and backups in restricted context',()=>{
  // Expose private bundle modules only in this test; execute their real generated code.
- const source=fs.readFileSync(new URL('../gas/SecureSync.gs',import.meta.url),'utf8').replace('return Object.assign({},m2,m3);','return Object.assign({},m0,m1,m2,m3);');
+ const source=fs.readFileSync(new URL('../gas/SecureSync.gs',import.meta.url),'utf8').replace(/return Object\.assign\(\{\},(m\d+(?:,m\d+)*)\);/,'return Object.assign({},m0,m1,$1);');
  const context=restrictGasContext(vm.createContext({}));vm.runInContext(source,context);
  const result=vm.runInContext(`(()=>{const a=MyPaceSecureSync,s=a.createInitialState();s.habits=[{id:'walk',name:'散歩🌱',type:'check',unit:'',target:1,archived:false}];s.habitLogs={walk:{'2026-10-06':false,'2026-10-07':true}};s.diary={'2026-10-07':{text:'日本語🌱',mood:'calm'}};const copy=a.entitiesToState(a.stateToEntities(s));const backup=a.parseBackup(a.serializeBackup(copy));const next=a.clone(copy);next.habitLogs.walk['2026-10-07']=false;return JSON.stringify({s,copy,backup,diff:a.diffEntities(copy,next)});})()`,context);
  const r=JSON.parse(result);assert.deepEqual(r.copy,r.s);assert.deepEqual(r.backup,r.s);assert.equal(r.diff.length,1);assert.equal(r.diff[0].value,false);

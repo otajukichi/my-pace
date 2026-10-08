@@ -4,6 +4,7 @@
 // execution identity and immutable script/store pins remain authoritative.
 import {OWNER_STORE_PROPERTY,parsePinnedOwnerStoreConfig} from './owner-bootstrap.mjs';
 import {createGasCheckpointHintCodec} from './checkpoint-hint.mjs';
+import {createGasPreparationCodec} from './preparation-codec.mjs';
 import {createGasDiscoveryStateCodec} from './discovery-state.mjs';
 import {createOwnerScheduler,OWNER_LIMITS} from './owner-scheduler.mjs';
 export const SCHEDULED_OWNER_EMAIL='yakitorihanbagu0412@gmail.com';
@@ -45,7 +46,7 @@ function guardedConfig(globals,event){
  // properties. Legacy stores/no secret keep conservative anchor recovery.
  if(config.checkpointHintId||config.discoveryStateId){
   const secret=PropertiesService.getScriptProperties().getProperty('MYPACE_WRITER_SECRET');
-  if(secret!==null&&secret!==undefined&&secret!=='')return {...config,...(config.checkpointHintId?{checkpointHintCodec:createGasCheckpointHintCodec({Utilities:globals.Utilities,secret})}:{}),...(config.discoveryStateId?{discoveryStateCodec:createGasDiscoveryStateCodec({Utilities:globals.Utilities,secret})}:{})};
+  if(secret!==null&&secret!==undefined&&secret!=='')return {...config,...(config.checkpointHintId?{checkpointHintCodec:createGasCheckpointHintCodec({Utilities:globals.Utilities,secret}),preparationCodec:createGasPreparationCodec({Utilities:globals.Utilities,secret})}:{}),...(config.discoveryStateId?{discoveryStateCodec:createGasDiscoveryStateCodec({Utilities:globals.Utilities,secret})}:{})};
  }
  return config;
 }

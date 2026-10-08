@@ -34,5 +34,9 @@
   "about.html",
   "privacy.html",
   "terms.html",
-  "src/info.css"
+  "src/info.css",
+  "src/lib/cloud-pull.js",
+  "src/lib/cloud-state-patches.js",
+  "src/lib/cloud-local-storage.js",
+  "src/lib/cloud-projection.js"
 ]
