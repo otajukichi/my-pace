@@ -14,3 +14,16 @@ Baseline: delivered STORE_YIELD repair, remote commit 4ff0b1c.
 Package status: qualified-release. No deployment or owner activation by this installer.
 The Drive format change requires separate owner approval and cannot be undone by local rollback.
 Real browser and live GAS/Drive qualification are separate from synthetic tests.
+
+2026-10-08 JST same-Drive incremental backup source addition.
+Baseline: exact delivered practical-sync stage, remote commit 43f5edda1101c6bad18da1f731311d333f0c52d3.
+Owner-only initial snapshot, isolated reconstruction/read-write verification, selected historical snapshot recovery, normal application JSON export, and explicit approximate 03:00 Asia/Tokyo trigger installation.
+No frontend migration, production-store switch, source deletion, credential change or trigger installation occurs on source apply/save.
+See BACKUP-DESIGN.md for scope, nightly recovery-point interval, raw CSV/local-only exclusions, capacity and production-cutover limitations.
+Generated bundles and SHA-256 inventory belong to this exact source release. Real Google backup/restore/schedule qualification remains owner-operated.
+
+2026-10-08 JST backup restore continuation correction: preserve persisted isolated targets, eliminate repeated bootstrap/activation recovery for established jobs, use lock-scoped protocol cache, and expose restore progress. Exact previous backup package 08453fc2d061634a5862 is the source baseline. No production reset, snapshot reset, trigger or deployment is performed by this source patch.
+
+2026-10-09 JST backup verification-cost repair: bounded per-lock verification cache, fixed target view, batched durable progress, one-invocation OAuth reuse and request-free counters. Existing restore jobs resume; no live restore, production switch or schedule activation. See BACKUP-DESIGN.md.
+
+2026-10-09 backup schedule authorization correction: add explicit script.scriptapp scope for the owner-only trigger APIs; preserve existing scopes. Owner consent remains required in the live project. Generated GAS is unchanged. See BACKUP-DESIGN.md.

@@ -775,6 +775,20 @@ function createPublicServices({runtime,domain,reader,appSync,deadlineMs,now=()=>
 
 return {safeRecoveryProgress,createPublicServices};})();
 const m7=(function(){
+// Owner-only export utility. No public dispatcher route or Drive operations.
+const {entitiesToState,stateToEntities,canonical}=m1;
+const {serializeBackup,parseBackup}=m0;
+function exportRecoveryAppJSON(values){
+ if(!values||typeof values!=='object'||Array.isArray(values))throw Error('BACKUP_EXPORT_VALUES_INVALID');
+ const state=entitiesToState(values),roundTrip=stateToEntities(state);
+ for(const key of Object.keys(values))if(!Object.prototype.hasOwnProperty.call(roundTrip,key)||canonical(roundTrip[key])!==canonical(values[key]))throw Error('BACKUP_EXPORT_RECORD_MISMATCH');
+ const result=serializeBackup(state);
+ // Exact existing importer contract; never invent a superficially similar file.
+ parseBackup(result);return result;
+}
+
+return {exportRecoveryAppJSON};})();
+const m8=(function(){
 const {safeRecoveryProgress}=m6;
 const {canonical}=m1;
 const fail=code=>{const e=Error(code);e.code=code;throw e;};
@@ -806,4 +820,4 @@ function createCursorCodec({secret,hmac,encode,decode,now=()=>Date.now(),ttlMs=6
 }
 
 return {createSignedDispatcher,createCursorCodec};})();
-return Object.assign({},m3,m4,m5,m6,m7);})();
+return Object.assign({},m3,m4,m5,m6,m7,m8);})();
