@@ -2,10 +2,6 @@ import  {
   e,icon,dayLabel
 }
 from './lib/ui.js';
-import  {
-  routeMap
-}
-from './views/running.js';
 export function dialogShell(title, content, footer = '', subtitle = '')  {
   return `<div class="dialog-top"><div><h2 id="dialog-title">${e(title)}</h2>${subtitle?`<p>${e(subtitle)}</p>`:''}</div><button class="icon-button" type="button" data-action="dialog-close" aria-label="閉じる">${icon('close')}</button></div>${content}<p id="form-error" class="form-error" role="alert" hidden></p>${footer}`;
 }
@@ -15,20 +11,6 @@ export function wakeDialog(date,time)  {
 }
 export function targetDialog(target)  {
   return dialogShell('朝の目安',`<form data-form="target"><p class="dialog-description">気が向いたら、目安の時間を。空欄で保存すると解除できます。</p><label class="field">起床の目安（任意）<input name="target" type="time" value="${e(target||'')}" autofocus></label>${actions()}</form>`);
-}
-export function runDialog(run, date, today, warnings=[])  {
-  const value=run|| {
-  }
-  ;
-  return dialogShell(run?.id?'ランニングを編集':'ランニングを記録',`<form data-form="run">
-    <input type="hidden" name="id" value="${e(value.id||'')}">
-    <label class="field">走った日<input name="date" type="date" value="${e(value.date||date)}" max="${today}" min="1900-01-01" required></label>
-    <div class="form-grid"><label class="field">距離（km）<input name="distance" type="number" min="0.001" max="10000" step="any" inputmode="decimal" value="${value.distanceKm?e(value.distanceKm):''}" placeholder="5.00" ${value.points?.length && value.distanceKm >= 0.001?'readonly':''} required></label><div class="field"><span>走行時間</span><div class="duration-fields"><label><input name="minutes" type="number" min="0" max="44640" step="1" inputmode="numeric" value="${value.durationSec?Math.floor(value.durationSec/60):''}" placeholder="30" required><span>分</span></label><label><input name="seconds" type="number" min="0" max="59" step="1" inputmode="numeric" value="${value.durationSec?Math.round(value.durationSec%60):0}" required><span>秒</span></label></div></div></div>
-    <label class="field">ひとこと（任意）<textarea name="note" maxlength="2000" rows="3" placeholder="朝の空気が、気持ちよかった。">${e(value.note||'')}</textarea></label>
-    ${value.points?.length?`<div class="gpx-preview">${routeMap(value.points)}<p class="hint">GPX の点から計算した距離です。時間は各区間内の経過時間の合計です。区間の間隔は含みません。</p></div>`:''}
-    ${warnings.length?`<p class="hint warning">${warnings.map(e).join('<br>')}</p>`:''}
-    ${actions('保存する',value.id?'<button class="text-link danger" type="button" data-action="run-delete">削除</button>':'')}
-  </form>`);
 }
 export function habitDialog(habit)  {
   const h=habit|| {

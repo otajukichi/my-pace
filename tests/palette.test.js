@@ -256,7 +256,7 @@ test('native progress pseudo-elements have explicit colors and garden artwork is
   assert.doesNotMatch(palette,/(?:^|\})\s*svg\s*\{[^}]*(?:fill|stroke):/);
 });
 
-test('record workspaces contain actual charts and no fake landscape decorations',()=>{
+test('record workspaces show supported data visuals without fake landscape decorations',()=>{
   const state=createInitialState(),date='2026-10-06';
   for(const render of [renderDashboard,renderWake,renderRunning])for(const populated of [false,true]){
     if(populated){state.wake[date]='06:30';state.runs=[{id:'r',date,distanceKm:5,durationSec:1800,points:[],note:''}];}
@@ -264,7 +264,12 @@ test('record workspaces contain actual charts and no fake landscape decorations'
     assert.doesNotMatch(markup,/class="(?:home-sun|sun-illustration|trail-art)"/);
   }
   assert.ok(renderWake({state,date,today:date}).includes(wakeChart(state,7,date)));
-  assert.ok(renderRunning({state,date,today:date}).includes(runChart(state,7,date)));
+  const before=structuredClone(state),daily={schema:1,store:'palette-store',generation:'palette-generation',date,status:'ready',hash:'prepared-hash',pending:false,summary:{distanceMeters:2345,durationSeconds:1234,averageSpeedKmh:6.8},segments:[{sourceKey:'accepted-file',points:[[35,139],[35.001,139.001]],colors:['#49a677']}],quality:[],notice:null};
+  const running=renderRunning({state,date,today:date,dailyView:{status:'ready',daily}});
+  for(const label of ['DISTANCE','AVG SPEED','DURATION'])assert.ok(running.includes(label));
+  assert.match(running,/2\.35<small>km/);assert.match(running,/6\.8<small>km\/h/);assert.match(running,/00:20:34/);assert.match(running,/data-route-map=/);
+  assert.doesNotMatch(running,/run-bar|run-chart-panel|running-trend|run-add|run-edit|gpx-import/);
+  assert.deepEqual(state,before,'prepared display does not rewrite preserved legacy records');
 });
 
 test('line-only chart and imported-route paths explicitly suppress SVG default polygon fills',()=>{

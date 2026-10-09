@@ -29,8 +29,11 @@ test('bounded simplification retains gaps and dateline adjacency',()=>{
  const d=buildRouteModel([p(0,undefined,{lon:179.999}),p(0,undefined,{lon:-179.999})]);assert.ok(Math.abs(d.edges[0].b[1]-d.edges[0].a[1])<.01);
  assert.equal(buildRouteModel([]).edges.length,0);assert.equal(buildRouteModel([p(0,0)]).locations.length,1);
 });
-test('day view exposes GPX map and all route entries plus CSV start-date association',()=>{
- const state=createInitialState();state.runs=Array.from({length:5},(_,i)=>({id:`run-${i}`,date:'2026-10-09',distanceKm:1,durationSec:300,points:[p(0,0),p(.001,40)]}));
- const html=renderRunning({state,date:'2026-10-09',today:'2026-10-09',importedRuns:[{id:'csv',firstTime:'2026-10-09T12:00:00Z',sampleCount:20}]});
- assert.equal((html.match(/data-route-map=/g)||[]).length,1);assert.equal((html.match(/data-action="run-edit"/g)||[]).length,5);assert.match(html,/data-action="cloud-route"/);assert.match(html,/最初のサンプルの日付/);
+test('day view renders only the prepared daily map and summary, leaving legacy GPS untouched',()=>{
+ const state=createInitialState();state.runs=Array.from({length:5},(_,i)=>({id:`run-${i}`,date:'2026-10-09',distanceKm:99,durationSec:300,points:[p(0,0),p(.001,40)]}));
+ const daily={status:'ready',store:'s',generation:'g',date:'2026-10-09',hash:'h',pending:false,summary:{distanceMeters:2100,durationSeconds:700,averageSpeedKmh:10.8},segments:[{points:[[35,139],[35.001,139.001]],colors:['#112233']}]};
+ const before=structuredClone({state,daily}),html=renderRunning({state,date:'2026-10-09',today:'2026-10-09',dailyView:{status:'ready',daily}});
+ assert.equal((html.match(/data-route-map=/g)||[]).length,1);assert.match(html,/2\.10<small>km/);assert.match(html,/10\.8<small>km\/h/);
+ assert.match(html,/サーバーで準備した値をそのまま表示/);assert.match(html,/日本時間の午前3時/);
+ assert.doesNotMatch(html,/run-edit|cloud-route|GPX|最初のサンプルの日付|99\.00/);assert.deepEqual({state,daily},before);
 });

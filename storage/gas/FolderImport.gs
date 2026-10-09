@@ -803,16 +803,16 @@ function decimal(value, code) {
   if (typeof value !== 'string' || value.length > 20 || !DIGITS.test(value)) fail(code);
   return value;
 }
-function inFolder(file) {
+function inFolder(file, membership) {
   return file && file.trashed === false && typeof file.name === 'string' &&
     /\.csv$/i.test(file.name) && typeof file.mimeType === 'string' &&
     file.mimeType.length > 0 && !file.mimeType.startsWith('application/vnd.google-apps.') &&
-    Array.isArray(file.parents) && file.parents.includes(SOURCE_FOLDER_ID);
+    Array.isArray(file.parents) && (typeof membership === 'function' ? membership(file) === true : file.parents.includes(SOURCE_FOLDER_ID));
 }
 // A full, serializable identity is required, never a bare client-supplied file ID.
 // Fresh metadata still rechecks membership before ANY media request on resume.
-function validateSourceIdentity(file) {
-  if (!inFolder(file)) fail('SOURCE_OUT_OF_SCOPE');
+function validateSourceIdentity(file, membership) {
+  if (!inFolder(file, membership)) fail('SOURCE_OUT_OF_SCOPE');
   if (typeof file.id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(file.id) ||
       file.name.length > 4096 || file.mimeType.length > 256 || file.parents.length > 32 ||
       file.parents.some(id => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(id)) ||
@@ -890,6 +890,9 @@ function createDriveSourceTransport(globals, options = {}) {
       typeof UrlFetchApp?.fetch !== 'function' || typeof ScriptApp?.getOAuthToken !== 'function' ||
       typeof now !== 'function' || typeof random !== 'function') fail('GAS_SERVICES_REQUIRED');
   if ('folderId' in options && options.folderId !== SOURCE_FOLDER_ID) fail('SOURCE_FOLDER_FIXED');
+  const membership = options.membership;
+  if (membership !== undefined && typeof membership !== 'function') fail('SOURCE_SCOPE_INVALID');
+  const validate = file => validateSourceIdentity(file, membership);
   const pageSize = integer(options.pageSize ?? 100, 1, 100);
   const maxRangeBytes = integer(options.maxRangeBytes ?? MAX_RANGE_BYTES, 1, MAX_RANGE_BYTES);
   const maxAttempts = integer(options.maxAttempts ?? 3, 1, 3);
@@ -945,8 +948,8 @@ function createDriveSourceTransport(globals, options = {}) {
   }
   function expectedSource(expected, ctx) {
     const actual = driveCall(ctx, () => Drive.Files.get(expected.id, {fields: SOURCE_FIELDS, supportsAllDrives: true}));
-    if (!inFolder(actual)) fail('SOURCE_CHANGED');
-    const current = validateSourceIdentity(actual);
+    if (!inFolder(actual, membership)) fail('SOURCE_CHANGED');
+    const current = validate(actual);
     if (['id', 'version', 'md5Checksum', 'size'].some(key => current[key] !== expected[key])) fail('SOURCE_CHANGED');
     return current;
   }
@@ -979,7 +982,7 @@ function createDriveSourceTransport(globals, options = {}) {
     return {files, nextPageToken, done: nextPageToken === null};
   }
   function getSource(expected, args = {}) {
-    return expectedSource(validateSourceIdentity(expected), context(args));
+    return expectedSource(validate(expected), context(args));
   }
   function retryAfter(headers) {
     const raw = header(headers, 'retry-after');
@@ -1010,7 +1013,7 @@ function createDriveSourceTransport(globals, options = {}) {
     } catch (_) { return forbiddenError(null); }
   }
   function readRange(expectedInput, start, length = maxRangeBytes, args = {}) {
-    const expected = validateSourceIdentity(expectedInput);
+    const expected = validate(expectedInput);
     const size = Number(expected.size);
     integer(start, 0, Math.max(0, size - 1), 'RANGE_REQUEST_INVALID');
     integer(length, 1, maxRangeBytes, 'RANGE_REQUEST_INVALID');
@@ -3482,8 +3485,9 @@ const importKeys=Object.freeze({
  * entities remain immutable-reference history until coordinated GC retires them.
  */
 class ImportStoreBinding {
- constructor({writer,storeId,readAsset,validateSourceCurrent}) {
+ constructor({writer,storeId,readAsset,validateSourceCurrent,normalizeSource=safeSource}) {
   check(writer&&['get','transact','getReceipt','recoveryBarrier'].every(k=>typeof writer[k]==='function')&&token(storeId,100)&&typeof readAsset==='function'&&typeof validateSourceCurrent==='function','IMPORT_STORE_CONFIG');
+  check(typeof normalizeSource==='function','IMPORT_STORE_CONFIG');this.normalizeSource=normalizeSource;
   this.writer=writer;this.storeId=storeId;this.readAsset=readAsset;this.validateSourceCurrent=validateSourceCurrent;
  }
  recoveryBarrier(){return this.writer.recoveryBarrier();}
@@ -3494,7 +3498,7 @@ class ImportStoreBinding {
  _job(id){check(token(id,100),'JOB_ID_INVALID');const e=this._required(importKeys.job(id));check(e.value.storeId===this.storeId&&e.value.jobId===id,'JOB_STORE_MISMATCH');return e;}
  _intent(kind,input){check(token(input?.operationId),'OPERATION_ID_INVALID');const clean=clone(input);return {operationId:input.operationId,epoch:'default',digest:digest({protocol:'mypace-import-domain-v1',storeId:this.storeId,kind,input:clean})};}
  _prior(intent){this.recoveryBarrier();const r=this.getReceipt(intent.operationId);if(r)check(r.digest===intent.digest,'OP_ID_REUSED');return r;}
- _commit(intent,changes,result){const r=this.writer.transact({...intent,changes,result});this.recoveryBarrier();return r;}
+ _commit(intent,changes,result){const daily=this.writer.get('daily/source-revision');if(daily&&!daily.deleted&&changes.some(c=>c.key.startsWith('import/job/')||c.key.startsWith('run/'))){changes=[...changes,{key:'daily/source-revision',expectedVersion:daily.version,value:{schema:1,changed:true}}];}const r=this.writer.transact({...intent,changes,result});this.recoveryBarrier();return r;}
  _read(r){
   check(r&&roleLimit(r.role)&&r.storeId===this.storeId,'ASSET_DESCRIPTOR_INVALID');
   const raw=this.readAsset(clone(r));check(raw instanceof Uint8Array&&raw.length===r.byteLength&&raw.length<=roleLimit(r.role)&&hashAssetBytes(raw)===r.sha256,'ASSET_CONTENT_MISMATCH');return raw;
@@ -3551,7 +3555,7 @@ class ImportStoreBinding {
  }
  registerJob(input){
   const intent=this._intent('register-job',input),prior=this._prior(intent);if(prior)return prior;
-  const {jobId}=input;check(token(jobId,100),'JOB_ID_INVALID');const source=safeSource(input.sourceIdentity);check(Number(source.size)>0,'SOURCE_EMPTY');
+  const {jobId}=input;check(token(jobId,100),'JOB_ID_INVALID');const source=this.normalizeSource(input.sourceIdentity);check(Number(source.size)>0,'SOURCE_EMPTY');
   const key=sourceKey(source,mappingHash()),ik=importKeys.identity(key),existing=this._entity(ik),sk=importKeys.source(source.id),si=this._entity(sk)?.value;
   if(existing){const priorJob=this._job(existing.value.jobId).value;
    // Every known identity must still be this source's active generation. A
@@ -3830,13 +3834,49 @@ class ImportRunner {
 return {ImportRunner};
 })();
 const m19 = (function(){
+// Fresh metadata-only ancestry checks. No global/cache persistence: moves are
+// rechecked before every source read. Output/store trees are always excluded.
+function createDriveFolderScope({Drive,rootId,excludedIds=[],canContinue=()=>true,maxDepth=32}){
+ const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,256}$/.test(x);
+ if(!id(rootId)||!Array.isArray(excludedIds)||excludedIds.some(x=>!id(x))||excludedIds.includes(rootId)||!Number.isSafeInteger(maxDepth)||maxDepth<1||maxDepth>64)throw Error('DRIVE_SCOPE_CONFIG');
+ const excluded=new Set(excludedIds);
+ return file=>{
+  const seen=new Set();let frontier=[file];
+  for(let depth=0;frontier.length&&depth<=maxDepth;depth++){
+   const next=[];
+   for(const f of frontier){
+    if(!f||!id(f.id)||f.trashed!==false||excluded.has(f.id))continue;
+    if(f.id===rootId)return true;
+    if(seen.has(f.id))continue;seen.add(f.id);
+    if(!Array.isArray(f.parents)||f.parents.length>1)throw Error('DRIVE_SCOPE_PARENTS');
+    for(const parent of f.parents){
+     if(!id(parent))throw Error('DRIVE_SCOPE_PARENTS');
+     if(excluded.has(parent))continue;
+     if(parent===rootId)return true;
+     if(!canContinue())throw Error('OWNER_BUDGET_YIELD');
+     const p=Drive.Files.get(parent,{fields:'id,parents,trashed,mimeType',supportsAllDrives:true});
+     if(p?.mimeType!=='application/vnd.google-apps.folder')throw Error('DRIVE_SCOPE_PARENT_INVALID');
+     next.push(p);
+    }
+   }
+   frontier=next;
+  }
+  if(frontier.length)throw Error('DRIVE_SCOPE_DEPTH');
+  return false;
+ };
+}
+
+return {createDriveFolderScope};
+})();
+const m20 = (function(){
 // Composition root for the one owner-authorized Apps Script project. Constructing
 // this runtime does not bootstrap, import, publish, deploy or install a trigger.
 const {GasStoreIO} = m16;
 const {ReservedSlotWriter} = m11;
 const {ImportStoreBinding} = m17;
 const {ImportCheckpointCoordinator,ImmutableAssetAdapter,createGasAssetMediaReader} = m6;
-const {createDriveSourceTransport} = m5;
+const {createDriveSourceTransport,validateSourceIdentity,SOURCE_FOLDER_ID} = m5;
+const {createDriveFolderScope} = m19;
 const {ImportRunner} = m18;
 const {createPreparedAppCommand} = m13;
 const fail=code=>{throw Error(code);};
@@ -3856,7 +3896,8 @@ function createGasImportRuntime(globals,config){
  const locked=fn=>{if(lock.hasLock())return fn();let acquired=false;try{acquired=lock.tryLock(1000)===true;if(!acquired){const e=Error('WRITER_BUSY');e.retryable=true;throw e;}return fn();}finally{if(acquired)lock.releaseLock();}};
  io=new GasStoreIO({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId:config.storeId,managedParentId:config.metadataParentId,checkBudget:config.checkBudget,protocolReadCache:config.protocolReadCache,checkpointHintId:config.checkpointHintId,restTransport:config.restTransport,canWriteHint:config.canWriteHint,managedWritePhase:config.managedWritePhase,trustManagedRecoveryPrefix:config.trustManagedRecoveryPrefix});
  const writer=new ReservedSlotWriter({io,storeId:config.storeId,writerScriptId:config.writerScriptId,anchorId:config.anchorId,limits:config.writerLimits,checkpointHintId:config.checkpointHintId,checkpointHintCodec:config.checkpointHintCodec,checkpointHintAnchorHash:config.checkpointHintAnchorHash,progressiveRecovery:config.progressiveRecovery,canContinueRecovery:config.canContinueRecovery,preparationCodec:config.preparationCodec,preparedAppAdapter:config.preparedAppAdapter??createPreparedAppCommand,canContinuePreparation:config.canContinuePreparation});
- const source=createDriveSourceTransport(globals,{pageSize:32});
+ const membership=config.sourceSubtree===true?createDriveFolderScope({Drive,rootId:SOURCE_FOLDER_ID,excludedIds:[config.rootParentId,config.metadataParentId,config.assetsParentId].filter(Boolean),canContinue:config.checkBudget}):undefined;
+ const source=createDriveSourceTransport(globals,{pageSize:32,membership});
  const budget=()=>{if(config.checkBudget('runtime')!==true){const e=Error('IMPORT_YIELD');e.retryable=true;throw e;}};
  const validateSource=s=>{budget();source.getSource(s,{deadlineMs:config.deadlineMs});return true;};
  let store;
@@ -3869,16 +3910,16 @@ function createGasImportRuntime(globals,config){
   if(!m||m.id!==r.fileId||m.trashed!==false||m.ownedByMe!==true||m.shared!==false||m.mimeType!=='application/octet-stream'||!Array.isArray(m.parents)||m.parents.length!==1||m.parents[0]!==config.assetsParentId||String(m.size)!==String(r.byteLength)||Object.keys(markers).some(k=>m.appProperties?.[k]!==markers[k]))fail('ASSET_METADATA_MISMATCH');
   return reader(r.fileId,r.byteLength,2097152);
  };
- store=new ImportStoreBinding({writer,storeId:config.storeId,readAsset:readManaged,validateSourceCurrent:validateSource});
+ store=new ImportStoreBinding({writer,storeId:config.storeId,readAsset:readManaged,validateSourceCurrent:validateSource,normalizeSource:s=>validateSourceIdentity(s,membership)});
  const assets=new ImmutableAssetAdapter({Drive,Utilities,readAssetBytes:reader,managedParentId:config.assetsParentId,storeId:config.storeId,assertReservation:r=>reservationRead(()=>store.assertReservation(r))});
  const coordinator=new ImportCheckpointCoordinator({writer:store,assets,getScriptLock:()=>lock,validateSourceCurrent:validateSource,checkBudget:config.checkBudget});
  const runner=new ImportRunner({store,coordinator,source,allocateIds:n=>io.allocateIds(n),locked,checkBudget:config.checkBudget,rangeBytes:config.rangeBytes,finalizationBatchLimit:config.finalizationBatchLimit,maxFreshOutputs:config.maxFreshOutputs});
- return Object.freeze({writer,store,source,assets,coordinator,runner,locked});
+ return Object.freeze({writer,store,source,assets,coordinator,runner,locked,allocateIds:n=>io.allocateIds(n)});
 }
 
 return {createGasImportRuntime};
 })();
-const m20 = (function(){
+const m21 = (function(){
 // Explicit owner repair only. It never imports CSV, changes store identity,
 // deletes history or changes application entities. Repeated completed calls are
 // no-ops; ambiguous checkpoint commits are resolved through existing recovery.
@@ -3900,7 +3941,7 @@ function prepareWebRead(runtime){
 
 return {prepareWebRead};
 })();
-const m21 = (function(){
+const m22 = (function(){
 /**
  * Server-internal owner provisioning for the EXISTING authorized Apps Script.
  * Not an HTTP handler, public RPC, trigger installer or OAuth setup flow.
@@ -4110,7 +4151,7 @@ function createOwnerBootstrap(globals,options){
 
 return {OWNER_STORE_PROPERTY,OWNER_BOOTSTRAP_PROTOCOL,parsePinnedOwnerStoreConfig,createOwnerBootstrap};
 })();
-const m22 = (function(){
+const m23 = (function(){
 // Fixed-size, owner-private advisory source-discovery cursor. This is not an
 // app/job checkpoint. Loss or invalid authentication restarts source discovery;
 // only the immutable import protocol may register, resume or publish a job.
@@ -4176,7 +4217,7 @@ function createDiscoveryStateIO(globals,config,{checkBudget=()=>true,now=()=>Dat
 
 return {DISCOVERY_STATE_PROTOCOL,DISCOVERY_STATE_MAX_BYTES,createDiscoveryStateCodec,createGasDiscoveryStateCodec,createDiscoveryStateIO};
 })();
-const m23 = (function(){
+const m24 = (function(){
 // Read-only completion reconciliation. CacheService holds a short-lived throttle,
 // never jobs, pagination progress, app data, source snapshots, or authority.
 const {encodeUtf8} = m3;
@@ -4259,14 +4300,659 @@ function createIdleScanThrottle(globals,config,{now,intervalMs}){
 
 return {RECONCILIATION_LIMITS,importDirectoryVersion,sourceIsCurrentlySettled,completedQueueIsSettled,reconcileCompletedSources,createIdleScanThrottle};
 })();
-const m24 = (function(){
+const m25 = (function(){
+// Pure derived data. Source CSV and normalized assets are never modified.
+const DAILY_ALGORITHM=2;
+const DAILY_OVERLAP_NOTICE='時刻が重複するファイルがあるため、開始時刻の早い記録を採用して表示しています';
+const DAILY_GEOMETRY_LIMIT=6000;
+const fail=c=>{throw Error(c);};
+const rad=x=>x*Math.PI/180;
+const wrap=x=>((x+540)%360)-180;
+function dailyDate(ms){if(!Number.isFinite(ms))fail('DAILY_TIME_INVALID');return new Date(ms+21600000).toISOString().slice(0,10);}
+function dailyBounds(date){if(typeof date!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(date))fail('DAILY_DATE_INVALID');const ms=Date.parse(date+'T00:00:00Z');if(!Number.isFinite(ms)||new Date(ms).toISOString().slice(0,10)!==date)fail('DAILY_DATE_INVALID');const start=ms-21600000;return {start,end:start+86400000};}
+function dailyDistance(a,b){const dlat=rad(b[0]-a[0]),dlon=rad(wrap(b[1]-a[1])),h=Math.sin(dlat/2)**2+Math.cos(rad(a[0]))*Math.cos(rad(b[0]))*Math.sin(dlon/2)**2;return 6371008.8*2*Math.atan2(Math.sqrt(h),Math.sqrt(Math.max(0,1-h)));}
+const SPEED_RGB=[[49,91,155],[37,139,154],[73,166,119],[214,179,67],[211,107,64]];
+// Half-km/h quantization bounds the gradient to49 reproducible colors without
+// changing source-derived distance/duration. Small fluctuations are averaged
+// only within bounded display spans; meaningful shifts remain anchors.
+function dailySpeedColor(kmh){if(!Number.isFinite(kmh)||kmh<0)fail('DAILY_SPEED_INVALID');const v=Math.min(24,Math.round(kmh*2)/2),i=Math.min(3,Math.floor(v/6)),fraction=(v-i*6)/6;return '#'+SPEED_RGB[i].map((channel,j)=>Math.round(channel+(SPEED_RGB[i+1][j]-channel)*fraction).toString(16).padStart(2,'0')).join('');}
+
+const point=p=>{const t=Date.parse(p?.time);if(typeof p?.time!=='string'||!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(p.time)||!Number.isFinite(t)||new Date(t).toISOString().slice(0,19)!==p.time.slice(0,19)||!Number.isFinite(p.lat)||Math.abs(p.lat)>90||!Number.isFinite(p.lon)||Math.abs(p.lon)>180)fail('DAILY_POINT_INVALID');return {t,p:[p.lat,p.lon]};};
+function startDailyFile({sourceKey,version}){if(typeof sourceKey!=='string'||!sourceKey||typeof version!=='string'||!version)fail('DAILY_SOURCE_INVALID');return {schema:1,algorithm:DAILY_ALGORITHM,sourceKey,version,start:null,end:null,last:null,days:{},count:0,geometry:0,quality:[],active:null};}
+function day(s,date){return s.days[date]||(s.days[date]={distanceMeters:0,durationSeconds:0,segments:[]});}
+function vertex(s,segment,p,c){segment.points.push(p);if(c)segment.colors.push(c);s.geometry++;if(s.geometry>DAILY_GEOMETRY_LIMIT)fail('DAILY_GEOMETRY_CAPACITY');}
+// Continuity follows active source/date and explicit gap resets. A display
+// span keeps only its anchor and pending endpoint; every discarded sample is
+// within5m of that retained anchor. Source statistics are accumulated separately.
+function edge(s,date,a,b,distanceMeters,seconds){const d=day(s,date);let segment=s.active?.date===date?d.segments[s.active.index]:null;
+ if(!segment){segment={sourceKey:s.sourceKey,points:[],colors:[],anchor:0,span:null};d.segments.push(segment);s.active={date,index:d.segments.length-1};vertex(s,segment,a);}
+ const kmh=distanceMeters/seconds*3.6,span=segment.span,shift=span&&(Math.abs(kmh-span.startKmh)>=2-1e-7||Math.abs(kmh-span.lastKmh)>=2-1e-7);
+ if(span&&!shift){span.distanceMeters+=distanceMeters;span.seconds+=seconds;span.lastKmh=kmh;segment.points[segment.points.length-1]=b;segment.colors[segment.colors.length-1]=dailySpeedColor(span.distanceMeters/span.seconds*3.6);}
+ else{segment.anchor=segment.points.length-1;vertex(s,segment,b,dailySpeedColor(kmh));segment.span={distanceMeters,seconds,startKmh:kmh,lastKmh:kmh};}
+ if(dailyDistance(segment.points[segment.anchor],b)>=5){segment.anchor=segment.points.length-1;segment.span=null;}
+}
+function appendDailyPoints(s,points){if(!s||s.schema!==1||s.algorithm!==DAILY_ALGORITHM||!Array.isArray(points))fail('DAILY_FILE_INVALID');for(const raw of points){const n=point(raw);if(s.last&&n.t<=s.last.t)fail('DAILY_TIME_ORDER');if(s.start===null)s.start=n.t;s.end=n.t;s.count++;day(s,dailyDate(n.t));
+ if(s.last){const p=s.last,dt=n.t-p.t,distance=dailyDistance(p.p,n.p),valid=dt<=120000&&distance/(dt/1000)<=15;
+  if(valid){let t=p.t;while(t<n.t){const date=dailyDate(t),end=Math.min(n.t,dailyBounds(date).end),f0=(t-p.t)/dt,f1=(end-p.t)/dt,inter=f=>f===0?p.p:f===1?n.p:[p.p[0]+(n.p[0]-p.p[0])*f,wrap(p.p[1]+wrap(n.p[1]-p.p[1])*f)];day(s,date).distanceMeters+=distance*(f1-f0);edge(s,date,inter(f0),inter(f1),distance*(f1-f0),dt/1000*(f1-f0));t=end;}}
+  else{const previous=day(s,dailyDate(p.t));if(!previous.segments.some(seg=>seg.points[seg.points.length-1][0]===p.p[0]&&seg.points[seg.points.length-1][1]===p.p[1])){previous.segments.push({sourceKey:s.sourceKey,points:[p.p],colors:[]});s.geometry++;}day(s,dailyDate(n.t)).segments.push({sourceKey:s.sourceKey,points:[n.p],colors:[]});s.geometry++;if(s.geometry>DAILY_GEOMETRY_LIMIT)fail('DAILY_GEOMETRY_CAPACITY');s.active=null;if(!s.quality.includes('GPS_GAP_OR_IMPLAUSIBLE_SPEED'))s.quality.push('GPS_GAP_OR_IMPLAUSIBLE_SPEED');}
+ }
+ s.last=n;
+ }return s;}
+function finishDailyFile(s){if(!s.count)fail('DAILY_FILE_EMPTY');if(s.end-s.start>366*86400000)fail('DAILY_DATE_CAPACITY');const out=JSON.parse(JSON.stringify(s));for(let t=out.start;t<out.end;){const date=dailyDate(t),end=Math.min(out.end,dailyBounds(date).end);day(out,date).durationSeconds+=(end-t)/1000;t=end;}
+ const lastDay=day(out,dailyDate(out.end));if(!lastDay.segments.length)lastDay.segments.push({sourceKey:out.sourceKey,points:[out.last.p],colors:[]});
+ for(const d of Object.values(out.days))for(const seg of d.segments){delete seg.anchor;delete seg.span;}delete out.active;return out;}
+function selectDailyFiles(files){const included=[],excluded=[];for(const f of [...files].sort((a,b)=>a.start-b.start||a.sourceKey.localeCompare(b.sourceKey)||a.version.localeCompare(b.version))){if(included.some(a=>f.end>f.start&&a.end>a.start&&f.start<a.end&&a.start<f.end))excluded.push(f);else included.push(f);}return {included,excluded};}
+function assembleDailyDate({date,files,storeId,generation}){dailyBounds(date);const {included,excluded}=selectDailyFiles(files),summary={distanceMeters:0,durationSeconds:0,averageSpeedKmh:null},segments=[],quality=[];for(const f of included){const d=f.days[date];if(!d)continue;summary.distanceMeters+=d.distanceMeters;summary.durationSeconds+=d.durationSeconds;segments.push(...d.segments);for(const q of f.quality)if(!quality.includes(q))quality.push(q);}
+ if(summary.durationSeconds>0)summary.averageSpeedKmh=summary.distanceMeters/summary.durationSeconds*3.6;return {schema:1,store:storeId,generation,date,summary,segments,notice:excluded.some(f=>f.days[date])?DAILY_OVERLAP_NOTICE:null,quality};}
+
+return {DAILY_ALGORITHM,DAILY_OVERLAP_NOTICE,DAILY_GEOMETRY_LIMIT,dailyDate,dailyBounds,dailyDistance,dailySpeedColor,startDailyFile,appendDailyPoints,finishDailyFile,selectDailyFiles,assembleDailyDate};
+})();
+const m26 = (function(){
+const {encodeUtf8,decodeUtf8} = m3;
+const {hashAssetBytes} = m6;
+const {dailyBounds} = m25;
+const DAILY_HEAD_PROPERTY='MYPACE_DAILY_READ_HEAD_V1';
+const DAILY_IDENTITY_PROPERTY='MYPACE_DAILY_IDENTITY_V1';
+const fail=c=>{throw Error(c);};
+const token=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
+const digest=x=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
+function validateDailyReservation(r){if(!r||!token(r.fileId)||!token(r.storeId)||!token(r.jobId)||!token(r.pinId)||!['output','checkpoint','manifest-page'].includes(r.role)||!Number.isSafeInteger(r.byteLength)||r.byteLength<1||r.byteLength>(r.role==='checkpoint'?2097152:262144)||!digest(r.sha256))fail('DAILY_ASSET_INVALID');return r;}
+function validateDailyHead(h,{storeId,generation}){if(!h||h.schema!==1||h.storeId!==storeId||h.generation!==generation||!token(h.sourceStoreId)||!token(h.sourceGeneration)||!Number.isSafeInteger(h.publication)||h.publication<1||typeof h.coverage!=='boolean'||typeof h.pending!=='boolean'||!(h.error===null||typeof h.error==='string'&&/^[A-Z_0-9]{1,80}$/.test(h.error))||!Number.isSafeInteger(h.updatedAt))fail('DAILY_HEAD_INVALID');validateDailyReservation(h.directory);if(h.directory.storeId!==h.sourceStoreId)fail('DAILY_HEAD_INVALID');return h;}
+function createDailyHeadCodec({secret,hmac}){if(typeof secret!=='string'||secret.length<32||typeof hmac!=='function')fail('DAILY_CODEC_CONFIG');const sign=body=>hmac('mypace-daily-head-v1:'+body,secret);return {seal(head){const body=JSON.stringify(head);return JSON.stringify({body,signature:sign(body)});},open(raw){let p;try{p=JSON.parse(raw);}catch(_){fail('DAILY_HEAD_INVALID');}if(typeof p.body!=='string'||typeof p.signature!=='string'||p.signature!==sign(p.body))fail('DAILY_HEAD_SIGNATURE');return JSON.parse(p.body);}};}
+function createDailyReader({storeId,generation,readHead,readAsset}){if(!token(storeId)||!token(generation)||typeof readHead!=='function'||typeof readAsset!=='function')fail('DAILY_READER_CONFIG');
+ const json=r=>{validateDailyReservation(r);const b=readAsset(r);if(!(b instanceof Uint8Array)||b.length!==r.byteLength||hashAssetBytes(b)!==r.sha256)fail('DAILY_ASSET_CORRUPT');try{return JSON.parse(decodeUtf8(b));}catch(_){fail('DAILY_ASSET_CORRUPT');}};
+ function validateDays(days,h,month=null){if(!days||Array.isArray(days)||Object.keys(days).length>(month?31:4096))fail('DAILY_DIRECTORY_INVALID');for(const [date,p]of Object.entries(days)){dailyBounds(date);if(month&&date.slice(0,7)!==month)fail('DAILY_DIRECTORY_INVALID');validateDailyReservation(p.asset);if(p.asset.storeId!==h.sourceStoreId||p.hash!==p.asset.sha256||!Number.isSafeInteger(p.updatedAt))fail('DAILY_DIRECTORY_INVALID');}return days;}
+ function load(){const raw=readHead();if(!raw)fail('DAILY_NOT_ENABLED');const h=validateDailyHead(raw,{storeId,generation}),d=json(h.directory);if(!d||d.schema!==1||d.storeId!==h.sourceStoreId||d.generation!==h.sourceGeneration)fail('DAILY_DIRECTORY_INVALID');if(d.days)validateDays(d.days,h);else{if(!d.months||Array.isArray(d.months)||Object.keys(d.months).length>240)fail('DAILY_DIRECTORY_INVALID');for(const [month,p]of Object.entries(d.months)){if(!/^\d{4}-\d{2}$/.test(month))fail('DAILY_DIRECTORY_INVALID');dailyBounds(month+'-01');validateDailyReservation(p.asset);if(p.hash!==p.asset.sha256||p.asset.storeId!==h.sourceStoreId)fail('DAILY_DIRECTORY_INVALID');}}return {h,d};}
+ function daysFor(h,d,month){if(d.days)return d.days;const pointer=d.months[month];if(!pointer)return {};const page=json(pointer.asset);if(page.schema!==1||page.storeId!==h.sourceStoreId||page.generation!==h.sourceGeneration||page.month!==month)fail('DAILY_MONTH_INVALID');return validateDays(page.days,h,month);}
+ function listDates(){const {h,d}=load();const dates=d.days?Object.keys(d.days):Object.keys(d.months).flatMap(month=>Object.keys(daysFor(h,d,month)));if(dates.length>4096)fail('DAILY_DATE_CAPACITY');return dates.sort();}
+ function dailyRun(payload){if(!payload||Object.keys(payload).sort().join(',')!=='date,knownHash'||!(payload.knownHash===null||digest(payload.knownHash)))fail('DAILY_PAYLOAD_INVALID');const {date,knownHash}=payload;dailyBounds(date);const {h,d}=load(),p=daysFor(h,d,date.slice(0,7))[date],base={schema:1,store:storeId,generation,date,hash:p?.hash||null,updatedAt:p?.updatedAt||null,pending:h.pending,error:h.error,sourceWarnings:h.sourceWarnings||0,preparationState:h.error==='DAILY_PAUSED'?'paused':h.error?'failed':h.pending?'working':h.coverage?'complete':'unknown'};if(!p)return {...base,status:h.error?'failed':h.pending||!h.coverage?'preparing':'empty',summary:null,segments:[],notice:null,quality:[]};
+ if(knownHash===p.hash)return {...base,status:'ready',notModified:true};const body=json(p.asset);if(body.schema!==1||body.store!==h.sourceStoreId||body.generation!==h.sourceGeneration||body.date!==date||!body.summary||!Array.isArray(body.segments)||!Array.isArray(body.quality)||!(body.notice===null||typeof body.notice==='string'))fail('DAILY_DAY_INVALID');const s=body.summary;if(!Number.isFinite(s.distanceMeters)||s.distanceMeters<0||!Number.isFinite(s.durationSeconds)||s.durationSeconds<0||!(s.averageSpeedKmh===null||Number.isFinite(s.averageSpeedKmh)&&s.averageSpeedKmh>=0))fail('DAILY_DAY_INVALID');let n=0;for(const seg of body.segments){if(typeof seg.sourceKey!=='string'||!Array.isArray(seg.points)||!seg.points.length||!Array.isArray(seg.colors)||seg.colors.length!==seg.points.length-1||seg.colors.some(c=>!/^#[a-fA-F0-9]{6}$/.test(c))||seg.points.some(p=>!Array.isArray(p)||p.length!==2||!Number.isFinite(p[0])||Math.abs(p[0])>90||!Number.isFinite(p[1])||Math.abs(p[1])>180))fail('DAILY_DAY_INVALID');n+=seg.points.length;}if(n>6000||encodeUtf8(JSON.stringify(body)).length>262144)fail('DAILY_DAY_CAPACITY');return {...body,...base,status:'ready'};}
+ return Object.freeze({dailyRun,listDates});
+}
+// Trusted, separately pinned identity/floor prevents an old signed publication
+// being replayed after a dataset reset or newer successful publication.
+function createGasDailyReadHead(globals,{storeId,generation}){const p=globals.PropertiesService.getScriptProperties(),secret=p.getProperty('MYPACE_WRITER_SECRET'),hmac=(text,key)=>globals.Utilities.base64EncodeWebSafe(globals.Utilities.computeHmacSha256Signature(text,key,globals.Utilities.Charset.UTF_8)).replace(/=+$/,'');const codec=createDailyHeadCodec({secret,hmac});const key=DAILY_HEAD_PROPERTY+'_'+storeId,identityKey=DAILY_IDENTITY_PROPERTY+'_'+storeId;
+ return {read(){let identity;try{identity=JSON.parse(p.getProperty(identityKey));}catch(_){fail('DAILY_IDENTITY_INVALID');}if(!identity)return null;if(identity.storeId!==storeId||identity.generation!==generation||!Number.isSafeInteger(identity.publication)||![0,1].includes(identity.slot))fail('DAILY_IDENTITY_INVALID');const raw=p.getProperty(key+'_'+identity.slot);if(!raw)fail('DAILY_HEAD_STALE');const h=validateDailyHead(codec.open(raw),{storeId,generation});if(identity.publication!==h.publication||identity.hash!==hashAssetBytes(encodeUtf8(raw)))fail('DAILY_HEAD_STALE');return h;},publish(head){validateDailyHead(head,{storeId,generation});let old;try{old=JSON.parse(p.getProperty(identityKey));}catch(_){}if(old?.storeId===storeId&&old.generation===generation&&old.publication>head.publication)fail('DAILY_HEAD_STALE');const raw=codec.seal(head),hash=hashAssetBytes(encodeUtf8(raw));if(old?.generation===generation&&old.publication===head.publication&&old.hash!==hash)fail('DAILY_HEAD_CONFLICT');if(old?.generation===generation&&old.publication===head.publication&&old.hash===hash){if(p.getProperty(key+'_'+old.slot)!==raw)p.setProperty(key+'_'+old.slot,raw);return;}const slot=old?.slot===0?1:0;p.setProperty(key+'_'+slot,raw);p.setProperty(identityKey,JSON.stringify({storeId,generation,publication:head.publication,hash,slot}));}};
+}
+
+return {DAILY_HEAD_PROPERTY,DAILY_IDENTITY_PROPERTY,validateDailyReservation,validateDailyHead,createDailyHeadCodec,createDailyReader,createGasDailyReadHead};
+})();
+const m27 = (function(){
+const {encodeUtf8,decodeUtf8} = m3;
+const {hashAssetBytes,encodeBoundedJson} = m6;
+const {importKeys} = m17;
+const {startDailyFile,appendDailyPoints,finishDailyFile,selectDailyFiles,DAILY_OVERLAP_NOTICE,DAILY_ALGORITHM} = m25;
+const DAILY_STATE_KEY='daily/owner-scheduler';
+const fail=c=>{throw Error(c);};
+const hash=x=>hashAssetBytes(encodeUtf8(JSON.stringify(x)));
+const clone=x=>JSON.parse(JSON.stringify(x));
+// Work is owner-enabled only. Each tick consumes at most one immutable normalized
+// block or one date. A complete replacement directory is the sole visibility cut.
+function createDailyMaterializer({runtime,assets,readAsset,writeHead,readNormalized=r=>runtime.store._read(r),now=()=>Date.now(),canContinue=()=>true}){
+ if(!runtime?.writer||!runtime?.store||typeof runtime.locked!=='function'||typeof runtime.allocateIds!=='function'||!assets||typeof readAsset!=='function'||typeof writeHead!=='function')fail('DAILY_MATERIALIZER_CONFIG');
+ const {writer,store}=runtime,get=k=>{const e=writer.get(k);return e&&!e.deleted?e.value:null;};
+ const commit=(label,values)=>{const changes=Object.entries(values).map(([key,value])=>({key,expectedVersion:writer.get(key)?.version||0,...(writer.get(key)?.deleted?{recreate:true}:{}),value}));const digest=hash({label,changes});writer.transact({operationId:'daily_'+digest.slice(0,48),epoch:'default',digest,changes,result:{daily:true}});};
+ const identity=()=>({storeId:store.storeId,generation:writer.status().datasetGeneration});
+ const budget=()=>{if(!canContinue()){const e=Error('DAILY_YIELD');e.retryable=true;throw e;}};
+ const read=r=>{budget();const bytes=readAsset(r);if(bytes.length!==r.byteLength||hashAssetBytes(bytes)!==r.sha256)fail('DAILY_ASSET_CORRUPT');return JSON.parse(decodeUtf8(bytes));};
+ function put(value,role,key){const bytes=encodeBoundedJson(value,role==='checkpoint'?2097152:262144),sha256=hashAssetBytes(bytes),pinId='d_'+hash({key,sha256}).slice(0,48),pinKey='daily/pin/'+pinId,{storeId,generation}=identity();let pin=get(pinKey);if(!pin){const r={fileId:runtime.allocateIds(1)[0],storeId,jobId:pinId,pinId,role,byteLength:bytes.length,sha256};pin={schema:1,state:'reserved',storeId,generation,pinId,assets:[r]};commit('reserve',{[pinKey]:pin});}const r=pin.assets[0];if(r.sha256!==sha256||r.byteLength!==bytes.length)fail('DAILY_RESERVATION_CONFLICT');assets.putOnce({reservation:r,bytes,reuseExisting:true});if(pin.state!=='ready')commit('verify',{[pinKey]:{...pin,state:'ready'}});return r;}
+ function pending(s){const d=get('import/drive-change-discovery');return !!(s.hasPending||d?.enabled&&(d.pending||d.queue?.length||d.folders?.length));}
+ function coverage(s){const d=get('import/drive-change-discovery');return !!(d?.enabled&&d.coverage&&!d.pending&&!d.error&&!d.queue?.length&&!d.folders?.length&&!s.hasPending);}
+ function cut(){const d=get('import/drive-change-discovery');return hash([DAILY_ALGORITHM,writer.get(importKeys.directory())?.version||0,writer.get('daily/source-revision')?.version||0,d?[d.enabled,d.coverage,d.pending,d.error,d.queue?.length,d.folders?.length,d.warnings?.length,d.warningOverflow]:null]);}
+ const scanning=()=>({schema:1,algorithm:DAILY_ALGORITHM,enabled:true,status:'scanning',cursor:null,work:null,refs:null,sourceCut:cut(),error:null,hasPending:false,previousCatalog:get(DAILY_STATE_KEY)?.catalog||get(DAILY_STATE_KEY)?.previousCatalog||null});
+ const saved=s=>commit('state',{[DAILY_STATE_KEY]:s});
+ function publishStatus(s){const h=get('daily/head');if(h){const next={...h,publication:h.publication+1,pending:!['complete','paused','failed'].includes(s.status),error:s.status==='failed'?s.error:s.status==='paused'?'DAILY_PAUSED':null};commit('status',{'daily/head':next});writeHead(next);}}
+ function activate(){return runtime.locked(()=>{store.recoveryBarrier();const old=get(DAILY_STATE_KEY);if(old?.enabled&&get('daily/head')){writeHead(get('daily/head'));return old;}if(!get('daily/source-revision'))commit('revision',{'daily/source-revision':{schema:1,changed:false}});const s=scanning();saved(s);if(!get('daily/head')){const {storeId,generation}=identity(),directory=put({schema:1,storeId,generation,days:{}},'manifest-page','directory');const head={schema:1,storeId,generation,sourceStoreId:storeId,sourceGeneration:generation,publication:1,directory,coverage:false,pending:true,error:null,updatedAt:now()};commit('activate',{'daily/head':head});writeHead(head);}else publishStatus(s);return s;});}
+ function markPending(){return runtime.locked(()=>{store.recoveryBarrier();const s=get(DAILY_STATE_KEY),h=get('daily/head');if(!s?.enabled||!h||h.pending&&!h.coverage)return {updated:false};const next={...h,publication:h.publication+1,coverage:false,pending:s.status!=='failed'};commit('pending',{'daily/head':next});writeHead(next);return {updated:true};});}
+ function pause(){return runtime.locked(()=>{store.recoveryBarrier();const old=get(DAILY_STATE_KEY)||{schema:1};const s={...old,enabled:false,status:'paused',error:null};saved(s);publishStatus(s);return s;});}
+ function tick(){return runtime.locked(()=>{store.recoveryBarrier();let s=get(DAILY_STATE_KEY);if(!s?.enabled)return {status:'paused',enabled:false};try{budget();
+ if(s.algorithm!==DAILY_ALGORITHM){s=scanning();saved(s);publishStatus(s);return s;}
+ if(s.status==='failed'){const head=get('daily/head');if(head)writeHead(head);return s;}
+ if(s.status==='complete'){const current=cut();if(current===s.sourceCut){const h=get('daily/head');if(h)writeHead(h);return s;}s=scanning();saved(s);publishStatus(s);return s;}
+ const refs=s.refs?read(s.refs):[];
+ if(s.status==='file'){
+  const w=read(s.work),job=get(importKeys.job(w.jobId));if(job?.status!=='completed'||get(importKeys.run(job.runId))?.imported?.jobId!==job.jobId)fail('DAILY_SOURCE_CHANGED');const pin=get(importKeys.pin(w.pinId));if(!pin||pin.state!=='ready'||pin.jobId!==job.jobId||pin.storeId!==store.storeId)fail('DAILY_SOURCE_PIN_INVALID');const outputs=pin.assets.filter(a=>a.role==='output');if(w.output<outputs.length){const bytes=readNormalized(outputs[w.output]);const text=decodeUtf8(bytes);if(!text.endsWith('\n'))fail('DAILY_SOURCE_INVALID');appendDailyPoints(w.calculator,text.slice(0,-1).split('\n').map(x=>JSON.parse(x)));w.output++;}
+  if(w.output===outputs.length){w.pinId=pin.nextPin;w.output=0;w.pins++;if(w.pins>job.batchCount)fail('DAILY_SOURCE_PIN_INVALID');}
+  if(w.pinId===null){if(w.pins!==job.batchCount)fail('DAILY_SOURCE_PIN_INVALID');const file=finishDailyFile(w.calculator),asset=put(file,'checkpoint','file_'+job.jobId),ref={algorithm:DAILY_ALGORITHM,sourceKey:file.sourceKey,version:file.version,start:file.start,end:file.end,dates:Object.keys(file.days),asset};commit('file',{['daily/file/'+job.jobId]:ref});refs.push(ref);s={...s,status:s.endOfScan?'publishing':'scanning',work:null,refs:put(refs,'checkpoint','refs'),...(s.endOfScan?{dates:[...new Set(refs.flatMap(f=>f.dates))].sort(),dateIndex:0,directory:null,endOfScan:false}:{})};}
+  else s={...s,work:put(w,'checkpoint','work')};saved(s);return s;
+ }
+ if(s.status==='scanning'){
+  const page=store.listJobsPage({cursor:s.cursor,limit:32});for(let i=0;i<page.jobs.length;i++){if(i>0&&!canContinue())break;budget();const j=page.jobs[i],job=get(importKeys.job(j.jobId));s.cursor=page.jobs[i+1]?.jobId||page.nextCursor;if(!['completed','duplicate','cancelled'].includes(j.status))s.hasPending=true;
+   if(j.status==='completed'&&get(importKeys.run(job.runId))?.imported?.jobId===job.jobId){const known=get('daily/file/'+job.jobId);if(known?.algorithm===DAILY_ALGORITHM)refs.push(known);else{const version=get(importKeys.run(job.runId)).imported.normalizedSha256,work={jobId:job.jobId,pinId:job.firstPin,output:0,pins:0,calculator:startDailyFile({sourceKey:hash(job.sourceIdentity?.id||job.sourceKey),version})};s.status='file';s.work=put(work,'checkpoint','work');break;}}
+  }
+  s.refs=put(refs,'checkpoint','refs');if(!s.cursor&&s.status!=='file'){s.status='publishing';s.dates=[...new Set(refs.flatMap(f=>f.dates))].sort();s.dateIndex=0;s.directory=null;if(s.dates.length>4096)fail('DAILY_DATE_CAPACITY');}else if(!s.cursor&&s.status==='file')s.endOfScan=true;saved(s);return s;
+ }
+ if(s.status==='publishing'){
+  const {storeId,generation}=identity();
+  if(!s.prepared){const old=get('daily/head'),directory=old&&old.sourceStoreId===storeId&&old.sourceGeneration===generation?(s.previousCatalog?read(s.previousCatalog):(()=>{const root=read(old.directory);return root.days?root:{schema:1,storeId,generation,days:{}};})()):{schema:1,storeId,generation,days:{}},selected=selectDailyFiles(refs),allDates=new Set(s.dates),dirty=[];for(const date of Object.keys(directory.days))if(!allDates.has(date))delete directory.days[date];for(const date of s.dates){const included=selected.included.filter(f=>f.dates.includes(date)),excluded=selected.excluded.filter(f=>f.dates.includes(date)),fingerprint=hash({algorithm:DAILY_ALGORITHM,included:included.map(f=>[f.sourceKey,f.version]),excluded:excluded.map(f=>[f.sourceKey,f.version])});if(directory.days[date]?.fingerprint!==fingerprint)dirty.push(date);}s={...s,prepared:true,dates:dirty,dateIndex:0,directory:put(directory,'checkpoint','catalog')};saved(s);return s;}
+  const directory=read(s.directory);
+  if(s.dateIndex<s.dates.length){const date=s.dates[s.dateIndex],selected=selectDailyFiles(refs),included=selected.included.filter(f=>f.dates.includes(date)),excluded=selected.excluded.filter(f=>f.dates.includes(date)),fingerprint=hash({algorithm:DAILY_ALGORITHM,included:included.map(f=>[f.sourceKey,f.version]),excluded:excluded.map(f=>[f.sourceKey,f.version])});
+   if(included.length>128)fail('DAILY_DAY_SOURCE_CAPACITY');
+   let work=s.dayWork?read(s.dayWork):{index:0,body:{schema:1,store:storeId,generation,date,summary:{distanceMeters:0,durationSeconds:0,averageSpeedKmh:null},segments:[],quality:[],notice:excluded.length?DAILY_OVERLAP_NOTICE:null}};
+   if(work.index<included.length){const f=read(included[work.index].asset),d=f.days[date],body=work.body;body.summary.distanceMeters+=d.distanceMeters;body.summary.durationSeconds+=d.durationSeconds;body.segments.push(...d.segments);for(const q of f.quality)if(!body.quality.includes(q))body.quality.push(q);if(body.segments.reduce((n,a)=>n+a.points.length,0)>6000)fail('DAILY_DAY_CAPACITY');work.index++;s.dayWork=put(work,'checkpoint','day-work');saved(s);return s;}
+   const body=work.body;if(body.summary.durationSeconds>0)body.summary.averageSpeedKmh=body.summary.distanceMeters/body.summary.durationSeconds*3.6;const asset=put(body,'output','day_'+date);directory.days[date]={asset,hash:asset.sha256,updatedAt:now(),fingerprint};s.directory=put(directory,'checkpoint','catalog');s.dateIndex++;s.dayWork=null;saved(s);return s;
+  }
+  if(cut()!==s.sourceCut){s=scanning();saved(s);return s;}
+  if(!s.months){const groups={};for(const [date,p]of Object.entries(directory.days)){const m=date.slice(0,7);(groups[m]||(groups[m]={}))[date]=p;}const months=Object.keys(groups).sort();if(months.length>240)fail('DAILY_MONTH_CAPACITY');s.monthIndex=0;const old=get('daily/head');let root={schema:1,storeId,generation,months:{}};if(old?.sourceStoreId===storeId&&old.sourceGeneration===generation){const prior=read(old.directory);if(prior.months)root=prior;}for(const m of Object.keys(root.months))if(!groups[m])delete root.months[m];s.months=months.filter(month=>root.months[month]?.hash!==hash({schema:1,storeId,generation,month,days:groups[month]}));s.root=put(root,'manifest-page','directory');saved(s);return s;}
+  if(s.monthIndex<s.months.length){const month=s.months[s.monthIndex],days=Object.fromEntries(Object.entries(directory.days).filter(([date])=>date.slice(0,7)===month)),page={schema:1,storeId,generation,month,days},root=read(s.root),sha256=hash(page);if(root.months[month]?.hash!==sha256){const asset=put(page,'manifest-page','month_'+month);root.months[month]={asset,hash:asset.sha256};s.root=put(root,'manifest-page','directory');}s.monthIndex++;saved(s);return s;}
+  const descriptor=s.root,old=get('daily/head'),head={schema:1,storeId,generation,sourceStoreId:storeId,sourceGeneration:generation,publication:(old?.publication||0)+1,directory:descriptor,coverage:coverage(s),pending:pending(s),error:null,sourceWarnings:(get('import/drive-change-discovery')?.warnings?.length||0)+(get('import/drive-change-discovery')?.warningOverflow?1:0),updatedAt:now()};s={...s,status:'complete',catalog:s.directory,dates:[],dateIndex:0};commit('publish',{'daily/head':head,[DAILY_STATE_KEY]:s});writeHead(head);return s;
+ }
+ fail('DAILY_STATE_INVALID');
+ }catch(e){if(e?.retryable||/YIELD|BUSY|RECOVERY/.test(e?.code||e?.message||''))throw e;const error=/^[A-Z_0-9]{1,80}$/.test(e.message)?e.message:'DAILY_PREPARATION_FAILED';s={...s,status:'failed',error};saved(s);publishStatus(s);return s;}});}
+ return Object.freeze({activate,pause,tick,markPending,status:()=>runtime.locked(()=>{store.recoveryBarrier();return get(DAILY_STATE_KEY)||{enabled:false,status:'paused'};})});
+}
+
+return {DAILY_STATE_KEY,createDailyMaterializer};
+})();
+const m28 = (function(){
+// /** Owner-only, resumable immutable snapshot archive. Never follows mutable
+//  * successor slots: one captureReadView fixes the cutoff. Copies are not a
+//  * directly swappable Drive folder. No source mutation or retention deletion. */
+const {writerDigest,WRITER_PROTOCOL,ReservedSlotWriter} = m11;
+const {encodeUtf8,decodeUtf8,IncrementalSha256} = m3;
+const {dailyBounds} = m25;
+const {createDailyReader,validateDailyHead} = m26;
+const fail=c=>{throw Error(c);};
+const clone=x=>JSON.parse(JSON.stringify(x));
+const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
+const hash=x=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
+const digest=b=>new IncrementalSha256().update(b).digestHex();
+const equal=(a,b)=>writerDigest(a)===writerDigest(b);
+const canonical=x=>Array.isArray(x)?'['+x.map(canonical).join(',')+']':x&&typeof x==='object'?'{'+Object.keys(x).sort().map(k=>JSON.stringify(k)+':'+canonical(x[k])).join(',')+'}':JSON.stringify(x);
+const MAX_FILE=2*1024*1024,MAX_JOB=4*1024*1024;
+const pausedImport=()=>({schema:1,status:'blocked',retryAt:0,error:'RESTORED_IMPORTS_PAUSED',lastJob:null,processingMode:'paused',allowanceMs:null});
+const scope={records:'all captured entity values and tombstones',receipts:'captured receipt tree archive',assets:'ready CSV-imported assets and published daily directory/month/day closure',excluded:['browser-only unsynced records','raw running_data CSV sources','account failure','in-progress reserved asset bodies','historical predecessor frame chain'],restore:'new independent store; entity versions and receipts reset; imported routes use archived asset map; CSV and derived jobs paused'};
+function ref(r){if(!r||!id(r.id)||!hash(r.hash)||!['bootstrap','frame','index-node','asset'].includes(r.kind))fail('BACKUP_REFERENCE_INVALID');if(r.kind==='asset'&&(!Number.isSafeInteger(r.byteLength)||r.byteLength<1||r.byteLength>MAX_FILE))fail('BACKUP_ASSET_BOUND');return r;}
+function validateView(v){if(!v||!id(v.storeId)||!id(v.writerScriptId)||!id(v.anchorId)||!hash(v.anchorHash)||!id(v.headId)||!hash(v.headHash)||v.writerFence!==2||!Number.isSafeInteger(v.revision)||v.revision<1||!Number.isSafeInteger(v.schemaVersion)||v.schemaVersion<1)fail('BACKUP_CAPTURE_INVALID');for(const root of [v.stateRoot,v.receiptRoot])if(root!==null&&(!id(root?.id)||!hash(root?.hash)))fail('BACKUP_CAPTURE_INVALID');}
+function roots(v){return [{id:v.anchorId,hash:v.anchorHash,kind:'bootstrap'},{id:v.headId,hash:v.headHash,kind:'frame'},...[v.stateRoot,v.receiptRoot].filter(Boolean).map(r=>({...r,kind:'index-node'}))];}
+function verify(bytes,r,v){ref(r);if(!bytes||!Number.isSafeInteger(bytes.length)||bytes.length<1||bytes.length>MAX_FILE)fail('BACKUP_BYTES_INVALID');if(r.kind==='asset'){if(bytes.length!==r.byteLength||digest(bytes)!==r.hash)fail('BACKUP_ASSET_CORRUPT');return null;}
+ let f;try{f=JSON.parse(decodeUtf8(bytes));}catch(_){fail('BACKUP_PROTOCOL_INVALID');}const {hash:h,...body}=f;
+ if(decodeUtf8(bytes)!==canonical(f)||Object.keys(f).sort().join(',')!=='hash,kind,payload,protocol,schemaVersion,storeId,writerScriptId'||h!==r.hash||writerDigest(body)!==h||f.protocol!==WRITER_PROTOCOL||f.kind!==r.kind||f.storeId!==v.storeId||f.writerScriptId!==v.writerScriptId||f.schemaVersion!==v.schemaVersion)fail('BACKUP_PROTOCOL_CORRUPT');
+ if(r.kind==='frame'&&(!equal(f.payload.stateRoot,v.stateRoot)||!equal(f.payload.receiptRoot,v.receiptRoot)||f.payload.revision!==v.revision||f.payload.datasetGeneration!==v.datasetGeneration||f.payload.writerFence!==2))fail('BACKUP_CUTOFF_MISMATCH');return f;
+}
+function dailyReservation(a,storeId){if(!a||!id(a.fileId)||!id(a.jobId)||!id(a.pinId)||a.storeId!==storeId||!['output','checkpoint','manifest-page'].includes(a.role)||!hash(a.sha256)||!Number.isSafeInteger(a.byteLength)||a.byteLength<1||a.byteLength>(a.role==='checkpoint'?MAX_FILE:262144))fail('BACKUP_DAILY_RESERVATION_INVALID');return {id:a.fileId,hash:a.sha256,byteLength:a.byteLength,kind:'asset',reservation:clone(a)};}
+function dependencies(f){if(!f||f.kind!=='index-node')return [];const p=f.payload;if(p.type==='branch'){if(!Array.isArray(p.children))fail('BACKUP_NODE_INVALID');return p.children.map(c=>({...c.ref,kind:'index-node'}));}if(p.type!=='leaf'||!Array.isArray(p.entries))fail('BACKUP_NODE_INVALID');const out=[];
+ if(p.tree==='entities')for(const e of p.entries)if(e.key.startsWith('import/pin/')&&!e.value.deleted&&e.value.value?.state==='ready'){const pin=e.value.value;if(!Array.isArray(pin.assets))fail('BACKUP_PIN_INVALID');for(const a of pin.assets)out.push({id:a.fileId,hash:a.sha256,byteLength:a.byteLength,kind:'asset',reservation:clone(a)});}
+ return out;
+}
+function dailyPinReservations(f){
+ if(f?.kind!=='index-node'||f.payload.tree!=='entities'||f.payload.type!=='leaf')return [];
+ const refs=[];for(const e of f.payload.entries){const p=e.value.value;if(!e.key.startsWith('daily/pin/')||e.value.deleted||p?.state!=='ready')continue;
+ if(p.schema!==1||p.storeId!==f.storeId||!id(p.generation)||!id(p.pinId)||e.key!=='daily/pin/'+p.pinId||!Array.isArray(p.assets))fail('BACKUP_DAILY_PIN_INVALID');for(const a of p.assets){if(a.pinId!==p.pinId)fail('BACKUP_DAILY_PIN_INVALID');refs.push(dailyReservation(a,p.sourceStoreId||p.storeId));}}
+ return refs;
+}
+function pinnedDaily(job,r){if(!(job.dailyReservations||[]).some(p=>equal(p,r)))fail('BACKUP_DAILY_PIN_MISSING');return r;}
+function queueDailyDirectoryDays(job,r,bytes){
+ const node=job.dailyNodes?.[r.id];if(!node)return;const h=job.daily.head;let body;try{body=JSON.parse(decodeUtf8(bytes));}catch(_){fail('BACKUP_DAILY_DIRECTORY_INVALID');}
+ if(body.schema!==1||body.storeId!==h.sourceStoreId||body.generation!==h.sourceGeneration)fail('BACKUP_DAILY_DIRECTORY_INVALID');
+ if(node.type==='root'&&body.months){if(Array.isArray(body.months)||body.days)fail('BACKUP_DAILY_DIRECTORY_INVALID');for(const [month,p]of Object.entries(body.months)){if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)||p.hash!==p.asset?.sha256)fail('BACKUP_DAILY_DIRECTORY_INVALID');const ref=pinnedDaily(job,dailyReservation(p.asset,h.sourceStoreId));job.queue.push(ref);job.dailyNodes[ref.id]={type:'month',month};}}
+ else{if(!body.days||Array.isArray(body.days)||node.type==='month'&&body.month!==node.month)fail('BACKUP_DAILY_DIRECTORY_INVALID');for(const [date,p]of Object.entries(body.days)){dailyBounds(date);if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||node.type==='month'&&!date.startsWith(node.month+'-')||p.hash!==p.asset?.sha256)fail('BACKUP_DAILY_DIRECTORY_INVALID');job.queue.push(pinnedDaily(job,dailyReservation(p.asset,h.sourceStoreId)));}}
+ delete job.dailyNodes[r.id];
+}
+function capturedDailyHead(f){if(f?.kind!=='index-node'||f.payload.tree!=='entities'||f.payload.type!=='leaf')return null;const e=f.payload.entries.find(e=>e.key==='daily/head'&&!e.value.deleted);return e?clone(e.value.value):null;}
+function checkedManifest(m){if(!m||m.protocol!=='mypace-backup-v1'||m.status!=='complete'||!Array.isArray(m.entries))fail('BACKUP_MANIFEST_INVALID');const {hash:h,...body}=m;if(!hash(h)||writerDigest(body)!==h)fail('BACKUP_MANIFEST_CORRUPT');validateView(m.view);const seen=new Set();for(const e of m.entries){ref(e.ref);if(!id(e.copyId)||seen.has(e.ref.id))fail('BACKUP_MANIFEST_INVALID');seen.add(e.ref.id);}for(const r of roots(m.view)){const e=m.entries.find(x=>x.ref.id===r.id);if(!e||!equal(e.ref,r))fail('BACKUP_MAP_MISSING');}if(m.daily){if(m.daily.schema!==1||m.daily.head?.schema!==1||m.daily.head.storeId!==m.view.storeId||m.daily.head.generation!==m.view.datasetGeneration)fail('BACKUP_DAILY_HEAD_INVALID');const r=dailyReservation(m.daily.head.directory,m.daily.head.sourceStoreId);const e=m.entries.find(e=>e.ref.id===r.id);if(!e||!equal(e.ref,r))fail('BACKUP_DAILY_MAP_MISSING');}return m;}
+function validateBackupManifest(m){checkedManifest(m);return true;}
+function createBackupJob(view,previousManifest=null,createdAt=new Date().toISOString()){
+ validateView(view);if(!Number.isFinite(Date.parse(createdAt)))fail('BACKUP_DATE_INVALID');let previous=[];
+ if(previousManifest){checkedManifest(previousManifest);if(previousManifest.view.storeId!==view.storeId||previousManifest.view.anchorId!==view.anchorId||previousManifest.view.writerScriptId!==view.writerScriptId)fail('BACKUP_PREVIOUS_IDENTITY');previous=previousManifest.entries;}
+ return {protocol:'mypace-backup-job-v1',view:clone(view),createdAt,queue:roots(view),entries:[],previous:clone(previous),pending:null,status:'copying',copied:0,reused:0};
+}
+function persist(job,io){if(encodeUtf8(JSON.stringify(job)).length>MAX_JOB)fail('BACKUP_JOB_CAPACITY');io.saveJob(clone(job));}
+function backupSlice(job,io,{maxFiles=4,canContinue=()=>true}={}){
+ if(job?.protocol!=='mypace-backup-job-v1'||!Array.isArray(job.queue)||!Array.isArray(job.entries)||!Array.isArray(job.previous)||!Number.isSafeInteger(maxFiles)||maxFiles<1||maxFiles>64)fail('BACKUP_JOB_INVALID');validateView(job.view);
+ for(const n of ['allocateId','readSource','readBackup','createBackup','saveJob'])if(typeof io?.[n]!=='function')fail('BACKUP_IO_INVALID');
+ let n=0;
+ while(job.queue.length&&n<maxFiles&&canContinue()){
+  const r=ref(job.queue[0]),existing=job.entries.find(e=>e.ref.id===r.id);
+  if(existing){if(!equal(existing.ref,r))fail('BACKUP_REFERENCE_CONFLICT');job.queue.shift();persist(job,io);continue;}
+  let entry=job.previous.find(e=>e.ref.id===r.id),bytes,f;
+  if(entry){if(!equal(entry.ref,r))fail('BACKUP_REFERENCE_CONFLICT');bytes=io.readBackup(entry.copyId,MAX_FILE);f=verify(bytes,r,job.view);job.reused++;}
+  else {
+   if(job.pending&&(!equal(job.pending.ref,r)||!id(job.pending.copyId)))fail('BACKUP_PENDING_INVALID');
+   if(!job.pending){const copyId=io.allocateId();if(!id(copyId)||copyId===r.id)fail('BACKUP_COPY_ID_INVALID');job.pending={ref:clone(r),copyId};persist(job,io);}
+   entry=clone(job.pending);bytes=io.readBackup(entry.copyId,MAX_FILE);
+   if(bytes===null){bytes=io.readSource(r);verify(bytes,r,job.view);try{io.createBackup(entry.copyId,bytes,r.kind==='asset'?r.reservation.role:r.kind);}catch(error){const found=io.readBackup(entry.copyId,MAX_FILE);if(found===null)throw error;bytes=found;}const found=io.readBackup(entry.copyId,MAX_FILE);if(found===null)fail('BACKUP_COPY_UNRESOLVED');bytes=found;}
+   f=verify(bytes,r,job.view);job.copied++;
+  }
+  const dailyHead=capturedDailyHead(f);if(dailyHead){if(job.daily&&!equal(job.daily.head,dailyHead))fail('BACKUP_DAILY_HEAD_CONFLICT');job.daily={schema:1,head:dailyHead};}job.entries.push(clone(entry));job.queue.shift();const dailyRefs=dailyPinReservations(f);if(dailyRefs.length)job.dailyReservations=[...(job.dailyReservations||[]),...dailyRefs];queueDailyDirectoryDays(job,r,bytes);for(const d of dependencies(f)){ref(d);job.queue.push(d);}job.pending=null;n++;persist(job,io);
+ }
+ if(!job.queue.length&&job.daily&&!job.dailyPhase){validateDailyHead(job.daily.head,{storeId:job.view.storeId,generation:job.view.datasetGeneration});job.queue.push(pinnedDaily(job,dailyReservation(job.daily.head.directory,job.daily.head.sourceStoreId)));job.dailyPhase='assets';job.dailyNodes={[job.daily.head.directory.fileId]:{type:'root'}};persist(job,io);}
+ let manifest=null;if(!job.queue.length){const body={protocol:'mypace-backup-v1',status:'complete',createdAt:job.createdAt,view:job.view,entries:job.entries,scope,...(job.daily?{daily:job.daily}:{})};manifest={...clone(body),hash:writerDigest(body)};if(encodeUtf8(JSON.stringify(manifest)).length>MAX_JOB)fail('BACKUP_MANIFEST_CAPACITY');checkedManifest(manifest);if(job.daily&&Object.keys(job.dailyNodes||{}).length)fail('BACKUP_DAILY_CLOSURE_INCOMPLETE');job.status='complete';persist(job,io);}
+ return {job,status:job.status,manifest,copied:job.copied,reused:job.reused};
+}
+// /** No fallback to production IO, even for a missing copy. */
+function createBackupReadIO(manifest,readBackup){checkedManifest(manifest);if(typeof readBackup!=='function')fail('BACKUP_IO_INVALID');return {getScriptId:()=>manifest.view.writerScriptId,assertLockHeld:()=>true,allocateIds:()=>fail('BACKUP_READ_ONLY'),createFile:()=>fail('BACKUP_READ_ONLY'),readFile(originalId,maxBytes){const e=manifest.entries.find(x=>x.ref.id===originalId);if(!e)fail('BACKUP_MAP_MISSING');const b=readBackup(e.copyId,maxBytes);const f=verify(b,e.ref,manifest.view);for(const r of dependencies(f)){const found=manifest.entries.find(x=>x.ref.id===r.id);if(!found||!equal(found.ref,r))fail('BACKUP_MAP_MISSING');}return b;}};}
+function createBackupAssetReader(manifest,readBackup){const io=createBackupReadIO(manifest,readBackup);return reservation=>{const e=manifest.entries.find(x=>x.ref.id===reservation.fileId);if(!e||e.ref.kind!=='asset'||e.ref.hash!==reservation.sha256||e.ref.byteLength!==reservation.byteLength)fail('BACKUP_ASSET_MAP_MISSING');return io.readFile(e.ref.id,MAX_FILE);};}
+// Daily descriptors remain bound to the archived source identity, unlike the
+// newly signed active head. Every read requires the exact pinned reservation.
+function createBackupDailyAssetReader(manifest,readBackup,head){
+ checkedManifest(manifest);if(!head||head.schema!==1||head.archiveManifestHash&&head.archiveManifestHash!==manifest.hash&&!equal(head,manifest.daily?.head))fail('BACKUP_DAILY_HEAD_INVALID');
+ const io=createBackupReadIO(manifest,readBackup);
+ return reservation=>{const r=dailyReservation(reservation,head.sourceStoreId),e=manifest.entries.find(e=>e.ref.id===r.id);if(!e||!equal(e.ref,r))fail('BACKUP_DAILY_MAP_MISSING');return io.readFile(r.id,MAX_FILE);};
+}
+function openBackupSnapshot(manifest,readBackup){const io=createBackupReadIO(manifest,readBackup),v=manifest.view;const writer=new ReservedSlotWriter({io,anchorId:v.anchorId,storeId:v.storeId,writerScriptId:v.writerScriptId,schemaVersion:v.schemaVersion});writer.validateReadView(v);io.readFile(v.headId,MAX_FILE);return {writer,view:clone(v),readAsset:createBackupAssetReader(manifest,readBackup)};}
+// /** Bounded DFS cursor also includes non-app entity namespaces. */
+function readBackupEntities(manifest,readBackup,{position=0,cursor=null,limit=32,maxNodes=16,canContinue=()=>true}={}){
+ checkedManifest(manifest);if(!Number.isSafeInteger(position)||position<0||!Number.isSafeInteger(limit)||limit<1||limit>128)fail('BACKUP_SCAN_INVALID');
+ if(cursor===null&&position!==0)fail('BACKUP_SCAN_CURSOR_REQUIRED');
+ let c=cursor?clone(cursor):{index:0,offset:0};if(!Number.isSafeInteger(c.index)||c.index<0||c.index>manifest.entries.length||!Number.isSafeInteger(c.offset)||c.offset<0)fail('BACKUP_SCAN_INVALID');
+ const io=createBackupReadIO(manifest,readBackup),out=[],steps=[];let nodes=0;
+ while(c.index<manifest.entries.length&&out.length<limit&&nodes<maxNodes&&canContinue()){
+  const e=manifest.entries[c.index];if(e.ref.kind!=='index-node'){if(c.offset)fail('BACKUP_SCAN_INVALID');c={index:c.index+1,offset:0};continue;}
+  const f=JSON.parse(decodeUtf8(io.readFile(e.ref.id,MAX_FILE)));nodes++;
+  if(f.payload.tree!=='entities'||f.payload.type!=='leaf'){if(c.offset)fail('BACKUP_SCAN_INVALID');c={index:c.index+1,offset:0};continue;}
+  if(c.offset>f.payload.entries.length)fail('BACKUP_SCAN_INVALID');
+  while(c.offset<f.payload.entries.length&&out.length<limit){const x=f.payload.entries[c.offset];if(!x.value||x.key!==x.value.key||typeof x.value.deleted!=='boolean'||!Number.isSafeInteger(x.value.version))fail('BACKUP_ENTITY_INVALID');out.push(clone(x.value));c.offset++;if(c.offset===f.payload.entries.length)c={index:c.index+1,offset:0};steps.push(clone(c));if(c.offset===0)break;}
+  if(f.payload.entries.length===0)c={index:c.index+1,offset:0};
+ }
+ return {entries:out,steps,cursor:c,position:position+out.length,done:c.index===manifest.entries.length};
+}
+function createRestoreJob(manifest,targetIdentity,{manifestId=null}={}){if(manifestId!==null&&!id(manifestId))fail('BACKUP_ID_INVALID');checkedManifest(manifest);if(!targetIdentity||!id(targetIdentity.storeId)||!id(targetIdentity.anchorId)||targetIdentity.storeId===manifest.view.storeId||targetIdentity.anchorId===manifest.view.anchorId)fail('RESTORE_TARGET_NOT_ISOLATED');return {protocol:'mypace-restore-job-v1',manifestHash:manifest.hash,...(manifestId?{archiveManifestId:manifestId}:{}),target:clone(targetIdentity),position:0,cursor:null,status:'restoring',restored:0};}
+function rebind(value,from,to){if(Array.isArray(value))return value.map(x=>rebind(x,from,to));if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,k==='storeId'&&v===from?to:rebind(v,from,to)]));return value;}
+const pausedDaily=()=>({schema:1,enabled:false,status:'paused',pending:false,error:'RESTORED_DAILY_JOBS_PAUSED'});
+const mappedDailyAssets=(e,m)=>(e.value?.assets||[]).filter(a=>m.entries.some(entry=>entry.ref.kind==='asset'&&entry.ref.id===a.fileId));
+const restoredDeleted=(e,m)=>e.deleted||['daily/file/','daily/job/'].some(prefix=>e.key.startsWith(prefix))||e.key.startsWith('daily/pin/')&&(e.value?.state!=='ready'||!mappedDailyAssets(e,m).length);
+function restoredValue(e,manifest,writer,archiveManifestId=null){if(e.key==='import/owner-scheduler')return pausedImport();if(e.key==='daily/owner-scheduler')return pausedDaily();if(restoredDeleted(e,manifest))return null;if(e.key==='import/owner-scheduler')return pausedImport();if(e.key==='import/drive-change-discovery')return {...clone(e.value),enabled:false,pending:false,coverage:false,channels:[],watchPending:null,error:'DRIVE_CHANGE_REACTIVATION_REQUIRED'};if(e.key==='daily/head')return {...clone(e.value),storeId:writer.storeId,generation:writer.captureReadView().datasetGeneration,sourceStoreId:e.value.sourceStoreId||manifest.view.storeId,sourceGeneration:e.value.sourceGeneration||manifest.view.datasetGeneration,archiveManifestHash:manifest.hash,archiveStoreId:manifest.view.storeId,archivePublication:e.value.publication,pending:false,error:'DAILY_PAUSED',...(archiveManifestId?{archiveManifestId}:{})};if(e.key==='daily/archive-source')return restoredArchiveSource(manifest,writer,archiveManifestId);if(e.key.startsWith('daily/pin/'))return {...clone(e.value),assets:mappedDailyAssets(e,manifest),storeId:writer.storeId,generation:writer.captureReadView().datasetGeneration,sourceStoreId:e.value.sourceStoreId||manifest.view.storeId};if(e.key==='daily/owner-scheduler')return pausedDaily();return e.key.startsWith('import/job/')||e.key.startsWith('import/pin/')?rebind(e.value,manifest.view.storeId,writer.storeId):clone(e.value);}
+function restoredArchiveSource(manifest,writer,manifestId){return manifest.daily?restoredValue({key:'daily/head',deleted:false,value:manifest.daily.head},manifest,writer,manifestId):{schema:1,archiveOnly:true,storeId:writer.storeId,generation:writer.captureReadView().datasetGeneration,sourceStoreId:manifest.view.storeId,archiveStoreId:manifest.view.storeId,...(manifestId?{archiveManifestId:manifestId}:{}),archiveManifestHash:manifest.hash};}
+function restoreSlice(job,{manifest,readBackup,writer,saveJob},{maxEntities=8,canContinue=()=>true}={}){
+ checkedManifest(manifest);if(job?.protocol!=='mypace-restore-job-v1'||job.manifestHash!==manifest.hash||writer.storeId!==job.target.storeId||writer.anchorId!==job.target.anchorId||writer.storeId===manifest.view.storeId||typeof saveJob!=='function'||!Number.isSafeInteger(maxEntities)||maxEntities<1||maxEntities>32)fail('RESTORE_TARGET_NOT_ISOLATED');
+ if(!canContinue())return {job,status:job.status};
+ writer.recoveryBarrier();const status=writer.status(),epoch=status.acceptedEpochs[status.acceptedEpochs.length-1];if(status.writerFence!==2)fail('RESTORE_TARGET_FENCE_REQUIRED');
+ if(job.status==='pausing-imports')return pauseRestoredImports(job,{manifest,writer,saveJob},epoch);
+ if(job.status!=='restoring')fail('RESTORE_PHASE_INVALID');
+ // Older releases persisted an end cursor before pausing. Upgrade that exact
+ // completed scan without rereading and saving an empty restore batch.
+ if(!job.pendingRestore&&job.cursor?.index===manifest.entries.length&&job.cursor.offset===0){job.status='pausing-imports';saveJob(clone(job));return {job,status:job.status,restored:job.restored};}
+ if(!job.pendingRestore){
+  const page=readBackupEntities(manifest,readBackup,{position:job.position,cursor:job.cursor,limit:maxEntities,canContinue}),selected=[];let bytes=0;
+  for(const e of page.entries){const size=encodeUtf8(JSON.stringify(e)).length;if(selected.length&&bytes+size>32768)break;selected.push(e);bytes+=size;}
+  const all=selected.length===page.entries.length,cursor=all?page.cursor:page.steps[selected.length-1];
+  job.pendingRestore={entries:selected,cursor,position:job.position+selected.length,done:all&&page.done};saveJob(clone(job));
+ }
+ const pending=job.pendingRestore;if(pending.entries.some(e=>e.key.startsWith('daily/')&&!e.deleted))job.dailyCapable=true;const entries=pending.entries.filter(e=>e.key!=='app/change-head'&&!e.key.startsWith('app/change-slot/'));
+ if(entries.length){
+  const changes=entries.map(e=>({key:e.key,expectedVersion:0,value:restoredValue(e,manifest,writer,job.archiveManifestId)})),identity={manifest:manifest.hash,target:job.target,position:job.position,changes},d=writerDigest(identity),operationId='restore_batch_'+d.slice(0,40),prior=writer.getReceipt(operationId,epoch);
+  if(!prior){for(const c of changes)if(writer.get(c.key))fail('RESTORE_TARGET_NOT_EMPTY');writer.transact({operationId,epoch,digest:d,changes});}else if(prior.digest!==d)fail('RESTORE_RECEIPT_MISMATCH');
+  const deletions=entries.filter(e=>restoredDeleted(e,manifest)).map(e=>({key:e.key,expectedVersion:1,deleted:true}));if(deletions.length){const dd=writerDigest({identity,deletions}),deleteId='restore_delete_'+dd.slice(0,40);if(!writer.getReceipt(deleteId,epoch))writer.transact({operationId:deleteId,epoch,digest:dd,changes:deletions});}
+ }
+ job.restored+=entries.length;job.cursor=pending.cursor;job.position=pending.position;const done=pending.done;job.pendingRestore=null;if(done)job.status='pausing-imports';saveJob(clone(job));
+
+ return {job,status:job.status,restored:job.restored,imports:'pause-pending; completed routes use the immutable backup asset map',entityVersions:'reset in independent store'};
+}
+
+
+function pauseRestoredImports(job,{manifest,writer,saveJob},epoch){
+ const key='import/owner-scheduler',value=pausedImport(),d=writerDigest({manifest:manifest.hash,target:job.target,pause:true}),operationId='restore_pause_'+d.slice(0,40);
+ if(!writer.getReceipt(operationId,epoch)){
+  const change=(key,value)=>{const old=writer.get(key);return {key,expectedVersion:old?.version||0,value,...(old?.deleted?{recreate:true}:{})};};
+  const changes=[change(key,value)];if(job.dailyCapable)changes.push(change('daily/owner-scheduler',pausedDaily()));
+  if(job.archiveManifestId||manifest.daily)changes.push(change('daily/archive-source',restoredArchiveSource(manifest,writer,job.archiveManifestId)));
+  writer.transact({operationId,epoch,digest:d,changes});
+ }
+ job.status='restored-needs-verification';saveJob(clone(job));return {job,status:job.status,restored:job.restored,imports:'paused'};
+}
+
+// Verification is separately resumable and never reads production files. It
+// compares reconstructed values, traverses completed route pages via the actual
+// application reader, and requires a later invocation to observe a write probe.
+function verifyRestoreSlice(job,{manifest,readBackup,writer,saveJob,makeImportReader,dailyHeadStore=null},{maxEntities=4,canContinue=()=>true}={}){
+ checkedManifest(manifest);if(job?.manifestHash!==manifest.hash||writer.storeId!==job.target?.storeId||writer.anchorId!==job.target?.anchorId||writer.storeId===manifest.view.storeId||typeof makeImportReader!=='function')fail('RESTORE_VERIFY_CONFIG');
+ if(!Number.isSafeInteger(maxEntities)||maxEntities<1||maxEntities>128)fail('RESTORE_VERIFY_BOUND');
+ if(!['restored-needs-verification','verifying','restore-probe-written','restore-verified'].includes(job.status))fail('RESTORE_NOT_RECONSTRUCTED');
+ writer.recoveryBarrier();
+ if(writer.status().writerFence!==2)fail('RESTORE_TARGET_FENCE_REQUIRED');
+ if(job.status==='restore-verified')return {job,status:job.status};
+ if(job.status==='restore-probe-written'){
+  const probe=writer.get(job.verification.probeKey);if(!probe||probe.deleted||!equal(probe.value,{manifest:manifest.hash,target:job.target}))fail('RESTORE_WRITE_PROBE_MISSING');
+  verifyReopenedDaily(job,{manifest,readBackup,dailyHeadStore});job.status='restore-verified';job.verifiedAt=new Date().toISOString();saveJob(clone(job));return {job,status:job.status,records:job.verification.records,routePages:job.verification.routePages,imports:'paused'};
+ }
+ if(!job.verification)job.verification={cursor:null,position:0,records:0,routePages:0,pendingRoute:null,scanDone:false};job.status='verifying';const v=job.verification;
+ const targetView=writer.captureReadView();
+ if(v.targetView&&!equal(v.targetView,targetView)){
+  // A probe may have committed just before a lost reply/budget yield. Accept
+  // only that exact single successor, never unrelated target edits.
+  const d=writerDigest({manifest:manifest.hash,target:job.target}),key='recovery/verified-write/'+d,value={manifest:manifest.hash,target:job.target};
+  const receipt=writer.getReceipt('restore_probe_'+d.slice(0,40),targetView.acceptedEpochs[targetView.acceptedEpochs.length-1]);
+  const actual=writer.get(key);
+  if(!v.scanDone||v.pendingRoute||v.pendingDailyAssets||v.daily&&(v.daily.pageIndex<v.daily.pages.length||v.daily.position<v.daily.dates.length)||targetView.revision!==v.targetView.revision+1||!receipt||receipt.digest!==writerDigest(value)||receipt.revision!==targetView.revision||receipt.frameId!==targetView.headId||receipt.frameHash!==targetView.headHash||!actual||actual.deleted||!equal(actual.value,value)||!equal(receipt.entityVersions,[{key,version:1,deleted:false}]))fail('RESTORE_VERIFY_TARGET_CHANGED');
+  v.probeKey=key;job.status='restore-probe-written';saveJob(clone(job));return {job,status:job.status,records:v.records,routePages:v.routePages};
+ }
+ v.targetView=targetView;
+ // A durable completed verification scan needs only the final write probe.
+ // Do not reopen archived roots or re-read completed routes on every retry.
+ if(v.scanDone&&!v.pendingRoute&&!v.pendingDailyAssets&&(!v.daily||v.daily.pageIndex===v.daily.pages.length&&v.daily.position===v.daily.dates.length))return writeRestoreProbe(job,{manifest,writer,saveJob,dailyHeadStore},canContinue);
+ // This cache is private to this verification call, never reused across locks or
+ // invocations. Every returned body still passes its manifest hash/identity check.
+ const rawRead=readBackup,cache=new Map();let cachedBytes=0;
+ readBackup=(id,max)=>{let bytes=cache.get(id);if(!bytes){bytes=rawRead(id,max);if(bytes&&bytes.length<=4194304){while(cache.size&&(cache.size>=64||cachedBytes+bytes.length>4194304)){const first=cache.keys().next().value;cachedBytes-=cache.get(first).length;cache.delete(first);}cache.set(id,Uint8Array.from(bytes));cachedBytes+=bytes.length;}}if(bytes&&bytes.length>max)fail('BACKUP_SIZE_INVALID');return bytes?Uint8Array.from(bytes):bytes;};
+ const targetReaderWriter={get:k=>writer.readEntityAtRoot(targetView.stateRoot,k),status:()=>({revision:targetView.revision}),recoveryBarrier:()=>true,transact:()=>fail('BACKUP_READ_ONLY'),getReceipt:()=>null};
+ const frozen=openBackupSnapshot(manifest,readBackup),oldWriter={get:k=>frozen.writer.readEntityAtRoot(manifest.view.stateRoot,k),status:()=>({revision:manifest.view.revision}),recoveryBarrier:()=>true,transact:()=>fail('BACKUP_READ_ONLY'),getReceipt:()=>null};
+ const originalReader=makeImportReader(oldWriter,manifest.view.storeId,frozen.readAsset),restoredReader=makeImportReader(targetReaderWriter,writer.storeId,createBackupAssetReader(manifest,readBackup));
+ let count=0,uncheckpointed=0,lastCheckpoint=Date.now();
+ const checkpoint=(force=false)=>{if(uncheckpointed&&(force||uncheckpointed>=8||Date.now()-lastCheckpoint>=15000)){saveJob(clone(job));uncheckpointed=0;lastCheckpoint=Date.now();}};
+ while(count<maxEntities&&canContinue()){
+  if(v.pendingDailyAssets){const p=v.pendingDailyAssets;createBackupDailyAssetReader(manifest,readBackup,{schema:1,sourceStoreId:p.sourceStoreId})(p.assets[p.position]);p.position++;v.dailyAssets=(v.dailyAssets||0)+1;if(p.position===p.assets.length)v.pendingDailyAssets=null;count++;uncheckpointed++;checkpoint();continue;}
+  if(v.daily&&v.daily.pageIndex<v.daily.pages.length){verifyDailyPage(v.daily,manifest,readBackup);count++;uncheckpointed++;checkpoint();continue;}
+  if(v.daily&&v.daily.position<v.daily.dates.length){const d=v.daily,date=d.dates[d.position];compareDailyRead(d.sourceHead,d.targetHead,date,manifest,readBackup);d.position++;v.dailyDays=(v.dailyDays||0)+1;count++;uncheckpointed++;checkpoint();continue;}
+
+  if(v.pendingRoute){const p=v.pendingRoute,a=originalReader.readRoutePage({runId:p.runId,cursor:p.originalCursor}),b=restoredReader.readRoutePage({runId:p.runId,cursor:p.restoredCursor});if(!equal(a.points,b.points)||!!a.nextCursor!==!!b.nextCursor)fail('RESTORE_ROUTE_MISMATCH');v.routePages++;p.originalCursor=a.nextCursor;p.restoredCursor=b.nextCursor;if(!a.nextCursor)v.pendingRoute=null;count++;uncheckpointed++;checkpoint();continue;}
+  if(v.scanDone)break;
+  const page=readBackupEntities(manifest,readBackup,{position:v.position,cursor:v.cursor,limit:1,canContinue});
+  if(page.entries.length){const e=page.entries[0];if(e.key!=='app/change-head'&&!e.key.startsWith('app/change-slot/')){const actual=targetReaderWriter.get(e.key);let expected=restoredValue(e,manifest,writer,job.archiveManifestId);if(!actual||actual.deleted!==(['import/owner-scheduler','daily/owner-scheduler'].includes(e.key)?false:restoredDeleted(e,manifest))||!equal(actual.value,expected))fail('RESTORE_ENTITY_MISMATCH');v.records++;
+ if(!e.deleted&&e.key==='daily/head'){if(!manifest.daily||!equal(manifest.daily.head,e.value))fail('BACKUP_DAILY_CAPABILITY_MISSING');validateDailyHead(e.value,{storeId:manifest.view.storeId,generation:manifest.view.datasetGeneration});v.daily={sourceHead:clone(e.value),targetHead:clone(actual.value),dates:[],position:0,pages:[{asset:clone(e.value.directory),type:'root'}],pageIndex:0};}
+ if(!e.deleted&&e.key.startsWith('daily/pin/')&&e.value.state==='ready'){const included=e.value.assets.filter(a=>manifest.entries.some(entry=>entry.ref.kind==='asset'&&entry.ref.id===a.fileId));if(included.length)v.pendingDailyAssets={sourceStoreId:e.value.sourceStoreId||e.value.storeId,assets:clone(included),position:0};}
+ if(!e.deleted&&e.key.startsWith('run/')&&e.value?.imported?.jobId){const jobEntity=oldWriter.get('import/job/'+e.value.imported.jobId);if(jobEntity?.value?.status==='completed')v.pendingRoute={runId:e.key.slice(4),originalCursor:null,restoredCursor:null};}}}
+  v.cursor=page.cursor;v.position=page.position;v.scanDone=page.done;count++;uncheckpointed++;checkpoint();
+ }
+ checkpoint(true);
+ if(v.scanDone&&!v.pendingRoute&&!v.pendingDailyAssets&&(!v.daily||v.daily.pageIndex===v.daily.pages.length&&v.daily.position===v.daily.dates.length))return writeRestoreProbe(job,{manifest,writer,saveJob,dailyHeadStore},canContinue);
+ return {job,status:job.status,records:v.records,routePages:v.routePages};
+}
+
+function writeRestoreProbe(job,{manifest,writer,saveJob,dailyHeadStore},canContinue){
+ const v=job.verification;
+ if(v.scanDone&&manifest.daily&&!v.daily)fail('BACKUP_DAILY_CAPABILITY_MISSING');
+ if(v.scanDone&&!v.pendingRoute&&!v.pendingDailyAssets&&(!v.daily||v.daily.pageIndex===v.daily.pages.length&&v.daily.position===v.daily.dates.length)&&canContinue()){
+  const paused=writer.get('import/owner-scheduler');if(!paused||paused.deleted||!equal(paused.value,pausedImport()))fail('RESTORE_IMPORT_PAUSE_MISSING');
+  if(v.daily){const paused=writer.get('daily/owner-scheduler');if(!paused||paused.deleted||!equal(paused.value,pausedDaily()))fail('RESTORE_DAILY_PAUSE_MISSING');if(typeof dailyHeadStore?.publish!=='function'||typeof dailyHeadStore?.read!=='function')fail('RESTORE_DAILY_HEAD_REQUIRED');dailyHeadStore.publish(v.daily.targetHead);if(!equal(dailyHeadStore.read(),v.daily.targetHead))fail('RESTORE_DAILY_HEAD_MISMATCH');}
+  const d=writerDigest({manifest:manifest.hash,target:job.target}),key='recovery/verified-write/'+d,operationId='restore_probe_'+d.slice(0,40),value={manifest:manifest.hash,target:job.target};
+  const status=writer.status();if(!writer.getReceipt(operationId,status.acceptedEpochs[status.acceptedEpochs.length-1]))writer.transact({operationId,epoch:status.acceptedEpochs[status.acceptedEpochs.length-1],digest:writerDigest(value),changes:[{key,expectedVersion:0,value}]});v.probeKey=key;job.status='restore-probe-written';saveJob(clone(job));
+ }
+ return {job,status:job.status,records:v.records,routePages:v.routePages};
+}
+
+function compareDailyRead(sourceHead,targetHead,date,manifest,readBackup,readHead=()=>targetHead){
+ const make=(head,getHead)=>createDailyReader({storeId:head.storeId,generation:head.generation,readHead:getHead,readAsset:createBackupDailyAssetReader(manifest,readBackup,head)});
+ const source=make(sourceHead,()=>sourceHead).dailyRun({date,knownHash:null}),target=make(targetHead,readHead).dailyRun({date,knownHash:null});
+ const {store:sourceStore,generation:sourceGeneration,pending:sourcePending,error:sourceError,preparationState:sourcePreparation,...a}=source,{store:targetStore,generation:targetGeneration,pending:targetPending,error:targetError,preparationState:targetPreparation,...b}=target;
+ if(targetPending!==false||targetError!=='DAILY_PAUSED'||sourceStore!==sourceHead.storeId||sourceGeneration!==sourceHead.generation||targetStore!==targetHead.storeId||targetGeneration!==targetHead.generation||!equal(a,b))fail('RESTORE_DAILY_ROUTE_MISMATCH');
+}
+function verifyReopenedDaily(job,{manifest,readBackup,dailyHeadStore}){
+ const d=job.verification.daily;if(!d)return;
+ if(typeof dailyHeadStore?.read!=='function'||!equal(dailyHeadStore.read(),d.targetHead))fail('RESTORE_DAILY_HEAD_MISMATCH');
+ const reader=createDailyReader({storeId:d.targetHead.storeId,generation:d.targetHead.generation,readHead:()=>dailyHeadStore.read(),readAsset:createBackupDailyAssetReader(manifest,readBackup,d.targetHead)});
+ if(!d.dates.length){const empty=reader.dailyRun({date:'1970-01-01',knownHash:null});if(empty.store!==d.targetHead.storeId||empty.generation!==d.targetHead.generation)fail('RESTORE_DAILY_DIRECTORY_MISMATCH');}
+ if(d.dates.length)compareDailyRead(d.sourceHead,d.targetHead,d.dates[0],manifest,readBackup,()=>dailyHeadStore.read());
+}
+
+function verifyDailyPage(d,manifest,readBackup){
+ const page=d.pages[d.pageIndex],read=createBackupDailyAssetReader(manifest,readBackup,d.sourceHead);let body;try{body=JSON.parse(decodeUtf8(read(page.asset)));}catch(error){if(/^BACKUP_/.test(error.message))throw error;fail('BACKUP_DAILY_DIRECTORY_INVALID');}
+ if(body.schema!==1||body.storeId!==d.sourceHead.sourceStoreId||body.generation!==d.sourceHead.sourceGeneration)fail('BACKUP_DAILY_DIRECTORY_INVALID');
+ if(page.type==='root'&&body.months){if(Array.isArray(body.months)||body.days)fail('BACKUP_DAILY_DIRECTORY_INVALID');for(const [month,p]of Object.entries(body.months)){if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)||p.hash!==p.asset?.sha256)fail('BACKUP_DAILY_DIRECTORY_INVALID');dailyReservation(p.asset,d.sourceHead.sourceStoreId);d.pages.push({asset:p.asset,type:'month',month});}}
+ else{if(!body.days||Array.isArray(body.days)||page.type==='month'&&body.month!==page.month)fail('BACKUP_DAILY_DIRECTORY_INVALID');for(const [date,p]of Object.entries(body.days)){dailyBounds(date);if(page.type==='month'&&!date.startsWith(page.month+'-')||p.hash!==p.asset?.sha256||!Number.isSafeInteger(p.updatedAt)||d.dates.includes(date))fail('BACKUP_DAILY_DIRECTORY_INVALID');const r=dailyReservation(p.asset,d.sourceHead.sourceStoreId),e=manifest.entries.find(e=>e.ref.id===r.id);if(!e||!equal(e.ref,r))fail('BACKUP_DAILY_MAP_MISSING');d.dates.push(date);}}
+ d.dates.sort();d.pageIndex++;
+}
+
+return {validateBackupManifest,createBackupJob,backupSlice,createBackupReadIO,createBackupAssetReader,createBackupDailyAssetReader,openBackupSnapshot,readBackupEntities,createRestoreJob,restoreSlice,verifyRestoreSlice};
+})();
+const m29 = (function(){
+const {validateBackupManifest,createBackupDailyAssetReader,createBackupAssetReader} = m28;
+const {writerDigest} = m11;
+const {validateDailyHead} = m26;
+const {encodeUtf8,decodeUtf8,IncrementalSha256} = m3;
+const BACKUP_CONFIG_PROPERTY='mypace.backup.config.v1';
+const FOLDER='application/vnd.google-apps.folder',MIME='application/octet-stream';
+const FIELDS='id,parents,mimeType,trashed,ownedByMe,shared,size,appProperties';
+const fail=code=>{throw Error(code);};
+const validId=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
+const sha=b=>new IncrementalSha256().update(b).digestHex();
+function createGasBackupAdapter(globals,source,{checkBudget=()=>true,deadlineMs=Date.now()+240000,propertyKey=BACKUP_CONFIG_PROPERTY}={}){
+ const {Drive,Utilities,UrlFetchApp,ScriptApp,PropertiesService}=globals;
+ const properties=PropertiesService.getScriptProperties();let config=null,state=null,archiveHead=null,archiveReader=null;
+ function budget(){if(checkBudget()!==true||Date.now()>deadlineMs-10000)fail('BACKUP_YIELD');}
+ function metadata(id){budget();try{return Drive.Files.get(id,{fields:FIELDS});}catch(e){if(/(?:404|not found|File not found)/i.test(String(e.message)))return null;throw e;}}
+ function privateMeta(m,parent,mime){if(!m||m.trashed!==false||m.ownedByMe!==true||m.shared!==false||m.mimeType!==mime||(parent&&(!Array.isArray(m.parents)||m.parents.length!==1||m.parents[0]!==parent)))fail('BACKUP_PRIVATE_METADATA_REQUIRED');return m;}
+ function allocateId(){budget();const r=Drive.Files.generateIds({count:1,space:'drive',type:'files'});if(!r||!r.ids||r.ids.length!==1||!validId(r.ids[0]))fail('BACKUP_ID_INVALID');return r.ids[0];}
+ function body(id,m,maxBytes=4194304){const size=Number(m.size);if(!Number.isSafeInteger(size)||size<1||size>maxBytes)fail('BACKUP_SIZE_INVALID');budget();const r=UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(id)+'?alt=media',{method:'get',headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},followRedirects:false,muteHttpExceptions:true,timeoutSeconds:Math.min(30,Math.max(1,Math.floor((deadlineMs-Date.now()-5000)/1000)))});if(r.getResponseCode()!==200)fail('BACKUP_READ_UNRESOLVED');const b=Uint8Array.from(r.getContent(),v=>v&255);if(b.length!==size)fail('BACKUP_SIZE_MISMATCH');return b;}
+ function blob(bytes){return Utilities.newBlob(Array.from(bytes,v=>v>127?v-256:v),MIME);}
+ function loadConfig(){const raw=properties.getProperty(propertyKey);if(!raw)return null;let c;try{c=JSON.parse(raw);}catch(_){fail('BACKUP_CONFIG_INVALID');}if(c.protocol!=='mypace-private-backup-v1'||c.sourceStoreId!==source.storeId||c.writerScriptId!==ScriptApp.getScriptId()||!validId(c.rootId)||!validId(c.stateId)||!validId(c.parentId)||c.parentId!==source.myDriveRootId&&source.myDriveRootId!==undefined||c.rootId===source.rootParentId||c.stateId===c.rootId)fail('BACKUP_CONFIG_INVALID');return c;}
+ function ensure({create=true,loadState=true}={}){config=loadConfig();if(!config&&!create)return null;if(!config){const root=privateMeta(metadata('root'),null,FOLDER);config={protocol:'mypace-private-backup-v1',sourceStoreId:source.storeId,writerScriptId:ScriptApp.getScriptId(),rootId:allocateId(),stateId:allocateId(),parentId:root.id};const raw=JSON.stringify(config);properties.setProperty(propertyKey,raw);if(properties.getProperty(propertyKey)!==raw)fail('BACKUP_CONFIG_UNCONFIRMED');}
+  let m=metadata(config.rootId);if(!m){if(!create)fail('BACKUP_FOLDER_MISSING');budget();Drive.Files.create({id:config.rootId,name:'MyPace Backups',mimeType:FOLDER,parents:[config.parentId],appProperties:{'mypace.backup':'v1','mypace.source':source.storeId}},null,{fields:'id',ignoreDefaultVisibility:true});m=metadata(config.rootId);}privateMeta(m,config.parentId,FOLDER);if(m.appProperties?.['mypace.backup']!=='v1'||m.appProperties?.['mypace.source']!==source.storeId)fail('BACKUP_FOLDER_MISMATCH');
+  if(loadState)state=readState()||{protocol:'mypace-backup-state-v1',job:null,latestManifest:null,lastRestore:null};return config;
+ }
+ function requireRoot(){if(!config)fail('BACKUP_NOT_INITIALIZED');privateMeta(metadata(config.rootId),config.parentId,FOLDER);}
+ function readBackup(id,maxBytes=4194304){if(!validId(id))fail('BACKUP_ID_INVALID');requireRoot();const m=metadata(id);if(!m)return null;privateMeta(m,config.rootId,MIME);if(m.appProperties?.['mypace.backup']!=='v1'||m.appProperties?.['mypace.source']!==source.storeId)fail('BACKUP_FILE_MISMATCH');return body(id,m,maxBytes);}
+ function createBackup(id,bytes,role){if(!validId(id)||!(bytes instanceof Uint8Array)||bytes.length>4194304)fail('BACKUP_WRITE_INVALID');requireRoot();const existing=readBackup(id);if(existing){if(sha(existing)!==sha(bytes))fail('BACKUP_IMMUTABLE_COLLISION');return;}budget();Drive.Files.create({id,name:'mypace-backup-'+role+'-'+id+(role==='app-recovery-export'?'.json':''),mimeType:MIME,parents:[config.rootId],appProperties:{'mypace.backup':'v1','mypace.source':source.storeId,'mypace.role':String(role).slice(0,80)}},blob(bytes),{fields:'id',ignoreDefaultVisibility:true});const actual=readBackup(id);if(!actual||sha(actual)!==sha(bytes))fail('BACKUP_WRITE_UNCONFIRMED');}
+ function readState(){const b=readBackup(config.stateId);if(!b)return null;let s;try{s=JSON.parse(decodeUtf8(b));}catch(_){fail('BACKUP_STATE_INVALID');}if(s.protocol!=='mypace-backup-state-v1')fail('BACKUP_STATE_INVALID');return s;}
+ function saveState(next){const bytes=encodeUtf8(JSON.stringify(next));if(bytes.length>4194304)fail('BACKUP_STATE_CAPACITY');requireRoot();if(metadata(config.stateId)){budget();Drive.Files.update({},config.stateId,blob(bytes),{fields:'id'});}else createBackup(config.stateId,bytes,'state');const actual=readBackup(config.stateId);if(!actual||sha(actual)!==sha(bytes))fail('BACKUP_STATE_WRITE_UNCONFIRMED');state=next;}
+ function saveJob(job){saveState({...state,job});}
+ function readSource(ref){if(ref.kind==='asset'&&archiveHead){if(!archiveReader)archiveReader=createGasRestoredDailyAssetReader(globals,{config:source,head:archiveHead,checkBudget});if(archiveReader.hasImported(ref.id))return ref.reservation.storeId===source.storeId?archiveReader.readImported(ref.reservation):archiveReader(ref.reservation);}if(!validId(ref.id))fail('BACKUP_SOURCE_ID_INVALID');privateMeta(metadata(source.rootParentId),null,FOLDER);const parent=ref.kind==='asset'?source.assetsParentId:source.metadataParentId;privateMeta(metadata(parent),source.rootParentId,FOLDER);const m=privateMeta(metadata(ref.id),parent,MIME);if(m.appProperties?.['mypace.store']!==source.storeId)fail('BACKUP_SOURCE_STORE_MISMATCH');if(ref.kind==='asset'&&(m.appProperties?.['mypace.sha256']!==ref.hash||Number(m.size)!==ref.byteLength))fail('BACKUP_SOURCE_ASSET_MISMATCH');return body(ref.id,m,ref.kind==='asset'?4194304:4194304);}
+ function listManifestPage(pageToken){requireRoot();if(pageToken!==undefined&&pageToken!==null&&(typeof pageToken!=='string'||pageToken.length>4096))fail('BACKUP_PAGE_TOKEN_INVALID');budget();const r=Drive.Files.list({q:"'"+config.rootId+"' in parents and trashed = false and appProperties has { key='mypace.role' and value='complete-manifest' }",pageSize:50,orderBy:'createdTime desc',fields:'nextPageToken,files('+FIELDS+',name,createdTime)',...(pageToken?{pageToken}:{})});if(!r||!Array.isArray(r.files)||r.files.length>50)fail('BACKUP_HISTORY_INVALID');return {manifests:r.files.map(m=>{privateMeta(m,config.rootId,MIME);if(m.appProperties?.['mypace.backup']!=='v1'||m.appProperties?.['mypace.source']!==source.storeId||m.appProperties?.['mypace.role']!=='complete-manifest'||!validId(m.id))fail('BACKUP_HISTORY_INVALID');return {manifestId:m.id,name:m.name,manifestCreatedAt:m.createdTime};}),nextPageToken:r.nextPageToken||null};}
+ function readManifest(id){if(!validId(id))fail('BACKUP_ID_INVALID');const m=metadata(id);if(m?.appProperties?.['mypace.role']!=='complete-manifest')fail('BACKUP_MANIFEST_ROLE_INVALID');return readBackup(id,4194304);}
+ return {bindArchive(head){archiveHead=head;archiveReader=null;},listManifestPage,readManifest,ensure,allocateId,readSource,readBackup,createBackup,saveJob,saveState,getState:()=>state,getConfig:()=>config};
+}
+
+// A restored fast read never attempts production asset IDs. The signed target
+// head pins both the archive's immutable ID and hash; normal backup ownership
+// and private-folder checks still apply. No writer replay or source read occurs.
+function createGasRestoredDailyAssetReader(globals,{config,head,checkBudget=()=>true}){
+ if(head?.archiveOnly===true){if(head.schema!==1||head.storeId!==config.storeId||head.generation!==config.datasetGeneration||!validId(head.sourceStoreId))fail('BACKUP_DAILY_ARCHIVE_INVALID');}else validateDailyHead(head,{storeId:config.storeId,generation:config.datasetGeneration});
+ if(!validId(head.archiveManifestId)||typeof head.archiveManifestHash!=='string'||head.sourceStoreId===config.storeId)fail('BACKUP_DAILY_ARCHIVE_INVALID');
+ const archiveStoreId=head.archiveStoreId||head.sourceStoreId,scoped=BACKUP_CONFIG_PROPERTY+'_'+archiveStoreId,propertyKey=globals.PropertiesService.getScriptProperties().getProperty(scoped)?scoped:BACKUP_CONFIG_PROPERTY;
+ const adapter=createGasBackupAdapter(globals,{storeId:archiveStoreId},{checkBudget,propertyKey});
+ if(!adapter.ensure({create:false,loadState:false}))fail('BACKUP_DAILY_ARCHIVE_MISSING');
+ const bytes=adapter.readManifest(head.archiveManifestId);if(!bytes)fail('BACKUP_DAILY_ARCHIVE_MISSING');
+ let manifest;try{manifest=JSON.parse(decodeUtf8(bytes));}catch(_){fail('BACKUP_MANIFEST_INVALID');}
+ validateBackupManifest(manifest);
+ const original=manifest.daily?.head;
+ if(manifest.hash!==head.archiveManifestHash||manifest.view.writerScriptId!==globals.ScriptApp.getScriptId()||manifest.view.storeId!==(head.archiveStoreId||head.sourceStoreId)||!head.archiveOnly&&(!original||original.sourceStoreId!==head.sourceStoreId||original.sourceGeneration!==head.sourceGeneration||original.publication!==(head.archivePublication||head.publication)||head.publication<original.publication||writerDigest(original.directory)!==writerDigest(head.directory)))fail('BACKUP_DAILY_ARCHIVE_MISMATCH');
+ const daily=createBackupDailyAssetReader(manifest,adapter.readBackup,head),imported=createBackupAssetReader(manifest,adapter.readBackup);
+ daily.hasImported=fileId=>manifest.entries.some(e=>e.ref.kind==='asset'&&e.ref.id===fileId);
+ daily.readImported=reservation=>{const e=manifest.entries.find(e=>e.ref.kind==='asset'&&e.ref.id===reservation?.fileId);if(!e||reservation.storeId!==config.storeId||writerDigest({...reservation,storeId:e.ref.reservation.storeId})!==writerDigest(e.ref.reservation))fail('BACKUP_ASSET_MAP_MISSING');return imported(reservation);};
+ return daily;
+}
+
+return {BACKUP_CONFIG_PROPERTY,createGasBackupAdapter,createGasRestoredDailyAssetReader};
+})();
+const m30 = (function(){
+const {ImmutableAssetAdapter,createGasAssetMediaReader,hashAssetBytes} = m6;
+const {createDailyReader,createGasDailyReadHead,validateDailyReservation} = m26;
+const {createGasRestoredDailyAssetReader} = m29;
+const {createDailyMaterializer} = m27;
+const fail=c=>{throw Error(c);};
+// Read path authorizes ONLY descriptors reachable from the authenticated signed
+// publication. It does not instantiate a writer or recover the transaction log.
+function createGasDailyAssetReader(globals,{config,authorize,checkBudget=()=>true}){const media=createGasAssetMediaReader({UrlFetchApp:globals.UrlFetchApp,ScriptApp:globals.ScriptApp,checkBudget,assertReadableAsset:(id,length)=>authorize(id,length)});return r=>{validateDailyReservation(r);if(authorize(r.fileId,r.byteLength)!==true)fail('DAILY_ASSET_FORBIDDEN');const m=globals.Drive.Files.get(r.fileId,{fields:'id,parents,appProperties,size,trashed,mimeType,ownedByMe,shared'}),markers={'mypace.store':r.storeId,'mypace.job':r.jobId,'mypace.pin':r.pinId,'mypace.role':r.role,'mypace.sha256':r.sha256};if(!m||m.id!==r.fileId||m.trashed!==false||m.ownedByMe!==true||m.shared!==false||m.mimeType!=='application/octet-stream'||!Array.isArray(m.parents)||m.parents.length!==1||m.parents[0]!==config.assetsParentId||String(m.size)!==String(r.byteLength)||Object.keys(markers).some(k=>m.appProperties?.[k]!==markers[k]))fail('DAILY_ASSET_METADATA');const bytes=media(r.fileId,r.byteLength,r.role==='checkpoint'?2097152:262144);if(hashAssetBytes(bytes)!==r.sha256)fail('DAILY_ASSET_CORRUPT');return bytes;};}
+function createGasDailyReader(globals,{config,checkBudget=()=>true}){const generation=config.datasetGeneration,heads=createGasDailyReadHead(globals,{storeId:config.storeId,generation}),authorized=new Map();const read=createGasDailyAssetReader(globals,{config,checkBudget,authorize:(id,length)=>authorized.get(id)===length});let selected=null,archive=null;return createDailyReader({storeId:config.storeId,generation,readHead:()=>{selected=heads.read();archive=selected?.archiveManifestHash?createGasRestoredDailyAssetReader(globals,{config,head:selected,checkBudget}):null;return selected;},readAsset:r=>{if(archive)return archive(r);authorized.set(r.fileId,r.byteLength);try{return read(r);}finally{authorized.delete(r.fileId);}}});}
+function createGasDailyMaterializer(globals,{runtime,config,checkBudget=()=>true,workBudget=checkBudget,now=()=>Date.now()}){
+ const reservations=new Map();
+ const valid=r=>{const pin=runtime.writer.get('daily/pin/'+r.pinId)?.value;return pin&&['reserved','ready'].includes(pin.state)&&pin.storeId===config.storeId&&pin.assets.some(a=>['fileId','storeId','jobId','pinId','role','byteLength','sha256'].every(k=>a[k]===r[k]));};
+ const read=createGasDailyAssetReader(globals,{config,checkBudget,authorize:(id,length)=>{const r=reservations.get(id);return !!r&&r.byteLength===length&&valid(r);}});
+ const readAsset=r=>{reservations.set(r.fileId,r);try{return read(r);}finally{reservations.delete(r.fileId);}};
+ const assets=new ImmutableAssetAdapter({Drive:globals.Drive,Utilities:globals.Utilities,managedParentId:config.assetsParentId,storeId:config.storeId,assertReservation:r=>!!valid(r),readAssetBytes:(id,length)=>{const r=reservations.get(id);if(!r||r.byteLength!==length)fail('DAILY_ASSET_FORBIDDEN');return readAsset(r);}});
+ const boundAssets={putOnce:p=>{reservations.set(p.reservation.fileId,p.reservation);try{return assets.putOnce(p);}finally{reservations.delete(p.reservation.fileId);}}};
+ const heads=createGasDailyReadHead(globals,{storeId:config.storeId,generation:config.datasetGeneration});let archived;const readNormalized=r=>{const stored=runtime.writer.get('daily/archive-source')?.value||runtime.writer.get('daily/head')?.value;if(stored?.archiveManifestHash){archived=archived||createGasRestoredDailyAssetReader(globals,{config,head:stored,checkBudget});if(archived.hasImported(r.fileId))return archived.readImported(r);}return runtime.store._read(r);};return createDailyMaterializer({runtime,assets:boundAssets,readAsset,readNormalized,writeHead:h=>heads.publish(h),now,canContinue:workBudget});
+}
+
+return {createGasDailyAssetReader,createGasDailyReader,createGasDailyMaterializer};
+})();
+const m31 = (function(){
+// Durable, bounded notification state OUTSIDE watched Drive. ScriptProperties
+// writes cannot generate Drive notifications. All callers hold the script lock.
+const {encodeUtf8} = m3;
+const {hashAssetBytes} = m6;
+const fail=c=>{throw Error(c);};
+const equal=(a,b)=>{if(typeof a!=='string'||typeof b!=='string'||a.length!==b.length)return false;let n=0;for(let i=0;i<a.length;i++)n|=a.charCodeAt(i)^b.charCodeAt(i);return n===0;};
+const newer=(a,b)=>a.length>b.length||a.length===b.length&&a>b;
+function createDriveChangeHints({properties,storeId,generation='1',channelToken,now=()=>Date.now()}){
+ if(typeof properties?.getProperty!=='function'||typeof properties?.setProperty!=='function'||typeof channelToken!=='function')fail('DRIVE_CHANGE_HINT_STORE_REQUIRED');
+ const key='MYPACE_DRIVE_CHANGE_HINT_'+hashAssetBytes(encodeUtf8(JSON.stringify([storeId,generation]))).slice(0,32);
+ const initial=()=>({schema:1,storeId,generation,enabled:false,channels:[],messages:{},pending:false,lastHintAt:0,cursor:null,buckets:[]});
+ function read(){const raw=properties.getProperty(key);if(!raw)return initial();if(typeof raw!=='string'||encodeUtf8(raw).length>8500)fail('DRIVE_CHANGE_HINT_STATE_INVALID');let e;try{e=JSON.parse(raw);}catch(_){fail('DRIVE_CHANGE_HINT_STATE_INVALID');}if(!e?.value||e.value.schema!==1||e.value.storeId!==storeId||e.value.generation!==generation||!equal(e.signature,channelToken('state:'+JSON.stringify(e.value))))fail('DRIVE_CHANGE_HINT_STATE_INVALID');return e.value;}
+ function write(s){const raw=JSON.stringify({value:s,signature:channelToken('state:'+JSON.stringify(s))});if(encodeUtf8(raw).length>8500)fail('DRIVE_CHANGE_HINT_CAPACITY');properties.setProperty(key,raw);return s;}
+ function registry(enabled,channels){const s=read();s.enabled=enabled;s.channels=channels.map(c=>({id:c.id,resourceId:c.resourceId,expiresAt:c.expiresAt}));for(const id of Object.keys(s.messages))if(!channels.some(c=>c.id===id))delete s.messages[id];return write(s);}
+ function hint(p){if(!p||Object.keys(p).sort().join(',')!=='channelId,messageNumber,resourceId,resourceState,token'||typeof p.channelId!=='string'||!/^[-A-Za-z0-9_]{1,256}$/.test(p.channelId)||typeof p.resourceId!=='string'||p.resourceId.length>256||!['sync','change'].includes(p.resourceState)||!/^\d{1,30}$/.test(p.messageNumber))fail('DRIVE_CHANGE_HINT_INVALID');const s=read();if(!s.enabled)fail('DRIVE_CHANGE_DISABLED');if(!s.channels.some(c=>c.id===p.channelId&&c.resourceId===p.resourceId&&c.expiresAt>now())||!equal(p.token,channelToken(p.channelId)))fail('DRIVE_CHANGE_FORBIDDEN');const n=p.messageNumber.replace(/^0+(?=\d)/,'');if(!newer(n,s.messages[p.channelId]||'0')||s.pending&&now()-s.lastHintAt<60000)return {accepted:true,coalesced:true};s.messages[p.channelId]=n;s.pending=true;s.lastHintAt=now();write(s);return {accepted:true,coalesced:false};}
+ function cursor(baseCursor,cursor,checkedAt,pending=false){const s=read();s.cursor={baseCursor,cursor,checkedAt};s.pending=pending;return write(s);}
+ function reserve(existing,{calls,ms,limits}){const s=read(),hour=Math.floor(now()/3600000);s.buckets=s.buckets.filter(b=>b.hour>=hour-24);const all=[...existing.filter(b=>b.hour>=hour-24),...s.buckets];if(all.some(b=>b.hour>hour))fail('OWNER_CLOCK_REGRESSED');if(all.reduce((n,b)=>n+b.calls,0)+calls>limits.rollingCalls||all.reduce((n,b)=>n+b.ms,0)+ms>limits.rollingRuntimeMs)return false;let b=s.buckets.find(b=>b.hour===hour);if(!b){b={hour,calls:0,ms:0};s.buckets.push(b);}b.calls+=calls;b.ms+=ms;s.budgetSerial=(s.budgetSerial||0)+1;const reservation={id:s.budgetSerial,hour,calls,ms};s.reservation=reservation;write(s);return reservation;}
+ function settle(reservation,{calls,ms}){const s=read();if(s.reservation?.id!==reservation.id)return false;if(!Number.isSafeInteger(calls)||calls<0||!Number.isSafeInteger(ms)||ms<0)fail('DRIVE_CHANGE_HINT_BUDGET');const b=s.buckets.find(b=>b.hour===reservation.hour);if(!b)fail('DRIVE_CHANGE_HINT_BUDGET');b.calls+=calls-reservation.calls;b.ms+=ms-reservation.ms;s.reservation=null;write(s);return true;}
+ return Object.freeze({read,registry,hint,cursor,reserve,settle});
+}
+function createGasDriveChangeHints(globals,{config,channelToken,now}){return createDriveChangeHints({properties:globals.PropertiesService.getScriptProperties(),storeId:config.storeId,generation:config.datasetGeneration||'1',channelToken,now});}
+function createGasDriveChangeHintService(globals,options){const hints=createGasDriveChangeHints(globals,options);return payload=>{const lock=globals.LockService.getScriptLock();if(!lock.tryLock(1000)){const e=Error('WRITER_BUSY');e.retryable=true;throw e;}try{return hints.hint(payload);}finally{lock.releaseLock();}};}
+
+return {createDriveChangeHints,createGasDriveChangeHints,createGasDriveChangeHintService};
+})();
+const m32 = (function(){
+// Classic notifications are hints. Classified source queue+cursor progress is
+// atomic in the writer. Hints/replay and irrelevant-only cursor progress live
+// outside watched Drive, avoiding self-notification feedback.
+const {encodeUtf8} = m3;
+const {hashAssetBytes} = m6;
+const {SOURCE_FOLDER_ID,SOURCE_FIELDS} = m5;
+const {importKeys} = m17;
+const {createDriveFolderScope} = m19;
+const DRIVE_CHANGE_KEY='import/drive-change-discovery';
+const DRIVE_CHANGE_LIMITS=Object.freeze({pageSize:32,queue:128,folders:128,intervalMs:900000,coalesceMs:60000,channelMs:604800000,renewBeforeMs:86400000});
+const hash=x=>hashAssetBytes(encodeUtf8(JSON.stringify(x)));
+const clone=x=>JSON.parse(JSON.stringify(x));
+const fail=c=>{throw Error(c);};
+const validId=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,256}$/.test(x);
+const token=x=>typeof x==='string'&&x.length>0&&x.length<=4096&&!/[\0\r\n]/.test(x);
+const csv=f=>f&&f.trashed===false&&typeof f.name==='string'&&/\.csv$/i.test(f.name)&&typeof f.mimeType==='string'&&!f.mimeType.startsWith('application/vnd.google-apps.');
+const folder=f=>f?.mimeType==='application/vnd.google-apps.folder';
+const newer=(a,b)=>a.length>b.length||a.length===b.length&&a>b;
+function driveChangeTokenInput(storeId,channelId){return 'mypace-drive-change-v1:'+storeId+':'+channelId;}
+function createDriveChangeDiscovery({runtime,Drive,config,now=()=>Date.now(),canContinue=()=>true,channelToken,randomId,hints}){
+ if(!runtime?.writer||typeof runtime.locked!=='function'||!Drive?.Files||!Drive?.Changes||!config?.storeId||typeof channelToken!=='function'||!hints)fail('DRIVE_CHANGE_CONFIG');
+ const {writer,store,locked}=runtime,excludedIds=[config.rootParentId,config.metadataParentId,config.assetsParentId].filter(Boolean);
+ const contains=createDriveFolderScope({Drive,rootId:SOURCE_FOLDER_ID,excludedIds,canContinue});
+ const read=()=>{store.recoveryBarrier();return writer.get(DRIVE_CHANGE_KEY);};
+ const save=(entry,s,label)=>{
+  if(encodeUtf8(JSON.stringify(s)).length>60000)fail('DRIVE_CHANGE_STATE_CAPACITY');
+  const version=entry?.version||0,digest=hash(s);
+  writer.transact({operationId:'drive_change_'+hash([version,label,digest]),epoch:'default',digest,changes:[{key:DRIVE_CHANGE_KEY,expectedVersion:version,value:s}],result:{status:s.enabled?'enabled':'paused'}});
+  return {version:version+1,value:clone(s)};
+ };
+ const view=s=>s?{enabled:s.enabled,queued:s.queue.length,folders:s.folders.length,pending:s.pending,lastReconciledAt:s.lastReconciledAt,coverage:s.coverage&&!s.queue.length&&!s.folders.length&&!s.pending,channels:s.channels.length,watchPending:!!s.watchPending,sourceWarnings:(s.warnings||[]).length,sourceWarningOverflow:s.warningOverflow===true,error:s.error||null}: {enabled:false,coverage:false};
+ const opts=s=>s.driveId?{driveId:s.driveId,supportsAllDrives:true,includeItemsFromAllDrives:true}:{supportsAllDrives:true,includeItemsFromAllDrives:true};
+ function queue(s,id,removed=false){
+  if(!validId(id))fail('DRIVE_CHANGE_ID_INVALID');
+  const prior=s.queue.find(x=>x.id===id);if(prior){prior.removed=removed;return;}
+  if(s.queue.length>=DRIVE_CHANGE_LIMITS.queue)fail('DRIVE_CHANGE_QUEUE_CAPACITY');
+  s.queue.push({id,removed,serial:++s.serial});
+ }
+ function warn(s,id,reason){s.warnings=s.warnings||[];if(s.warnings.some(w=>w.id===id))return;if(s.warnings.length>=32){s.warningOverflow=true;return;}s.warnings.push({id,reason});}
+ function addFolder(s,id){s.seenFolders=s.seenFolders||[];if(!s.seenFolders.includes(id)){if(s.seenFolders.length>=128)fail('DRIVE_CHANGE_FOLDER_CAPACITY');s.seenFolders.push(id);}if(!s.folders.some(x=>x.id===id)){if(s.folders.length>=DRIVE_CHANGE_LIMITS.folders)fail('DRIVE_CHANGE_FOLDER_CAPACITY');s.folders.push({id,pageToken:null});}}
+ function activate({webhookUrl,driveId=null}={}){return locked(()=>{
+  if(typeof webhookUrl!=='string'||!/^https:\/\/[a-zA-Z0-9.-]+\/api\/drive-changes$/.test(webhookUrl)||driveId!==null&&!validId(driveId))fail('DRIVE_CHANGE_ACTIVATION_INVALID');
+  const e=read();if(e?.value?.enabled){hints.registry(true,e.value.channels);return view(e.value);}
+  if(e){const s=clone(e.value);if(s.webhookUrl!==webhookUrl||s.driveId!==driveId)fail('DRIVE_CHANGE_SCOPE_CHANGED');s.enabled=true;s.pending=true;save(e,s,'resume');hints.registry(true,s.channels);return view(s);}
+  if(!canContinue())fail('OWNER_BUDGET_YIELD');
+  const start=Drive.Changes.getStartPageToken(driveId?{driveId,supportsAllDrives:true}:{supportsAllDrives:true});
+  if(!token(start?.startPageToken))fail('DRIVE_CHANGE_CURSOR_INVALID');
+  // Capture cursor BEFORE initial metadata crawl, then drain it to close races.
+  const s={schema:1,enabled:true,webhookUrl,driveId,cursor:start.startPageToken,queue:[],folders:[{id:SOURCE_FOLDER_ID,pageToken:null}],serial:0,pending:true,lastHintAt:0,lastReconciledAt:0,coverage:false,channels:[],watchPending:null,error:null,seenFolders:[SOURCE_FOLDER_ID],warnings:[],warningOverflow:false};
+  save(null,s,'activate');hints.registry(true,s.channels);return view(s);
+ });}
+ function hint(payload){return locked(()=>hints.hint(payload));}
+ function renew(entry,s){
+  s.channels=s.channels.filter(c=>c.expiresAt>now());
+  if(s.channels.some(c=>c.expiresAt-now()>DRIVE_CHANGE_LIMITS.renewBeforeMs))return null;
+  if(s.watchPending)return { ...view(s),error:'DRIVE_CHANGE_WATCH_UNRESOLVED',requiresOwnerAction:true};
+  if(typeof randomId!=='function')fail('DRIVE_CHANGE_RANDOM_REQUIRED');
+  const id=randomId();if(!validId(id)||s.channels.some(c=>c.id===id))fail('DRIVE_CHANGE_CHANNEL_INVALID');
+  const expiresAt=now()+DRIVE_CHANGE_LIMITS.channelMs;
+  s.watchPending={id,requestedAt:now(),expiresAt};entry=save(entry,s,'reserve-watch');
+  // Never retry an ambiguous registration automatically. Cursor fallback keeps
+  // working while owner resolves a lost response. Existing channel overlaps.
+  try{const response=Drive.Changes.watch({id,type:'web_hook',address:s.webhookUrl,token:channelToken(id),expiration:String(expiresAt)},s.cursor,opts(s));
+  if(response?.id!==id||!token(response.resourceId)||response.resourceId.length>256||!/^\d{1,16}$/.test(String(response.expiration)))fail('DRIVE_CHANGE_WATCH_RESPONSE');
+  const expiry=Number(response.expiration);if(expiry<=now()||expiry>expiresAt)fail('DRIVE_CHANGE_WATCH_EXPIRY');
+  s.channels.push({id,resourceId:response.resourceId,expiresAt:expiry,lastMessage:'0'});s.watchPending=null;save(entry,s,'watch-ready');hints.registry(true,s.channels);return view(s);
+  }catch(_){return {...view(entry.value),error:'DRIVE_CHANGE_WATCH_UNRESOLVED',requiresOwnerAction:true};}
+ }
+ function tick({hintsOnly=false}={}){return locked(()=>{
+  let e=read();if(!e?.value?.enabled)return view(e?.value);const s=clone(e.value);
+  if(!canContinue())return {...view(s),yielded:true};
+  const advisory=hints.read();
+  if(!advisory.enabled)return {...view(s),enabled:false,error:'DRIVE_CHANGE_ACTIVATION_INCOMPLETE',requiresOwnerAction:true};
+  if(JSON.stringify(advisory.channels)!==JSON.stringify(s.channels.map(c=>({id:c.id,resourceId:c.resourceId,expiresAt:c.expiresAt}))))hints.registry(true,s.channels);
+  const advisoryCursor=advisory.cursor?.baseCursor===s.cursor?advisory.cursor:null;
+  if(hintsOnly&&(s.queue.length||s.folders.length))return {...view(s),classified:true};
+  if(['DRIVE_CHANGE_CURSOR_EXPIRED','DRIVE_CHANGE_ROOT_UNAVAILABLE'].includes(s.error))return {...view(s),requiresOwnerAction:true};
+  // Renewal precedes periodic reconciliation so a five-minute tick cannot
+  // starve renewal forever. Ambiguous watch setup never stops delta fallback.
+  if(!hintsOnly&&!s.watchPending&&!s.channels.some(c=>c.expiresAt-now()>DRIVE_CHANGE_LIMITS.renewBeforeMs)){const renewed=renew(e,s);if(renewed)return renewed;}
+  // Drain before fetching another page: bounded queue supplies backpressure.
+  if(s.queue.length){
+   const q=s.queue[0];
+   if(q.removed&&(writer.get(importKeys.source(q.id))?.value||(s.seenFolders||[]).includes(q.id)))warn(s,q.id,'source-missing');
+   if(!q.removed){
+    let f;try{f=Drive.Files.get(q.id,{fields:SOURCE_FIELDS,supportsAllDrives:true});}catch(error){if(error?.code!==404&&error?.details?.code!==404)throw error;}
+    if(f&&contains(f)){
+     if(folder(f))addFolder(s,f.id);
+     else if(csv(f)&&Number(f.size)>0){
+      s.warnings=(s.warnings||[]).filter(w=>w.id!==q.id);
+      const marker=hash([q.id,q.serial,f.version,f.md5Checksum,f.size]);
+      try{store.registerJob({operationId:'delta_reg_'+marker,jobId:'delta_job_'+marker,sourceIdentity:f});}
+      catch(error){if((error?.code||error?.message)==='SOURCE_JOB_ACTIVE'){
+       // A rewrite waits behind the current generation; do not lose the ID.
+       s.queue.push(s.queue.shift());save(e,s,'wait-source');return {...view(s),waitingSource:true};
+      }throw error;}
+     }
+    }else if(writer.get(importKeys.source(q.id))?.value||(s.seenFolders||[]).includes(q.id))warn(s,q.id,'source-moved-or-missing');
+   }
+   s.queue.shift();save(e,s,'drain');return view(s);
+  }
+  if(s.folders.length){
+   const f=s.folders[0];
+   let metadata;try{metadata=Drive.Files.get(f.id,{fields:'id,parents,mimeType,trashed',supportsAllDrives:true});}catch(error){if(error?.code!==404&&error?.details?.code!==404)throw error;}
+   if(!contains(metadata)){if(f.id===SOURCE_FOLDER_ID){s.error='DRIVE_CHANGE_ROOT_UNAVAILABLE';s.coverage=false;save(e,s,'root-unavailable');return {...view(s),requiresOwnerAction:true};}warn(s,f.id,'folder-moved-or-missing');s.folders.shift();save(e,s,'folder-moved');return view(s);}
+   const p=Drive.Files.list({q:"'"+f.id+"' in parents and trashed = false",fields:'nextPageToken,files('+SOURCE_FIELDS+')',pageSize:DRIVE_CHANGE_LIMITS.pageSize,pageToken:f.pageToken||undefined,supportsAllDrives:true,includeItemsFromAllDrives:true});
+   if(!p||!Array.isArray(p.files)||p.files.length>DRIVE_CHANGE_LIMITS.pageSize||p.nextPageToken&&!token(p.nextPageToken))fail('DRIVE_CHANGE_PAGE_INVALID');
+   for(const child of p.files)if(!excludedIds.includes(child.id)&&(folder(child)||csv(child)))queue(s,child.id);
+   if(p.nextPageToken){if(p.nextPageToken===f.pageToken)fail('DRIVE_CHANGE_PAGE_STALLED');f.pageToken=p.nextPageToken;}else s.folders.shift();
+   save(e,s,'folder-page');return view(s);
+  }
+  if(s.pending||advisory.pending||now()-(advisoryCursor?.checkedAt||s.lastReconciledAt)>=DRIVE_CHANGE_LIMITS.intervalMs){
+   let p;try{p=Drive.Changes.list(advisoryCursor?.cursor||s.cursor,{...opts(s),pageSize:DRIVE_CHANGE_LIMITS.pageSize,includeRemoved:true,fields:'nextPageToken,newStartPageToken,changes(fileId,removed,file('+SOURCE_FIELDS+'))'});}
+   catch(error){if(error?.code===410||error?.details?.code===410){s.coverage=false;s.error='DRIVE_CHANGE_CURSOR_EXPIRED';save(e,s,'cursor-expired');return {...view(s),requiresOwnerAction:true};}throw error;}
+   if(!p||!Array.isArray(p.changes)||p.changes.length>DRIVE_CHANGE_LIMITS.pageSize)fail('DRIVE_CHANGE_PAGE_INVALID');
+   const next=p.nextPageToken||p.newStartPageToken;if(!token(next)||p.nextPageToken===(advisoryCursor?.cursor||s.cursor))fail('DRIVE_CHANGE_CURSOR_INVALID');
+   for(const c of p.changes){
+    if(excludedIds.includes(c.fileId))continue;
+    const knownFolder=(s.seenFolders||[]).includes(c.fileId);
+    if(c.removed){if(knownFolder||writer.get(importKeys.source(c.fileId))?.value)queue(s,c.fileId,true);}
+    else if(folder(c.file)||csv(c.file)){
+     // A generic notification or an unrelated account CSV is not evidence of
+     // additional running data. Classify the actual subtree before publishing
+     // any Drive-backed queue/pending state.
+     if(contains(c.file)||knownFolder||writer.get(importKeys.source(c.fileId))?.value)queue(s,c.fileId,false);
+    }
+   }
+   // An irrelevant-only page never writes to Drive. Its authenticated cursor
+   // is a safe optimization because it skipped no source work. Lost advisory
+   // progress only replays metadata from the older authoritative cursor.
+   if(!s.queue.length&&!s.folders.length&&s.coverage&&!s.pending){hints.cursor(s.cursor,next,now(),!!p.nextPageToken);return {...view(s),hintPending:!!p.nextPageToken,classified:false};}
+   s.cursor=next;s.pending=!!p.nextPageToken;
+   if(!s.pending){s.lastReconciledAt=now();s.coverage=true;s.error=null;}
+   // This commit advances the cursor AND retains every discovered ID. A crash
+   // cannot acknowledge a page whose durable queue insertion did not happen.
+   save(e,s,'changes-page');hints.cursor(s.cursor,s.cursor,now(),!!p.nextPageToken);return {...view(s),classified:true};
+  }
+  if(hintsOnly)return {...view(s),classified:false};
+  const renewed=renew(e,s);return renewed||view(s);
+ });}
+ function resetCursor(){return locked(()=>{const e=read();if(!e?.value)fail('DRIVE_CHANGE_DISABLED');const s=clone(e.value);const p=Drive.Changes.getStartPageToken(s.driveId?{driveId:s.driveId,supportsAllDrives:true}:{supportsAllDrives:true});if(!token(p?.startPageToken))fail('DRIVE_CHANGE_CURSOR_INVALID');s.cursor=p.startPageToken;s.folders=[{id:SOURCE_FOLDER_ID,pageToken:null}];s.pending=true;s.coverage=false;s.error=null;save(e,s,'owner-reset-cursor');return view(s);});}
+ function resolveExpiredWatch(){return locked(()=>{const e=read();if(!e?.value)fail('DRIVE_CHANGE_DISABLED');const s=clone(e.value);if(s.watchPending&&s.watchPending.expiresAt>now())fail('DRIVE_CHANGE_WATCH_NOT_EXPIRED');s.watchPending=null;save(e,s,'owner-resolve-watch');return view(s);});}
+ function pause(){return locked(()=>{const e=read();if(!e)return view(null);const s=clone(e.value);hints.registry(false,s.channels);s.enabled=false;save(e,s,'pause');return view(s);});}
+ return Object.freeze({activate,pause,resetCursor,resolveExpiredWatch,hint,tick,status:()=>locked(()=>view(read()?.value))});
+}
+
+return {DRIVE_CHANGE_KEY,DRIVE_CHANGE_LIMITS,driveChangeTokenInput,createDriveChangeDiscovery};
+})();
+const m33 = (function(){
 // Owner-editor only. No web handler, timer, trigger installer, or ambient work.
-const {createGasImportRuntime} = m19;
+const {createGasImportRuntime} = m20;
+const {createDriveChangeDiscovery,DRIVE_CHANGE_KEY,DRIVE_CHANGE_LIMITS,driveChangeTokenInput} = m32;
+const {createGasDriveChangeHints} = m31;
+const {createGasDailyMaterializer} = m30;
+const {DAILY_ALGORITHM} = m25;
 const {encodeUtf8} = m3;
 const {hashAssetBytes} = m6;
 const {importKeys} = m17;
-const {createDiscoveryStateIO} = m22;
-const {RECONCILIATION_LIMITS,importDirectoryVersion,completedQueueIsSettled,reconcileCompletedSources,createIdleScanThrottle} = m23;
+const {createDiscoveryStateIO} = m23;
+const {RECONCILIATION_LIMITS,importDirectoryVersion,completedQueueIsSettled,reconcileCompletedSources,createIdleScanThrottle} = m24;
 const KEY='import/owner-scheduler';
 const hash=x=>hashAssetBytes(encodeUtf8(JSON.stringify(x)));
 const fail=c=>{throw Error(c);};
@@ -4293,8 +4979,9 @@ function meteredGas(globals,{now=()=>Date.now(),limits=OWNER_LIMITS,reserveMs=0,
  const allowed=()=>{const t=now();return !closed&&Number.isSafeInteger(t)&&t>=start&&calls<(closing?ceiling:ceiling-reserveCalls)&&t<(closing?hardDeadline:hardDeadline-reserveMs);};
  const call=fn=>function(...args){if(!allowed())fail('OWNER_BUDGET_YIELD');calls++;return fn(...args);};
  const Files={};for(const key of ['get','list','create','generateIds','update'])Files[key]=call((...a)=>globals.Drive.Files[key](...a));
+ const Changes={};for(const key of ['getStartPageToken','list','watch'])if(typeof globals.Drive.Changes?.[key]==='function')Changes[key]=call((...a)=>globals.Drive.Changes[key](...a));
  const fetchAll=typeof globals.UrlFetchApp.fetchAll==='function'?requests=>{if(!Array.isArray(requests)||!requests.length||!allowed()||calls+requests.length>(closing?ceiling:ceiling-reserveCalls))fail('OWNER_BUDGET_YIELD');calls+=requests.length;return globals.UrlFetchApp.fetchAll(requests);}:globals.UrlFetchApp.fetchAll;
- return {globals:{...globals,Drive:{...globals.Drive,Files},UrlFetchApp:{...globals.UrlFetchApp,fetch:call((...a)=>globals.UrlFetchApp.fetch(...a)),...(fetchAll===undefined?{}:{fetchAll})},now},checkBudget:allowed,get deadlineMs(){return hardDeadline-reserveMs;},get hardDeadlineMs(){return hardDeadline;},setRuntimeMs:(ms,headroomMs=reserveMs)=>{if(!Number.isSafeInteger(ms)||!Number.isSafeInteger(headroomMs)||headroomMs<0||ms<=headroomMs||ms>limits.runtimeMs||closing)fail('OWNER_BUDGET_INVALID');reserveMs=headroomMs;hardDeadline=Math.min(start+ms,absoluteCeiling);},usage:()=>({calls,elapsedMs:Math.max(0,now()-start)}),limitRemaining:n=>{if(!Number.isSafeInteger(n)||n<0)fail('OWNER_BUDGET_INVALID');ceiling=Math.min(ceiling,calls+n);closing=true;return ceiling;},close:()=>{closed=true;}};
+ return {globals:{...globals,Drive:{...globals.Drive,Files,...(globals.Drive.Changes?{Changes}:{})},UrlFetchApp:{...globals.UrlFetchApp,fetch:call((...a)=>globals.UrlFetchApp.fetch(...a)),...(fetchAll===undefined?{}:{fetchAll})},now},checkBudget:allowed,get deadlineMs(){return hardDeadline-reserveMs;},get hardDeadlineMs(){return hardDeadline;},setRuntimeMs:(ms,headroomMs=reserveMs)=>{if(!Number.isSafeInteger(ms)||!Number.isSafeInteger(headroomMs)||headroomMs<0||ms<=headroomMs||ms>limits.runtimeMs||closing)fail('OWNER_BUDGET_INVALID');reserveMs=headroomMs;hardDeadline=Math.min(start+ms,absoluteCeiling);},usage:()=>({calls,elapsedMs:Math.max(0,now()-start)}),limitRemaining:n=>{if(!Number.isSafeInteger(n)||n<0)fail('OWNER_BUDGET_INVALID');ceiling=Math.min(ceiling,calls+n);closing=true;return ceiling;},close:()=>{closed=true;}};
 }
 function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LIMITS,deadlineMs,scanIntervalMs=0,reserveMs,scheduledPolicy,settleCalls=256}={}){
  if(!Number.isSafeInteger(settleCalls)||settleCalls<16||settleCalls>256)fail('OWNER_SETTLE_CALLS_INVALID');
@@ -4307,7 +4994,7 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
  if(scheduledPolicy&&(!Number.isSafeInteger(scheduledPolicy.sliceMs)||scheduledPolicy.sliceMs<30000||scheduledPolicy.sliceMs>60000||!Number.isSafeInteger(scheduledPolicy.rangeBytes)||scheduledPolicy.rangeBytes<1||scheduledPolicy.rangeBytes>1048576||(!Number.isSafeInteger(scheduledPolicy.maxFreshOutputs)||scheduledPolicy.maxFreshOutputs<1||scheduledPolicy.maxFreshOutputs>64)||scheduledPolicy.maxStalls!==3||(scheduledPolicy.catchUp!==undefined&&typeof scheduledPolicy.catchUp!=='boolean')||limits.runtimeMs!==OWNER_LIMITS.runtimeMs||reserveMs>=scheduledPolicy.sliceMs))fail('OWNER_SCHEDULED_POLICY_INVALID');
  const meter=meteredGas(globals,{now,limits,deadlineMs,reserveMs,reserveCalls:Math.min(settleCalls,Math.floor(limits.calls/2))});
  if(scheduledPolicy&&!scheduledPolicy.catchUp)meter.setRuntimeMs(scheduledPolicy.sliceMs);
- const runtime=createGasImportRuntime(meter.globals,{...config,checkBudget:meter.checkBudget,deadlineMs:scheduledPolicy?undefined:meter.deadlineMs,protocolReadCache:{mode:'lock-phase'}});
+ const runtime=createGasImportRuntime(meter.globals,{...config,sourceSubtree:true,checkBudget:meter.checkBudget,deadlineMs:scheduledPolicy?undefined:meter.deadlineMs,protocolReadCache:{mode:'lock-phase'}});
  const {writer,store,runner,source,locked}=runtime;
  const idleThrottle=createIdleScanThrottle(globals,config,{now,intervalMs:scanIntervalMs});
  const discovery=createDiscoveryStateIO(meter.globals,config,{checkBudget:meter.checkBudget,now});
@@ -4318,7 +5005,7 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
   return {version:version+1,value};
  };
  const initial=()=>({schema:1,generation:0,status:'idle',scanId:null,cursor:null,queueStarted:false,cycleActive:false,attempt:0,retryAt:0,error:null,lastJob:null,completedAt:null,buckets:[]});
- const view=s=>({status:s.status,scanId:s.scanId,nextJob:s.cursor,retryAt:s.retryAt,error:s.error,lastJob:s.lastJob||null,completedAt:s.completedAt??null,nextScanAt:s.status==='complete'&&Number.isSafeInteger(s.completedAt)?s.completedAt+scanIntervalMs:null,reservedCalls:s.buckets.reduce((n,b)=>n+b.calls,0),reservedRuntimeMs:s.buckets.reduce((n,b)=>n+b.ms,0),usage:meter.usage(),...(scheduledPolicy?{scheduledFallback:s.scheduledFallback||null,requiresOwnerAction:s.status==='blocked',processingMode:s.status==='blocked'?'paused':['idle','complete'].includes(s.status)?'idle':s.processingMode||'check',allowanceMs:s.allowanceMs??null}:{} )});
+ const view=s=>({status:s.status,scanId:s.scanId,nextJob:s.cursor,retryAt:s.retryAt,error:s.error,lastJob:s.lastJob||null,completedAt:s.completedAt??null,discovery:s.discovery||null,daily:s.daily||null,nextScanAt:s.status==='complete'&&Number.isSafeInteger(s.completedAt)?s.completedAt+scanIntervalMs:null,reservedCalls:s.buckets.reduce((n,b)=>n+b.calls,0),reservedRuntimeMs:s.buckets.reduce((n,b)=>n+b.ms,0),usage:meter.usage(),...(scheduledPolicy?{scheduledFallback:s.scheduledFallback||null,requiresOwnerAction:s.status==='blocked',processingMode:s.status==='blocked'?'paused':['idle','complete'].includes(s.status)?'idle':s.processingMode||'check',allowanceMs:s.allowanceMs??null}:{} )});
  function status(){return locked(()=>{const e=read();return view(e?.value||initial());});}
  function blockDiscovery(entry,s,code){
   idleThrottle.clear();s.resumeStatus='complete';s.status='blocked';s.error=code;s.retryAt=0;s.processingMode='paused';write(entry,s,'discovery-blocked');
@@ -4328,6 +5015,40 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
   let entry=read(),s=entry?.value||initial();
   if(s.schema!==1)fail('OWNER_STATE_SCHEMA');
   if(startNew!=='tick')idleThrottle.clear();
+  const automatic=startNew==='tick',dailyState=automatic?writer.get('daily/owner-scheduler')?.value:null,dailyEnabled=dailyState?.enabled===true;
+  let deltaState=automatic?writer.get(DRIVE_CHANGE_KEY)?.value:null,deltaEnabled=deltaState?.enabled===true,delta=null,hints=null,hintState=null;
+  if(deltaEnabled){
+   const secret=globals.PropertiesService.getScriptProperties().getProperty('MYPACE_WRITER_SECRET');
+   if(typeof secret!=='string'||secret.length<32)fail('DRIVE_CHANGE_SECRET_REQUIRED');
+   const channelToken=id=>globals.Utilities.base64EncodeWebSafe(globals.Utilities.computeHmacSha256Signature(driveChangeTokenInput(config.storeId,id),secret,globals.Utilities.Charset.UTF_8)).replace(/=+$/,'');
+   hints=createGasDriveChangeHints(globals,{config,channelToken,now});hintState=hints.read();
+   if(!hintState.enabled)return {...view(s),status:'paused',processingMode:'paused',requiresOwnerAction:true,error:'DRIVE_CHANGE_ACTIVATION_INCOMPLETE'};
+   delta=createDriveChangeDiscovery({runtime,Drive:meter.globals.Drive,config,now,canContinue:meter.checkBudget,randomId:()=>globals.Utilities.getUuid(),channelToken,hints});
+   const checkedAt=hintState.cursor?.baseCursor===deltaState.cursor?hintState.cursor.checkedAt:deltaState.lastReconciledAt;
+   if(s.status==='complete'&&!deltaState.queue.length&&!deltaState.folders.length&&(hintState.pending||deltaState.pending||now()-checkedAt>=DRIVE_CHANGE_LIMITS.intervalMs)){
+    // Classify before any Drive-backed reservation. Irrelevant/self changes
+    // advance only authenticated ScriptProperties and cannot notify Drive.
+    const before=meter.usage(),reservation=hints.reserve(s.buckets,{calls:limits.calls,ms:limits.runtimeMs,limits});
+    if(!reservation)return {...view(s),status:'budget-wait',retryAt:now()+3600000};
+    try{for(let page=0;page<16&&meter.checkBudget()&&meter.usage().calls-before.calls<96&&meter.usage().elapsedMs-before.elapsedMs<15000;page++){const classified=delta.tick({hintsOnly:true});if(classified.classified||classified.requiresOwnerAction||!classified.hintPending)break;}}finally{const after=meter.usage();hints.settle(reservation,{calls:after.calls-before.calls,ms:after.elapsedMs-before.elapsedMs});}
+    deltaState=writer.get(DRIVE_CHANGE_KEY)?.value;hintState=hints.read();
+   }
+  }
+  if(deltaEnabled&&deltaState.error&&s.status==='complete'&&s.discovery?.error===deltaState.error)return {...view(s),status:'blocked',requiresOwnerAction:true,error:deltaState.error};
+  const lastDeltaCheck=hintState?.cursor&&hintState.cursor.baseCursor===deltaState?.cursor?hintState.cursor.checkedAt:deltaState?.lastReconciledAt;
+
+  // Read-only idle ticks do not reserve/write a new job just to discover that
+  // the fifteen-minute fallback is not due. Notifications persist pending=true.
+  if(deltaEnabled&&s.status==='complete'&&!deltaState.pending&&!deltaState.queue.length&&!deltaState.folders.length&&now()<lastDeltaCheck+DRIVE_CHANGE_LIMITS.intervalMs&&(deltaState.watchPending||deltaState.channels.some(c=>c.expiresAt-now()>DRIVE_CHANGE_LIMITS.renewBeforeMs))&&(!dailyEnabled||dailyState.status==='complete'&&dailyState.algorithm===DAILY_ALGORITHM&&s.dailySourceRevision===(writer.get('daily/source-revision')?.version||0))&&s.completedDiscoveryVersion===(writer.get(DRIVE_CHANGE_KEY)?.version||0)&&s.completedDirectoryVersion===importDirectoryVersion(writer))return {...view(s),nextScanAt:lastDeltaCheck+DRIVE_CHANGE_LIMITS.intervalMs};
+  const enhanced=deltaEnabled||dailyEnabled;
+  if(enhanced){
+   // Discovery and preparation share this scheduler's durable quota reservation.
+   // An enabled delta cursor replaces full-folder periodic rescans.
+   if(['idle','complete'].includes(s.status)){
+    startNew=!deltaEnabled&&(s.status==='idle'||!Number.isSafeInteger(s.completedAt)||now()>=s.completedAt+scanIntervalMs);
+    if(!startNew){s.status='importing';s.cursor=null;s.queueStarted=false;s.cycleActive=false;}
+   }else startNew=false;
+  }
   if(startNew==='tick'){
    if(scheduledPolicy&&s.status==='complete'){
     const before=meter.usage(),canReconcile=()=>meter.checkBudget()&&meter.usage().calls-before.calls<RECONCILIATION_LIMITS.additionalCalls&&meter.usage().elapsedMs-before.elapsedMs<Math.floor(scheduledPolicy.sliceMs/4);
@@ -4426,8 +5147,9 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
   s.budgetProfile={calls:limits.calls,checkMs:scheduledPolicy?scheduledPolicy.sliceMs:limits.runtimeMs,catchUp:!!scheduledPolicy?.catchUp,catchUpMs:limits.runtimeMs};
   const hour=Math.floor(now()/3600000);s.buckets=s.buckets.filter(b=>b.hour>=hour-24);
   if(s.buckets.some(b=>b.hour>hour))fail('OWNER_CLOCK_REGRESSED');
-  const calls=s.buckets.reduce((n,b)=>n+b.calls,0),ms=s.buckets.reduce((n,b)=>n+b.ms,0);
-  if(calls+limits.calls>limits.rollingCalls||ms+runtimeAllowance>limits.rollingRuntimeMs)return {...view(s),status:'budget-wait',retryAt:(s.buckets[0].hour+25)*3600000};
+  const extraBuckets=(hints?.read().buckets||[]).filter(b=>b.hour>=hour-24);
+  const calls=[...s.buckets,...extraBuckets].reduce((n,b)=>n+b.calls,0),ms=[...s.buckets,...extraBuckets].reduce((n,b)=>n+b.ms,0);
+  if(calls+limits.calls>limits.rollingCalls||ms+runtimeAllowance>limits.rollingRuntimeMs)return {...view(s),status:'budget-wait',retryAt:(Math.min(...[...s.buckets,...extraBuckets].map(b=>b.hour))+25)*3600000};
   let b=s.buckets.find(b=>b.hour===hour);if(!b){b={hour,calls:0,ms:0};s.buckets.push(b);}b.calls+=limits.calls;b.ms+=runtimeAllowance;
   if(startNew){s.generation++;s.scanId='owner_scan_'+s.generation;s.status='scanning';s.cursor=null;s.queueStarted=false;s.cycleActive=false;s.error=null;s.lastJob=null;s.completedAt=null;}
   else if(s.status==='retry')s.status=s.resumeStatus;
@@ -4444,6 +5166,11 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
    catch(error){return {...view(s),checkpointReady:false,checkpointError:/^[A-Z0-9_]{1,80}$/.test(error.code||error.message)?error.code||error.message:'CHECKPOINT_PENDING',requiresOwnerAction:true};}
   }; 
   try{
+   let discoveryStatus=null,dailyStatus=null;
+   if(deltaEnabled){
+    const before=meter.usage(),canDiscover=()=>meter.checkBudget()&&meter.usage().calls-before.calls<96&&meter.usage().elapsedMs-before.elapsedMs<15000;
+    for(let i=0;i<16&&canDiscover();i++){discoveryStatus=delta.tick();if(discoveryStatus.requiresOwnerAction||discoveryStatus.waitingSource||discoveryStatus.yielded||!discoveryStatus.queued&&!discoveryStatus.folders&&!discoveryStatus.pending)break;}
+   }
    if(startNew)store.beginScan({operationId:'owner_begin_'+s.generation,scanId:s.scanId});
    // Repair an interruption after scheduler reservation but before scan creation.
    else if(s.status==='scanning')store.beginScan({operationId:'owner_begin_'+s.generation,scanId:s.scanId});
@@ -4469,6 +5196,11 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
     s.attempt=0;s.error=null;if(scheduledPolicy)s.scheduledStall=null;if(fallback)s.scheduledFallback=null;
     if(s.status==='complete')break;
    }
+   if(dailyEnabled&&meter.checkBudget()){
+    const daily=createGasDailyMaterializer(meter.globals,{runtime,config,checkBudget:meter.checkBudget,workBudget:()=>meter.checkBudget()&&now()<meter.deadlineMs-10000,now});
+    for(let i=0;i<16&&meter.checkBudget();i++){dailyStatus=daily.tick();if(['complete','blocked','failed','paused'].includes(dailyStatus.status))break;}
+   }
+   if(enhanced){s.completedDiscoveryVersion=writer.get(DRIVE_CHANGE_KEY)?.version||0;s.dailySourceRevision=writer.get('daily/source-revision')?.version||0;s.discovery=discoveryStatus;s.daily=dailyStatus?{status:dailyStatus.status,error:dailyStatus.error||null}:null;}
    // Seal a quiescent import cut before the final scheduler frame. Cold app
    // reads then replay only the checkpoint publication plus this finish frame.
    if(s.status==='complete'){s.completedDirectoryVersion=importDirectoryVersion(writer);s.completedAt=now();s.error=null;s.attempt=0;s.retryAt=0;if(scheduledPolicy)s.processingMode='idle';}
@@ -4517,16 +5249,16 @@ function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LI
 
 return {OWNER_LIMITS,deriveImportBudgetWait,meteredGas,createOwnerScheduler};
 })();
-const m25 = (function(){
+const m34 = (function(){
 // Trusted owner time-trigger boundary. No HTTP dispatcher, trigger installer,
 // background work on load, or progress in ScriptProperties. Event shape rejects
 // accidental/wrong entry paths; it is NOT authentication. The actual effective
 // execution identity and immutable script/store pins remain authoritative.
-const {OWNER_STORE_PROPERTY,parsePinnedOwnerStoreConfig} = m21;
+const {OWNER_STORE_PROPERTY,parsePinnedOwnerStoreConfig} = m22;
 const {createGasCheckpointHintCodec} = m7;
 const {createGasPreparationCodec} = m8;
-const {createGasDiscoveryStateCodec} = m22;
-const {createOwnerScheduler,OWNER_LIMITS} = m24;
+const {createGasDiscoveryStateCodec} = m23;
+const {createOwnerScheduler,OWNER_LIMITS} = m33;
 const SCHEDULED_OWNER_EMAIL='yakitorihanbagu0412@gmail.com';
 const SCHEDULED_DEFAULTS=Object.freeze({sliceMs:60000,calls:750,steps:3,rangeBytes:1048576,scanIntervalMs:3600000,catchUp:true});
 const fail=code=>{const e=Error(code);e.code=code;throw e;};
@@ -4583,14 +5315,14 @@ function createScheduledImportRuntime(globals,options={}){
 
 return {SCHEDULED_OWNER_EMAIL,SCHEDULED_DEFAULTS,createScheduledImportRuntime};
 })();
-const m26 = (function(){
+const m35 = (function(){
 // Authenticated dispatcher read adapter. Cursors must be authenticated by the
 // trusted caller; no Drive file ID or checkpoint reference is accepted from UI.
 const {importKeys} = m17;
 const {decodeUtf8,encodeUtf8} = m3;
 const {LIMITS} = m4;
 const ROUTE_POINTS=1024,ROUTE_BYTES=262144,ROUTE_HEADROOM=32768;
-const {deriveImportBudgetWait,OWNER_LIMITS} = m24;
+const {deriveImportBudgetWait,OWNER_LIMITS} = m33;
 const fail=c=>{throw Error(c);};
 const token=(x,max=100)=>typeof x==='string'&&x.length>0&&x.length<=max&&/^[A-Za-z0-9_-]+$/.test(x);
 const scalar=(x,min=0)=>Number.isSafeInteger(x)&&x>=min;
@@ -4687,219 +5419,7 @@ function createImportReader({runtime,sealCursor,openCursor,now=()=>Date.now()}){
 
 return {createImportReader};
 })();
-const m27 = (function(){
-// /** Owner-only, resumable immutable snapshot archive. Never follows mutable
-//  * successor slots: one captureReadView fixes the cutoff. Copies are not a
-//  * directly swappable Drive folder. No source mutation or retention deletion. */
-const {writerDigest,WRITER_PROTOCOL,ReservedSlotWriter} = m11;
-const {encodeUtf8,decodeUtf8,IncrementalSha256} = m3;
-const fail=c=>{throw Error(c);};
-const clone=x=>JSON.parse(JSON.stringify(x));
-const id=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
-const hash=x=>typeof x==='string'&&/^[a-f0-9]{64}$/.test(x);
-const digest=b=>new IncrementalSha256().update(b).digestHex();
-const equal=(a,b)=>writerDigest(a)===writerDigest(b);
-const canonical=x=>Array.isArray(x)?'['+x.map(canonical).join(',')+']':x&&typeof x==='object'?'{'+Object.keys(x).sort().map(k=>JSON.stringify(k)+':'+canonical(x[k])).join(',')+'}':JSON.stringify(x);
-const MAX_FILE=2*1024*1024,MAX_JOB=4*1024*1024;
-const pausedImport=()=>({schema:1,status:'blocked',retryAt:0,error:'RESTORED_IMPORTS_PAUSED',lastJob:null,processingMode:'paused',allowanceMs:null});
-const scope={records:'all captured entity values and tombstones',receipts:'captured receipt tree archive',assets:'ready CSV pin assets',excluded:['browser-only unsynced records','raw running_data CSV sources','account failure','in-progress reserved asset bodies','historical predecessor frame chain'],restore:'new independent store; entity versions and receipts reset; imported routes use archived asset map; CSV jobs paused'};
-function ref(r){if(!r||!id(r.id)||!hash(r.hash)||!['bootstrap','frame','index-node','asset'].includes(r.kind))fail('BACKUP_REFERENCE_INVALID');if(r.kind==='asset'&&(!Number.isSafeInteger(r.byteLength)||r.byteLength<1||r.byteLength>MAX_FILE))fail('BACKUP_ASSET_BOUND');return r;}
-function validateView(v){if(!v||!id(v.storeId)||!id(v.writerScriptId)||!id(v.anchorId)||!hash(v.anchorHash)||!id(v.headId)||!hash(v.headHash)||v.writerFence!==2||!Number.isSafeInteger(v.revision)||v.revision<1||!Number.isSafeInteger(v.schemaVersion)||v.schemaVersion<1)fail('BACKUP_CAPTURE_INVALID');for(const root of [v.stateRoot,v.receiptRoot])if(root!==null&&(!id(root?.id)||!hash(root?.hash)))fail('BACKUP_CAPTURE_INVALID');}
-function roots(v){return [{id:v.anchorId,hash:v.anchorHash,kind:'bootstrap'},{id:v.headId,hash:v.headHash,kind:'frame'},...[v.stateRoot,v.receiptRoot].filter(Boolean).map(r=>({...r,kind:'index-node'}))];}
-function verify(bytes,r,v){ref(r);if(!bytes||!Number.isSafeInteger(bytes.length)||bytes.length<1||bytes.length>MAX_FILE)fail('BACKUP_BYTES_INVALID');if(r.kind==='asset'){if(bytes.length!==r.byteLength||digest(bytes)!==r.hash)fail('BACKUP_ASSET_CORRUPT');return null;}
- let f;try{f=JSON.parse(decodeUtf8(bytes));}catch(_){fail('BACKUP_PROTOCOL_INVALID');}const {hash:h,...body}=f;
- if(decodeUtf8(bytes)!==canonical(f)||Object.keys(f).sort().join(',')!=='hash,kind,payload,protocol,schemaVersion,storeId,writerScriptId'||h!==r.hash||writerDigest(body)!==h||f.protocol!==WRITER_PROTOCOL||f.kind!==r.kind||f.storeId!==v.storeId||f.writerScriptId!==v.writerScriptId||f.schemaVersion!==v.schemaVersion)fail('BACKUP_PROTOCOL_CORRUPT');
- if(r.kind==='frame'&&(!equal(f.payload.stateRoot,v.stateRoot)||!equal(f.payload.receiptRoot,v.receiptRoot)||f.payload.revision!==v.revision||f.payload.datasetGeneration!==v.datasetGeneration||f.payload.writerFence!==2))fail('BACKUP_CUTOFF_MISMATCH');return f;
-}
-function dependencies(f){if(!f||f.kind!=='index-node')return [];const p=f.payload;if(p.type==='branch'){if(!Array.isArray(p.children))fail('BACKUP_NODE_INVALID');return p.children.map(c=>({...c.ref,kind:'index-node'}));}if(p.type!=='leaf'||!Array.isArray(p.entries))fail('BACKUP_NODE_INVALID');const out=[];
- if(p.tree==='entities')for(const e of p.entries){if(e.key.startsWith('import/pin/')&&!e.value.deleted&&e.value.value?.state==='ready'){const pin=e.value.value;if(!Array.isArray(pin.assets))fail('BACKUP_PIN_INVALID');for(const a of pin.assets)out.push({id:a.fileId,hash:a.sha256,byteLength:a.byteLength,kind:'asset',reservation:clone(a)});}}
- return out;
-}
-function checkedManifest(m){if(!m||m.protocol!=='mypace-backup-v1'||m.status!=='complete'||!Array.isArray(m.entries))fail('BACKUP_MANIFEST_INVALID');const {hash:h,...body}=m;if(!hash(h)||writerDigest(body)!==h)fail('BACKUP_MANIFEST_CORRUPT');validateView(m.view);const seen=new Set();for(const e of m.entries){ref(e.ref);if(!id(e.copyId)||seen.has(e.ref.id))fail('BACKUP_MANIFEST_INVALID');seen.add(e.ref.id);}for(const r of roots(m.view)){const e=m.entries.find(x=>x.ref.id===r.id);if(!e||!equal(e.ref,r))fail('BACKUP_MAP_MISSING');}return m;}
-function validateBackupManifest(m){checkedManifest(m);return true;}
-function createBackupJob(view,previousManifest=null,createdAt=new Date().toISOString()){
- validateView(view);if(!Number.isFinite(Date.parse(createdAt)))fail('BACKUP_DATE_INVALID');let previous=[];
- if(previousManifest){checkedManifest(previousManifest);if(previousManifest.view.storeId!==view.storeId||previousManifest.view.anchorId!==view.anchorId||previousManifest.view.writerScriptId!==view.writerScriptId)fail('BACKUP_PREVIOUS_IDENTITY');previous=previousManifest.entries;}
- return {protocol:'mypace-backup-job-v1',view:clone(view),createdAt,queue:roots(view),entries:[],previous:clone(previous),pending:null,status:'copying',copied:0,reused:0};
-}
-function persist(job,io){if(encodeUtf8(JSON.stringify(job)).length>MAX_JOB)fail('BACKUP_JOB_CAPACITY');io.saveJob(clone(job));}
-function backupSlice(job,io,{maxFiles=4,canContinue=()=>true}={}){
- if(job?.protocol!=='mypace-backup-job-v1'||!Array.isArray(job.queue)||!Array.isArray(job.entries)||!Array.isArray(job.previous)||!Number.isSafeInteger(maxFiles)||maxFiles<1||maxFiles>64)fail('BACKUP_JOB_INVALID');validateView(job.view);
- for(const n of ['allocateId','readSource','readBackup','createBackup','saveJob'])if(typeof io?.[n]!=='function')fail('BACKUP_IO_INVALID');
- let n=0;
- while(job.queue.length&&n<maxFiles&&canContinue()){
-  const r=ref(job.queue[0]),existing=job.entries.find(e=>e.ref.id===r.id);
-  if(existing){if(!equal(existing.ref,r))fail('BACKUP_REFERENCE_CONFLICT');job.queue.shift();persist(job,io);continue;}
-  let entry=job.previous.find(e=>e.ref.id===r.id),bytes,f;
-  if(entry){if(!equal(entry.ref,r))fail('BACKUP_REFERENCE_CONFLICT');bytes=io.readBackup(entry.copyId,MAX_FILE);f=verify(bytes,r,job.view);job.reused++;}
-  else {
-   if(job.pending&&(!equal(job.pending.ref,r)||!id(job.pending.copyId)))fail('BACKUP_PENDING_INVALID');
-   if(!job.pending){const copyId=io.allocateId();if(!id(copyId)||copyId===r.id)fail('BACKUP_COPY_ID_INVALID');job.pending={ref:clone(r),copyId};persist(job,io);}
-   entry=clone(job.pending);bytes=io.readBackup(entry.copyId,MAX_FILE);
-   if(bytes===null){bytes=io.readSource(r);verify(bytes,r,job.view);try{io.createBackup(entry.copyId,bytes,r.kind==='asset'?r.reservation.role:r.kind);}catch(error){const found=io.readBackup(entry.copyId,MAX_FILE);if(found===null)throw error;bytes=found;}const found=io.readBackup(entry.copyId,MAX_FILE);if(found===null)fail('BACKUP_COPY_UNRESOLVED');bytes=found;}
-   f=verify(bytes,r,job.view);job.copied++;
-  }
-  job.entries.push(clone(entry));job.queue.shift();for(const d of dependencies(f)){ref(d);job.queue.push(d);}job.pending=null;n++;persist(job,io);
- }
- let manifest=null;if(!job.queue.length){const body={protocol:'mypace-backup-v1',status:'complete',createdAt:job.createdAt,view:job.view,entries:job.entries,scope};manifest={...clone(body),hash:writerDigest(body)};job.status='complete';persist(job,io);}
- return {job,status:job.status,manifest,copied:job.copied,reused:job.reused};
-}
-// /** No fallback to production IO, even for a missing copy. */
-function createBackupReadIO(manifest,readBackup){checkedManifest(manifest);if(typeof readBackup!=='function')fail('BACKUP_IO_INVALID');return {getScriptId:()=>manifest.view.writerScriptId,assertLockHeld:()=>true,allocateIds:()=>fail('BACKUP_READ_ONLY'),createFile:()=>fail('BACKUP_READ_ONLY'),readFile(originalId,maxBytes){const e=manifest.entries.find(x=>x.ref.id===originalId);if(!e)fail('BACKUP_MAP_MISSING');const b=readBackup(e.copyId,maxBytes);const f=verify(b,e.ref,manifest.view);for(const r of dependencies(f)){const found=manifest.entries.find(x=>x.ref.id===r.id);if(!found||!equal(found.ref,r))fail('BACKUP_MAP_MISSING');}return b;}};}
-function createBackupAssetReader(manifest,readBackup){const io=createBackupReadIO(manifest,readBackup);return reservation=>{const e=manifest.entries.find(x=>x.ref.id===reservation.fileId);if(!e||e.ref.kind!=='asset'||e.ref.hash!==reservation.sha256||e.ref.byteLength!==reservation.byteLength)fail('BACKUP_ASSET_MAP_MISSING');return io.readFile(e.ref.id,MAX_FILE);};}
-function openBackupSnapshot(manifest,readBackup){const io=createBackupReadIO(manifest,readBackup),v=manifest.view;const writer=new ReservedSlotWriter({io,anchorId:v.anchorId,storeId:v.storeId,writerScriptId:v.writerScriptId,schemaVersion:v.schemaVersion});writer.validateReadView(v);io.readFile(v.headId,MAX_FILE);return {writer,view:clone(v),readAsset:createBackupAssetReader(manifest,readBackup)};}
-// /** Bounded DFS cursor also includes non-app entity namespaces. */
-function readBackupEntities(manifest,readBackup,{position=0,cursor=null,limit=32,maxNodes=16,canContinue=()=>true}={}){
- checkedManifest(manifest);if(!Number.isSafeInteger(position)||position<0||!Number.isSafeInteger(limit)||limit<1||limit>128)fail('BACKUP_SCAN_INVALID');
- if(cursor===null&&position!==0)fail('BACKUP_SCAN_CURSOR_REQUIRED');
- let c=cursor?clone(cursor):{index:0,offset:0};if(!Number.isSafeInteger(c.index)||c.index<0||c.index>manifest.entries.length||!Number.isSafeInteger(c.offset)||c.offset<0)fail('BACKUP_SCAN_INVALID');
- const io=createBackupReadIO(manifest,readBackup),out=[],steps=[];let nodes=0;
- while(c.index<manifest.entries.length&&out.length<limit&&nodes<maxNodes&&canContinue()){
-  const e=manifest.entries[c.index];if(e.ref.kind!=='index-node'){if(c.offset)fail('BACKUP_SCAN_INVALID');c={index:c.index+1,offset:0};continue;}
-  const f=JSON.parse(decodeUtf8(io.readFile(e.ref.id,MAX_FILE)));nodes++;
-  if(f.payload.tree!=='entities'||f.payload.type!=='leaf'){if(c.offset)fail('BACKUP_SCAN_INVALID');c={index:c.index+1,offset:0};continue;}
-  if(c.offset>f.payload.entries.length)fail('BACKUP_SCAN_INVALID');
-  while(c.offset<f.payload.entries.length&&out.length<limit){const x=f.payload.entries[c.offset];if(!x.value||x.key!==x.value.key||typeof x.value.deleted!=='boolean'||!Number.isSafeInteger(x.value.version))fail('BACKUP_ENTITY_INVALID');out.push(clone(x.value));c.offset++;if(c.offset===f.payload.entries.length)c={index:c.index+1,offset:0};steps.push(clone(c));if(c.offset===0)break;}
-  if(f.payload.entries.length===0)c={index:c.index+1,offset:0};
- }
- return {entries:out,steps,cursor:c,position:position+out.length,done:c.index===manifest.entries.length};
-}
-function createRestoreJob(manifest,targetIdentity){checkedManifest(manifest);if(!targetIdentity||!id(targetIdentity.storeId)||!id(targetIdentity.anchorId)||targetIdentity.storeId===manifest.view.storeId||targetIdentity.anchorId===manifest.view.anchorId)fail('RESTORE_TARGET_NOT_ISOLATED');return {protocol:'mypace-restore-job-v1',manifestHash:manifest.hash,target:clone(targetIdentity),position:0,cursor:null,status:'restoring',restored:0};}
-function rebind(value,from,to){if(Array.isArray(value))return value.map(x=>rebind(x,from,to));if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,k==='storeId'&&v===from?to:rebind(v,from,to)]));return value;}
-function restoredValue(e,manifest,writer){if(e.deleted)return null;if(e.key==='import/owner-scheduler')return pausedImport();return e.key.startsWith('import/job/')||e.key.startsWith('import/pin/')?rebind(e.value,manifest.view.storeId,writer.storeId):clone(e.value);}
-function restoreSlice(job,{manifest,readBackup,writer,saveJob},{maxEntities=8,canContinue=()=>true}={}){
- checkedManifest(manifest);if(job?.protocol!=='mypace-restore-job-v1'||job.manifestHash!==manifest.hash||writer.storeId!==job.target.storeId||writer.anchorId!==job.target.anchorId||writer.storeId===manifest.view.storeId||typeof saveJob!=='function'||!Number.isSafeInteger(maxEntities)||maxEntities<1||maxEntities>32)fail('RESTORE_TARGET_NOT_ISOLATED');
- if(!canContinue())return {job,status:job.status};
- writer.recoveryBarrier();const status=writer.status(),epoch=status.acceptedEpochs[status.acceptedEpochs.length-1];if(status.writerFence!==2)fail('RESTORE_TARGET_FENCE_REQUIRED');
- if(job.status==='pausing-imports')return pauseRestoredImports(job,{manifest,writer,saveJob},epoch);
- if(job.status!=='restoring')fail('RESTORE_PHASE_INVALID');
- // Older releases persisted an end cursor before pausing. Upgrade that exact
- // completed scan without rereading and saving an empty restore batch.
- if(!job.pendingRestore&&job.cursor?.index===manifest.entries.length&&job.cursor.offset===0){job.status='pausing-imports';saveJob(clone(job));return {job,status:job.status,restored:job.restored};}
- if(!job.pendingRestore){
-  const page=readBackupEntities(manifest,readBackup,{position:job.position,cursor:job.cursor,limit:maxEntities,canContinue}),selected=[];let bytes=0;
-  for(const e of page.entries){const size=encodeUtf8(JSON.stringify(e)).length;if(selected.length&&bytes+size>32768)break;selected.push(e);bytes+=size;}
-  const all=selected.length===page.entries.length,cursor=all?page.cursor:page.steps[selected.length-1];
-  job.pendingRestore={entries:selected,cursor,position:job.position+selected.length,done:all&&page.done};saveJob(clone(job));
- }
- const pending=job.pendingRestore,entries=pending.entries.filter(e=>e.key!=='app/change-head'&&!e.key.startsWith('app/change-slot/'));
- if(entries.length){
-  const changes=entries.map(e=>({key:e.key,expectedVersion:0,value:restoredValue(e,manifest,writer)})),identity={manifest:manifest.hash,target:job.target,position:job.position,changes},d=writerDigest(identity),operationId='restore_batch_'+d.slice(0,40),prior=writer.getReceipt(operationId,epoch);
-  if(!prior){for(const c of changes)if(writer.get(c.key))fail('RESTORE_TARGET_NOT_EMPTY');writer.transact({operationId,epoch,digest:d,changes});}else if(prior.digest!==d)fail('RESTORE_RECEIPT_MISMATCH');
-  const deletions=entries.filter(e=>e.deleted).map(e=>({key:e.key,expectedVersion:1,deleted:true}));if(deletions.length){const dd=writerDigest({identity,deletions}),deleteId='restore_delete_'+dd.slice(0,40);if(!writer.getReceipt(deleteId,epoch))writer.transact({operationId:deleteId,epoch,digest:dd,changes:deletions});}
- }
- job.restored+=entries.length;job.cursor=pending.cursor;job.position=pending.position;const done=pending.done;job.pendingRestore=null;if(done)job.status='pausing-imports';saveJob(clone(job));
-
- return {job,status:job.status,restored:job.restored,imports:'pause-pending; completed routes use the immutable backup asset map',entityVersions:'reset in independent store'};
-}
-
-
-function pauseRestoredImports(job,{manifest,writer,saveJob},epoch){
-  const key='import/owner-scheduler',value=pausedImport(),d=writerDigest({manifest:manifest.hash,target:job.target,pause:true}),operationId='restore_pause_'+d.slice(0,40);
-  if(!writer.getReceipt(operationId,epoch)){const old=writer.get(key);writer.transact({operationId,epoch,digest:d,changes:[{key,expectedVersion:old?old.version:0,value,...(old?.deleted?{recreate:true}:{})}]});}
-  job.status='restored-needs-verification';saveJob(clone(job));
- return {job,status:job.status,restored:job.restored,imports:'paused'};
-}
-
-// Verification is separately resumable and never reads production files. It
-// compares reconstructed values, traverses completed route pages via the actual
-// application reader, and requires a later invocation to observe a write probe.
-function verifyRestoreSlice(job,{manifest,readBackup,writer,saveJob,makeImportReader},{maxEntities=4,canContinue=()=>true}={}){
- checkedManifest(manifest);if(job?.manifestHash!==manifest.hash||writer.storeId!==job.target?.storeId||writer.anchorId!==job.target?.anchorId||writer.storeId===manifest.view.storeId||typeof makeImportReader!=='function')fail('RESTORE_VERIFY_CONFIG');
- if(!Number.isSafeInteger(maxEntities)||maxEntities<1||maxEntities>128)fail('RESTORE_VERIFY_BOUND');
- if(!['restored-needs-verification','verifying','restore-probe-written','restore-verified'].includes(job.status))fail('RESTORE_NOT_RECONSTRUCTED');
- writer.recoveryBarrier();
- if(writer.status().writerFence!==2)fail('RESTORE_TARGET_FENCE_REQUIRED');
- if(job.status==='restore-verified')return {job,status:job.status};
- if(job.status==='restore-probe-written'){
-  const probe=writer.get(job.verification.probeKey);if(!probe||probe.deleted||!equal(probe.value,{manifest:manifest.hash,target:job.target}))fail('RESTORE_WRITE_PROBE_MISSING');
-  job.status='restore-verified';job.verifiedAt=new Date().toISOString();saveJob(clone(job));return {job,status:job.status,records:job.verification.records,routePages:job.verification.routePages,imports:'paused'};
- }
- if(!job.verification)job.verification={cursor:null,position:0,records:0,routePages:0,pendingRoute:null,scanDone:false};job.status='verifying';const v=job.verification;
- const targetView=writer.captureReadView();
- if(v.targetView&&!equal(v.targetView,targetView)){
-  // A probe may have committed just before a lost reply/budget yield. Accept
-  // only that exact single successor, never unrelated target edits.
-  const d=writerDigest({manifest:manifest.hash,target:job.target}),key='recovery/verified-write/'+d,value={manifest:manifest.hash,target:job.target};
-  const receipt=writer.getReceipt('restore_probe_'+d.slice(0,40),targetView.acceptedEpochs[targetView.acceptedEpochs.length-1]);
-  const actual=writer.get(key);
-  if(!v.scanDone||v.pendingRoute||targetView.revision!==v.targetView.revision+1||!receipt||receipt.digest!==writerDigest(value)||receipt.revision!==targetView.revision||receipt.frameId!==targetView.headId||receipt.frameHash!==targetView.headHash||!actual||actual.deleted||!equal(actual.value,value)||!equal(receipt.entityVersions,[{key,version:1,deleted:false}]))fail('RESTORE_VERIFY_TARGET_CHANGED');
-  v.probeKey=key;job.status='restore-probe-written';saveJob(clone(job));return {job,status:job.status,records:v.records,routePages:v.routePages};
- }
- v.targetView=targetView;
- // A durable completed verification scan needs only the final write probe.
- // Do not reopen archived roots or re-read completed routes on every retry.
- if(v.scanDone&&!v.pendingRoute)return writeRestoreProbe(job,{manifest,writer,saveJob},canContinue);
- // This cache is private to this verification call, never reused across locks or
- // invocations. Every returned body still passes its manifest hash/identity check.
- const rawRead=readBackup,cache=new Map();let cachedBytes=0;
- readBackup=(id,max)=>{let bytes=cache.get(id);if(!bytes){bytes=rawRead(id,max);if(bytes&&bytes.length<=4194304){while(cache.size&&(cache.size>=64||cachedBytes+bytes.length>4194304)){const first=cache.keys().next().value;cachedBytes-=cache.get(first).length;cache.delete(first);}cache.set(id,Uint8Array.from(bytes));cachedBytes+=bytes.length;}}if(bytes&&bytes.length>max)fail('BACKUP_SIZE_INVALID');return bytes?Uint8Array.from(bytes):bytes;};
- const targetReaderWriter={get:k=>writer.readEntityAtRoot(targetView.stateRoot,k),status:()=>({revision:targetView.revision}),recoveryBarrier:()=>true,transact:()=>fail('BACKUP_READ_ONLY'),getReceipt:()=>null};
- const frozen=openBackupSnapshot(manifest,readBackup),oldWriter={get:k=>frozen.writer.readEntityAtRoot(manifest.view.stateRoot,k),status:()=>({revision:manifest.view.revision}),recoveryBarrier:()=>true,transact:()=>fail('BACKUP_READ_ONLY'),getReceipt:()=>null};
- const originalReader=makeImportReader(oldWriter,manifest.view.storeId,frozen.readAsset),restoredReader=makeImportReader(targetReaderWriter,writer.storeId,createBackupAssetReader(manifest,readBackup));
- let count=0,uncheckpointed=0,lastCheckpoint=Date.now();
- const checkpoint=(force=false)=>{if(uncheckpointed&&(force||uncheckpointed>=8||Date.now()-lastCheckpoint>=15000)){saveJob(clone(job));uncheckpointed=0;lastCheckpoint=Date.now();}};
- while(count<maxEntities&&canContinue()){
-  if(v.pendingRoute){const p=v.pendingRoute,a=originalReader.readRoutePage({runId:p.runId,cursor:p.originalCursor}),b=restoredReader.readRoutePage({runId:p.runId,cursor:p.restoredCursor});if(!equal(a.points,b.points)||!!a.nextCursor!==!!b.nextCursor)fail('RESTORE_ROUTE_MISMATCH');v.routePages++;p.originalCursor=a.nextCursor;p.restoredCursor=b.nextCursor;if(!a.nextCursor)v.pendingRoute=null;count++;uncheckpointed++;checkpoint();continue;}
-  if(v.scanDone)break;
-  const page=readBackupEntities(manifest,readBackup,{position:v.position,cursor:v.cursor,limit:1,canContinue});
-  if(page.entries.length){const e=page.entries[0];if(e.key!=='app/change-head'&&!e.key.startsWith('app/change-slot/')){const actual=targetReaderWriter.get(e.key);let expected=e.deleted?null:e.key.startsWith('import/job/')||e.key.startsWith('import/pin/')?rebind(e.value,manifest.view.storeId,writer.storeId):e.value;if(e.key==='import/owner-scheduler')expected=pausedImport();if(!actual||actual.deleted!==(e.key==='import/owner-scheduler'?false:e.deleted)||!equal(actual.value,expected))fail('RESTORE_ENTITY_MISMATCH');v.records++;if(!e.deleted&&e.key.startsWith('run/')&&e.value?.imported?.jobId){const jobEntity=oldWriter.get('import/job/'+e.value.imported.jobId);if(jobEntity?.value?.status==='completed')v.pendingRoute={runId:e.key.slice(4),originalCursor:null,restoredCursor:null};}}}
-  v.cursor=page.cursor;v.position=page.position;v.scanDone=page.done;count++;uncheckpointed++;checkpoint();
- }
- checkpoint(true);
- if(v.scanDone&&!v.pendingRoute)return writeRestoreProbe(job,{manifest,writer,saveJob},canContinue);
- return {job,status:job.status,records:v.records,routePages:v.routePages};
-}
-
-function writeRestoreProbe(job,{manifest,writer,saveJob},canContinue){
- const v=job.verification;
- if(v.scanDone&&!v.pendingRoute&&canContinue()){
-  const paused=writer.get('import/owner-scheduler');if(!paused||paused.deleted||!equal(paused.value,pausedImport()))fail('RESTORE_IMPORT_PAUSE_MISSING');
-  const d=writerDigest({manifest:manifest.hash,target:job.target}),key='recovery/verified-write/'+d,operationId='restore_probe_'+d.slice(0,40),value={manifest:manifest.hash,target:job.target};
-  const status=writer.status();if(!writer.getReceipt(operationId,status.acceptedEpochs[status.acceptedEpochs.length-1]))writer.transact({operationId,epoch:status.acceptedEpochs[status.acceptedEpochs.length-1],digest:writerDigest(value),changes:[{key,expectedVersion:0,value}]});v.probeKey=key;job.status='restore-probe-written';saveJob(clone(job));
- }
- return {job,status:job.status,records:v.records,routePages:v.routePages};
-}
-
-return {validateBackupManifest,createBackupJob,backupSlice,createBackupReadIO,createBackupAssetReader,openBackupSnapshot,readBackupEntities,createRestoreJob,restoreSlice,verifyRestoreSlice};
-})();
-const m28 = (function(){
-const {encodeUtf8,decodeUtf8,IncrementalSha256} = m3;
-const BACKUP_CONFIG_PROPERTY='mypace.backup.config.v1';
-const FOLDER='application/vnd.google-apps.folder',MIME='application/octet-stream';
-const FIELDS='id,parents,mimeType,trashed,ownedByMe,shared,size,appProperties';
-const fail=code=>{throw Error(code);};
-const validId=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
-const sha=b=>new IncrementalSha256().update(b).digestHex();
-function createGasBackupAdapter(globals,source,{checkBudget=()=>true,deadlineMs=Date.now()+240000}={}){
- const {Drive,Utilities,UrlFetchApp,ScriptApp,PropertiesService}=globals;
- const properties=PropertiesService.getScriptProperties();let config=null,state=null;
- function budget(){if(checkBudget()!==true||Date.now()>deadlineMs-10000)fail('BACKUP_YIELD');}
- function metadata(id){budget();try{return Drive.Files.get(id,{fields:FIELDS});}catch(e){if(/(?:404|not found|File not found)/i.test(String(e.message)))return null;throw e;}}
- function privateMeta(m,parent,mime){if(!m||m.trashed!==false||m.ownedByMe!==true||m.shared!==false||m.mimeType!==mime||(parent&&(!Array.isArray(m.parents)||m.parents.length!==1||m.parents[0]!==parent)))fail('BACKUP_PRIVATE_METADATA_REQUIRED');return m;}
- function allocateId(){budget();const r=Drive.Files.generateIds({count:1,space:'drive',type:'files'});if(!r||!r.ids||r.ids.length!==1||!validId(r.ids[0]))fail('BACKUP_ID_INVALID');return r.ids[0];}
- function body(id,m,maxBytes=4194304){const size=Number(m.size);if(!Number.isSafeInteger(size)||size<1||size>maxBytes)fail('BACKUP_SIZE_INVALID');budget();const r=UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(id)+'?alt=media',{method:'get',headers:{Authorization:'Bearer '+ScriptApp.getOAuthToken()},followRedirects:false,muteHttpExceptions:true,timeoutSeconds:Math.min(30,Math.max(1,Math.floor((deadlineMs-Date.now()-5000)/1000)))});if(r.getResponseCode()!==200)fail('BACKUP_READ_UNRESOLVED');const b=Uint8Array.from(r.getContent(),v=>v&255);if(b.length!==size)fail('BACKUP_SIZE_MISMATCH');return b;}
- function blob(bytes){return Utilities.newBlob(Array.from(bytes,v=>v>127?v-256:v),MIME);}
- function loadConfig(){const raw=properties.getProperty(BACKUP_CONFIG_PROPERTY);if(!raw)return null;let c;try{c=JSON.parse(raw);}catch(_){fail('BACKUP_CONFIG_INVALID');}if(c.protocol!=='mypace-private-backup-v1'||c.sourceStoreId!==source.storeId||c.writerScriptId!==ScriptApp.getScriptId()||!validId(c.rootId)||!validId(c.stateId)||!validId(c.parentId)||c.parentId!==source.myDriveRootId&&source.myDriveRootId!==undefined||c.rootId===source.rootParentId||c.stateId===c.rootId)fail('BACKUP_CONFIG_INVALID');return c;}
- function ensure({create=true}={}){config=loadConfig();if(!config&&!create)return null;if(!config){const root=privateMeta(metadata('root'),null,FOLDER);config={protocol:'mypace-private-backup-v1',sourceStoreId:source.storeId,writerScriptId:ScriptApp.getScriptId(),rootId:allocateId(),stateId:allocateId(),parentId:root.id};const raw=JSON.stringify(config);properties.setProperty(BACKUP_CONFIG_PROPERTY,raw);if(properties.getProperty(BACKUP_CONFIG_PROPERTY)!==raw)fail('BACKUP_CONFIG_UNCONFIRMED');}
-  let m=metadata(config.rootId);if(!m){if(!create)fail('BACKUP_FOLDER_MISSING');budget();Drive.Files.create({id:config.rootId,name:'MyPace Backups',mimeType:FOLDER,parents:[config.parentId],appProperties:{'mypace.backup':'v1','mypace.source':source.storeId}},null,{fields:'id',ignoreDefaultVisibility:true});m=metadata(config.rootId);}privateMeta(m,config.parentId,FOLDER);if(m.appProperties?.['mypace.backup']!=='v1'||m.appProperties?.['mypace.source']!==source.storeId)fail('BACKUP_FOLDER_MISMATCH');
-  state=readState()||{protocol:'mypace-backup-state-v1',job:null,latestManifest:null,lastRestore:null};return config;
- }
- function requireRoot(){if(!config)fail('BACKUP_NOT_INITIALIZED');privateMeta(metadata(config.rootId),config.parentId,FOLDER);}
- function readBackup(id,maxBytes=4194304){if(!validId(id))fail('BACKUP_ID_INVALID');requireRoot();const m=metadata(id);if(!m)return null;privateMeta(m,config.rootId,MIME);if(m.appProperties?.['mypace.backup']!=='v1'||m.appProperties?.['mypace.source']!==source.storeId)fail('BACKUP_FILE_MISMATCH');return body(id,m,maxBytes);}
- function createBackup(id,bytes,role){if(!validId(id)||!(bytes instanceof Uint8Array)||bytes.length>4194304)fail('BACKUP_WRITE_INVALID');requireRoot();const existing=readBackup(id);if(existing){if(sha(existing)!==sha(bytes))fail('BACKUP_IMMUTABLE_COLLISION');return;}budget();Drive.Files.create({id,name:'mypace-backup-'+role+'-'+id+(role==='app-recovery-export'?'.json':''),mimeType:MIME,parents:[config.rootId],appProperties:{'mypace.backup':'v1','mypace.source':source.storeId,'mypace.role':String(role).slice(0,80)}},blob(bytes),{fields:'id',ignoreDefaultVisibility:true});const actual=readBackup(id);if(!actual||sha(actual)!==sha(bytes))fail('BACKUP_WRITE_UNCONFIRMED');}
- function readState(){const b=readBackup(config.stateId);if(!b)return null;let s;try{s=JSON.parse(decodeUtf8(b));}catch(_){fail('BACKUP_STATE_INVALID');}if(s.protocol!=='mypace-backup-state-v1')fail('BACKUP_STATE_INVALID');return s;}
- function saveState(next){const bytes=encodeUtf8(JSON.stringify(next));if(bytes.length>4194304)fail('BACKUP_STATE_CAPACITY');requireRoot();if(metadata(config.stateId)){budget();Drive.Files.update({},config.stateId,blob(bytes),{fields:'id'});}else createBackup(config.stateId,bytes,'state');const actual=readBackup(config.stateId);if(!actual||sha(actual)!==sha(bytes))fail('BACKUP_STATE_WRITE_UNCONFIRMED');state=next;}
- function saveJob(job){saveState({...state,job});}
- function readSource(ref){if(!validId(ref.id))fail('BACKUP_SOURCE_ID_INVALID');privateMeta(metadata(source.rootParentId),null,FOLDER);const parent=ref.kind==='asset'?source.assetsParentId:source.metadataParentId;privateMeta(metadata(parent),source.rootParentId,FOLDER);const m=privateMeta(metadata(ref.id),parent,MIME);if(m.appProperties?.['mypace.store']!==source.storeId)fail('BACKUP_SOURCE_STORE_MISMATCH');if(ref.kind==='asset'&&(m.appProperties?.['mypace.sha256']!==ref.hash||Number(m.size)!==ref.byteLength))fail('BACKUP_SOURCE_ASSET_MISMATCH');return body(ref.id,m,ref.kind==='asset'?4194304:4194304);}
- function listManifestPage(pageToken){requireRoot();if(pageToken!==undefined&&pageToken!==null&&(typeof pageToken!=='string'||pageToken.length>4096))fail('BACKUP_PAGE_TOKEN_INVALID');budget();const r=Drive.Files.list({q:"'"+config.rootId+"' in parents and trashed = false and appProperties has { key='mypace.role' and value='complete-manifest' }",pageSize:50,orderBy:'createdTime desc',fields:'nextPageToken,files('+FIELDS+',name,createdTime)',...(pageToken?{pageToken}:{})});if(!r||!Array.isArray(r.files)||r.files.length>50)fail('BACKUP_HISTORY_INVALID');return {manifests:r.files.map(m=>{privateMeta(m,config.rootId,MIME);if(m.appProperties?.['mypace.backup']!=='v1'||m.appProperties?.['mypace.source']!==source.storeId||m.appProperties?.['mypace.role']!=='complete-manifest'||!validId(m.id))fail('BACKUP_HISTORY_INVALID');return {manifestId:m.id,name:m.name,manifestCreatedAt:m.createdTime};}),nextPageToken:r.nextPageToken||null};}
- function readManifest(id){if(!validId(id))fail('BACKUP_ID_INVALID');const m=metadata(id);if(m?.appProperties?.['mypace.role']!=='complete-manifest')fail('BACKUP_MANIFEST_ROLE_INVALID');return readBackup(id,4194304);}
- return {listManifestPage,readManifest,ensure,allocateId,readSource,readBackup,createBackup,saveJob,saveState,getState:()=>state,getConfig:()=>config};
-}
-
-return {BACKUP_CONFIG_PROPERTY,createGasBackupAdapter};
-})();
-const m29 = (function(){
+const m36 = (function(){
 // Explicit owner installation only. Loading this module never installs a trigger.
 // Google clock triggers are approximate (nearMinute ±15 minutes), not an SLA.
 const BACKUP_SCHEDULE_PROPERTY='mypace.backup.schedule.v1';
@@ -4929,5 +5449,5 @@ function createBackupSchedule(globals,{ownerEmail,now=Date.now}={}){
 
 return {BACKUP_SCHEDULE_PROPERTY,BACKUP_DAILY_HANDLER,BACKUP_CONTINUE_HANDLER,createBackupSchedule};
 })();
-return Object.assign({},m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18,m19,m20,m21,m22,m23,m24,m25,m26,m27,m28,m29);
+return Object.assign({},m2,m3,m4,m5,m6,m7,m8,m9,m10,m11,m12,m13,m14,m15,m16,m17,m18,m19,m20,m21,m22,m23,m24,m25,m26,m27,m28,m29,m30,m31,m32,m33,m34,m35,m36);
 })();

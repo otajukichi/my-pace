@@ -38,7 +38,8 @@ test('home exposes lifetime scope, actual counts, input controls, and record-onl
  const state=fixture(),html=renderDashboard({state,date,today:date});
  assert.match(html,/生活の記録（DriveのCSVは含みません） · 2026-10-07まで/);assert.match(html,/8\.70<small>km/);assert.match(html,/チェック済み 1回/);assert.match(html,/数値・時間の記録 4件/);
  assert.doesNotMatch(html,/現在の目標で達成|YOUR DAILY RHYTHM|home-sun/);
- for(const action of ['wake-now','wake-edit','run-add','diary-edit','event-add'])assert.match(html,new RegExp(`data-action="${action}"`));
+ for(const action of ['wake-now','wake-edit','diary-edit','event-add'])assert.match(html,new RegExp(`data-action="${action}"`));
+ assert.match(html,/href="#running">記録を見る/);assert.doesNotMatch(html,/run-add|run-edit|gpx-import/);
  assert.match(html,/印は記録の有無/);assert.match(html,/href="#habits"/);
  const rhythm=renderDashboard({state,date,today:date,tab:'rhythm'});assert.match(rhythm,/これまでの積み重ね/);assert.match(rhythm,/現在の庭/);
  state.wake[date]='08:00';assert.doesNotMatch(renderDashboard({state,date,today:date}),/data-action="wake-now"/);

@@ -7,7 +7,7 @@ export function safeRecoveryProgress(progress){
  if(!field||!Number.isSafeInteger(progress[field])||progress[field]<1)return null;
  return {phase:progress.phase,...(progress.phase==='preparation'?{ordinal:progress.ordinal}:{...(Number.isSafeInteger(progress.revision)&&progress.revision>=0?{revision:progress.revision}:{}),...(Number.isSafeInteger(progress.indexLinks)&&progress.indexLinks>=0?{indexLinks:progress.indexLinks}:{})}),cursorPersisted:true,cursorAdvanced:true};
 }
-export function createPublicServices({runtime,domain,reader,appSync,deadlineMs,now=()=>Date.now()}){
+export function createPublicServices({runtime,domain,reader,appSync,dailyReader,deadlineMs,now=()=>Date.now()}){
  if(!runtime?.writer||typeof runtime.locked!=='function'||!domain||!reader||!appSync||!Number.isSafeInteger(deadlineMs)||typeof now!=='function')throw Error('PUBLIC_SERVICES_CONFIG');
  const maintenanceView=()=>{const s=runtime.writer.status();return {due:s.replayFrames>=16,replayFrames:s.replayFrames,softLimit:16,hardLimit:64};};
  const ready=()=>{const s=runtime.writer.status();return {protocol:2,ready:true,store:s.storeId,generation:s.datasetGeneration,revision:s.revision,headHash:s.headHash,writerFence:s.writerFence,maintenance:maintenanceView()};};
@@ -35,6 +35,7 @@ export function createPublicServices({runtime,domain,reader,appSync,deadlineMs,n
  const command=payload=>guarded(()=>domain.command(payload));
  return {
   command,commandV2:command,
+  dailyRun:payload=>{if(!dailyReader)throw Error('DAILY_NOT_ENABLED');return dailyReader.dailyRun(payload);},
   maintain:payload=>guarded(()=>{
    if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).length)throw Error('STATUS_INVALID');
    runtime.writer.recoveryBarrier({persistFrameProgress:true});

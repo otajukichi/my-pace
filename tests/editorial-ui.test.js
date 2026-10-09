@@ -26,9 +26,10 @@ test('historical home days cannot record the current wake time',()=>{
  const html=renderDashboard({...context(createInitialState()),date:'2026-10-04'});
  assert.doesNotMatch(html,/data-action="wake-now"/);assert.match(html,/data-action="wake-edit"/);
 });
-test('empty history pages offer an existing recording action',()=>{
+test('wake history offers input while running signed-out state offers login',()=>{
  assert.match(renderWake({...context(createInitialState()),tab:'history'}),/empty-action" data-action="wake-edit"/);
- assert.match(renderRunning({...context(createInitialState()),tab:'history'}),/empty-action" data-action="run-add"/);
+ assert.match(renderRunning(context(createInitialState())),/data-action="cloud-login"/);
+ assert.doesNotMatch(renderRunning(context(createInitialState())),/run-add|run-edit|gpx-import|cloud-route/);
 });
 test('chart accessible names expose numeric data and missing wake dates without relying on color',()=>{
  const state=createInitialState();state.wake[date]='06:35';state.runs=[{id:'run',date,distanceKm:4.2,durationSec:1500,points:[],note:''}];
@@ -69,13 +70,13 @@ test('wake record workspace renders real gapped chart and existing target contro
  assert.match(html,/data-action="view-tab" data-tab="trends"/);assert.doesNotMatch(html,/data-action="wake-now"/);
  assert.equal((html.match(/class="chart-dot"/g)||[]).length,2);assert.match(html,/2026-10-05 未記録/);assert.deepEqual(state,before);
 });
-test('run record workspace shows real series, missing days and genuine zero separately from no entry',()=>{
- const state=createInitialState(),empty=renderRunning(context(state));
- assert.match(empty,/class="unrecorded">未記録/);assert.doesNotMatch(empty,/class="run-summary/);
- state.runs=[{id:'zero',date,distanceKm:0,durationSec:0,points:[],note:''}];
- const before=structuredClone(state),html=renderRunning(context(state));
- assert.match(html,/class="hero-time">0\.00<small>km/);assert.ok(html.includes(runChart(state,7,date)));
- for(const action of ['run-add','gpx-import'])assert.match(html,new RegExp(`data-action="${action}"`));
- for(const tab of ['history','trends'])assert.match(html,new RegExp(`data-action="view-tab" data-tab="${tab}"`));
- assert.match(html,/run-chart-panel forest-panel/);assert.match(html,/run-summary sky-panel/);assert.deepEqual(state,before);
+test('read-only running distinguishes missing prepared data from a genuine zero summary',()=>{
+ const state=createInitialState();state.runs=[{id:'legacy',date,distanceKm:99,durationSec:999,points:[],note:'legacy note'}];
+ const before=structuredClone(state),empty=renderRunning({...context(state),dailyView:{status:'empty',daily:null}});
+ assert.match(empty,/この日の記録はありません/);assert.doesNotMatch(empty,/daily-running-stats|legacy note|99\.00/);
+ const daily={status:'ready',store:'s',generation:'g',date,hash:'h',pending:false,summary:{distanceMeters:0,durationSeconds:0,averageSpeedKmh:null},segments:[]};
+ const html=renderRunning({...context(state),dailyView:{status:'ready',daily}});
+ assert.match(html,/0\.00<small>km/);assert.match(html,/—<small>km\/h/);assert.match(html,/00:00:00/);
+ assert.match(html,/日本時間の午前3時/);assert.match(html,/停止中・記録内の空白/);
+ assert.doesNotMatch(html,/run-add|run-edit|gpx-import|cloud-route|view-tab|run-chart-panel|run-summary/);assert.deepEqual(state,before);
 });

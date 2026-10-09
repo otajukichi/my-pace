@@ -1,5 +1,9 @@
 // Owner-editor only. No web handler, timer, trigger installer, or ambient work.
 import {createGasImportRuntime} from './gas-import-runtime.mjs';
+import {createDriveChangeDiscovery,DRIVE_CHANGE_KEY,DRIVE_CHANGE_LIMITS,driveChangeTokenInput} from './drive-change-discovery.mjs';
+import {createGasDriveChangeHints} from './drive-change-hints.mjs';
+import {createGasDailyMaterializer} from './daily-gas-runtime.mjs';
+import {DAILY_ALGORITHM} from './daily-calculator.mjs';
 import {encodeUtf8} from './codec.mjs';
 import {hashAssetBytes} from './immutable-assets.mjs';
 import {importKeys} from './import-store.mjs';
@@ -31,8 +35,9 @@ export function meteredGas(globals,{now=()=>Date.now(),limits=OWNER_LIMITS,reser
  const allowed=()=>{const t=now();return !closed&&Number.isSafeInteger(t)&&t>=start&&calls<(closing?ceiling:ceiling-reserveCalls)&&t<(closing?hardDeadline:hardDeadline-reserveMs);};
  const call=fn=>function(...args){if(!allowed())fail('OWNER_BUDGET_YIELD');calls++;return fn(...args);};
  const Files={};for(const key of ['get','list','create','generateIds','update'])Files[key]=call((...a)=>globals.Drive.Files[key](...a));
+ const Changes={};for(const key of ['getStartPageToken','list','watch'])if(typeof globals.Drive.Changes?.[key]==='function')Changes[key]=call((...a)=>globals.Drive.Changes[key](...a));
  const fetchAll=typeof globals.UrlFetchApp.fetchAll==='function'?requests=>{if(!Array.isArray(requests)||!requests.length||!allowed()||calls+requests.length>(closing?ceiling:ceiling-reserveCalls))fail('OWNER_BUDGET_YIELD');calls+=requests.length;return globals.UrlFetchApp.fetchAll(requests);}:globals.UrlFetchApp.fetchAll;
- return {globals:{...globals,Drive:{...globals.Drive,Files},UrlFetchApp:{...globals.UrlFetchApp,fetch:call((...a)=>globals.UrlFetchApp.fetch(...a)),...(fetchAll===undefined?{}:{fetchAll})},now},checkBudget:allowed,get deadlineMs(){return hardDeadline-reserveMs;},get hardDeadlineMs(){return hardDeadline;},setRuntimeMs:(ms,headroomMs=reserveMs)=>{if(!Number.isSafeInteger(ms)||!Number.isSafeInteger(headroomMs)||headroomMs<0||ms<=headroomMs||ms>limits.runtimeMs||closing)fail('OWNER_BUDGET_INVALID');reserveMs=headroomMs;hardDeadline=Math.min(start+ms,absoluteCeiling);},usage:()=>({calls,elapsedMs:Math.max(0,now()-start)}),limitRemaining:n=>{if(!Number.isSafeInteger(n)||n<0)fail('OWNER_BUDGET_INVALID');ceiling=Math.min(ceiling,calls+n);closing=true;return ceiling;},close:()=>{closed=true;}};
+ return {globals:{...globals,Drive:{...globals.Drive,Files,...(globals.Drive.Changes?{Changes}:{})},UrlFetchApp:{...globals.UrlFetchApp,fetch:call((...a)=>globals.UrlFetchApp.fetch(...a)),...(fetchAll===undefined?{}:{fetchAll})},now},checkBudget:allowed,get deadlineMs(){return hardDeadline-reserveMs;},get hardDeadlineMs(){return hardDeadline;},setRuntimeMs:(ms,headroomMs=reserveMs)=>{if(!Number.isSafeInteger(ms)||!Number.isSafeInteger(headroomMs)||headroomMs<0||ms<=headroomMs||ms>limits.runtimeMs||closing)fail('OWNER_BUDGET_INVALID');reserveMs=headroomMs;hardDeadline=Math.min(start+ms,absoluteCeiling);},usage:()=>({calls,elapsedMs:Math.max(0,now()-start)}),limitRemaining:n=>{if(!Number.isSafeInteger(n)||n<0)fail('OWNER_BUDGET_INVALID');ceiling=Math.min(ceiling,calls+n);closing=true;return ceiling;},close:()=>{closed=true;}};
 }
 export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=OWNER_LIMITS,deadlineMs,scanIntervalMs=0,reserveMs,scheduledPolicy,settleCalls=256}={}){
  if(!Number.isSafeInteger(settleCalls)||settleCalls<16||settleCalls>256)fail('OWNER_SETTLE_CALLS_INVALID');
@@ -45,7 +50,7 @@ export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=O
  if(scheduledPolicy&&(!Number.isSafeInteger(scheduledPolicy.sliceMs)||scheduledPolicy.sliceMs<30000||scheduledPolicy.sliceMs>60000||!Number.isSafeInteger(scheduledPolicy.rangeBytes)||scheduledPolicy.rangeBytes<1||scheduledPolicy.rangeBytes>1048576||(!Number.isSafeInteger(scheduledPolicy.maxFreshOutputs)||scheduledPolicy.maxFreshOutputs<1||scheduledPolicy.maxFreshOutputs>64)||scheduledPolicy.maxStalls!==3||(scheduledPolicy.catchUp!==undefined&&typeof scheduledPolicy.catchUp!=='boolean')||limits.runtimeMs!==OWNER_LIMITS.runtimeMs||reserveMs>=scheduledPolicy.sliceMs))fail('OWNER_SCHEDULED_POLICY_INVALID');
  const meter=meteredGas(globals,{now,limits,deadlineMs,reserveMs,reserveCalls:Math.min(settleCalls,Math.floor(limits.calls/2))});
  if(scheduledPolicy&&!scheduledPolicy.catchUp)meter.setRuntimeMs(scheduledPolicy.sliceMs);
- const runtime=createGasImportRuntime(meter.globals,{...config,checkBudget:meter.checkBudget,deadlineMs:scheduledPolicy?undefined:meter.deadlineMs,protocolReadCache:{mode:'lock-phase'}});
+ const runtime=createGasImportRuntime(meter.globals,{...config,sourceSubtree:true,checkBudget:meter.checkBudget,deadlineMs:scheduledPolicy?undefined:meter.deadlineMs,protocolReadCache:{mode:'lock-phase'}});
  const {writer,store,runner,source,locked}=runtime;
  const idleThrottle=createIdleScanThrottle(globals,config,{now,intervalMs:scanIntervalMs});
  const discovery=createDiscoveryStateIO(meter.globals,config,{checkBudget:meter.checkBudget,now});
@@ -56,7 +61,7 @@ export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=O
   return {version:version+1,value};
  };
  const initial=()=>({schema:1,generation:0,status:'idle',scanId:null,cursor:null,queueStarted:false,cycleActive:false,attempt:0,retryAt:0,error:null,lastJob:null,completedAt:null,buckets:[]});
- const view=s=>({status:s.status,scanId:s.scanId,nextJob:s.cursor,retryAt:s.retryAt,error:s.error,lastJob:s.lastJob||null,completedAt:s.completedAt??null,nextScanAt:s.status==='complete'&&Number.isSafeInteger(s.completedAt)?s.completedAt+scanIntervalMs:null,reservedCalls:s.buckets.reduce((n,b)=>n+b.calls,0),reservedRuntimeMs:s.buckets.reduce((n,b)=>n+b.ms,0),usage:meter.usage(),...(scheduledPolicy?{scheduledFallback:s.scheduledFallback||null,requiresOwnerAction:s.status==='blocked',processingMode:s.status==='blocked'?'paused':['idle','complete'].includes(s.status)?'idle':s.processingMode||'check',allowanceMs:s.allowanceMs??null}:{} )});
+ const view=s=>({status:s.status,scanId:s.scanId,nextJob:s.cursor,retryAt:s.retryAt,error:s.error,lastJob:s.lastJob||null,completedAt:s.completedAt??null,discovery:s.discovery||null,daily:s.daily||null,nextScanAt:s.status==='complete'&&Number.isSafeInteger(s.completedAt)?s.completedAt+scanIntervalMs:null,reservedCalls:s.buckets.reduce((n,b)=>n+b.calls,0),reservedRuntimeMs:s.buckets.reduce((n,b)=>n+b.ms,0),usage:meter.usage(),...(scheduledPolicy?{scheduledFallback:s.scheduledFallback||null,requiresOwnerAction:s.status==='blocked',processingMode:s.status==='blocked'?'paused':['idle','complete'].includes(s.status)?'idle':s.processingMode||'check',allowanceMs:s.allowanceMs??null}:{} )});
  function status(){return locked(()=>{const e=read();return view(e?.value||initial());});}
  function blockDiscovery(entry,s,code){
   idleThrottle.clear();s.resumeStatus='complete';s.status='blocked';s.error=code;s.retryAt=0;s.processingMode='paused';write(entry,s,'discovery-blocked');
@@ -66,6 +71,40 @@ export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=O
   let entry=read(),s=entry?.value||initial();
   if(s.schema!==1)fail('OWNER_STATE_SCHEMA');
   if(startNew!=='tick')idleThrottle.clear();
+  const automatic=startNew==='tick',dailyState=automatic?writer.get('daily/owner-scheduler')?.value:null,dailyEnabled=dailyState?.enabled===true;
+  let deltaState=automatic?writer.get(DRIVE_CHANGE_KEY)?.value:null,deltaEnabled=deltaState?.enabled===true,delta=null,hints=null,hintState=null;
+  if(deltaEnabled){
+   const secret=globals.PropertiesService.getScriptProperties().getProperty('MYPACE_WRITER_SECRET');
+   if(typeof secret!=='string'||secret.length<32)fail('DRIVE_CHANGE_SECRET_REQUIRED');
+   const channelToken=id=>globals.Utilities.base64EncodeWebSafe(globals.Utilities.computeHmacSha256Signature(driveChangeTokenInput(config.storeId,id),secret,globals.Utilities.Charset.UTF_8)).replace(/=+$/,'');
+   hints=createGasDriveChangeHints(globals,{config,channelToken,now});hintState=hints.read();
+   if(!hintState.enabled)return {...view(s),status:'paused',processingMode:'paused',requiresOwnerAction:true,error:'DRIVE_CHANGE_ACTIVATION_INCOMPLETE'};
+   delta=createDriveChangeDiscovery({runtime,Drive:meter.globals.Drive,config,now,canContinue:meter.checkBudget,randomId:()=>globals.Utilities.getUuid(),channelToken,hints});
+   const checkedAt=hintState.cursor?.baseCursor===deltaState.cursor?hintState.cursor.checkedAt:deltaState.lastReconciledAt;
+   if(s.status==='complete'&&!deltaState.queue.length&&!deltaState.folders.length&&(hintState.pending||deltaState.pending||now()-checkedAt>=DRIVE_CHANGE_LIMITS.intervalMs)){
+    // Classify before any Drive-backed reservation. Irrelevant/self changes
+    // advance only authenticated ScriptProperties and cannot notify Drive.
+    const before=meter.usage(),reservation=hints.reserve(s.buckets,{calls:limits.calls,ms:limits.runtimeMs,limits});
+    if(!reservation)return {...view(s),status:'budget-wait',retryAt:now()+3600000};
+    try{for(let page=0;page<16&&meter.checkBudget()&&meter.usage().calls-before.calls<96&&meter.usage().elapsedMs-before.elapsedMs<15000;page++){const classified=delta.tick({hintsOnly:true});if(classified.classified||classified.requiresOwnerAction||!classified.hintPending)break;}}finally{const after=meter.usage();hints.settle(reservation,{calls:after.calls-before.calls,ms:after.elapsedMs-before.elapsedMs});}
+    deltaState=writer.get(DRIVE_CHANGE_KEY)?.value;hintState=hints.read();
+   }
+  }
+  if(deltaEnabled&&deltaState.error&&s.status==='complete'&&s.discovery?.error===deltaState.error)return {...view(s),status:'blocked',requiresOwnerAction:true,error:deltaState.error};
+  const lastDeltaCheck=hintState?.cursor&&hintState.cursor.baseCursor===deltaState?.cursor?hintState.cursor.checkedAt:deltaState?.lastReconciledAt;
+
+  // Read-only idle ticks do not reserve/write a new job just to discover that
+  // the fifteen-minute fallback is not due. Notifications persist pending=true.
+  if(deltaEnabled&&s.status==='complete'&&!deltaState.pending&&!deltaState.queue.length&&!deltaState.folders.length&&now()<lastDeltaCheck+DRIVE_CHANGE_LIMITS.intervalMs&&(deltaState.watchPending||deltaState.channels.some(c=>c.expiresAt-now()>DRIVE_CHANGE_LIMITS.renewBeforeMs))&&(!dailyEnabled||dailyState.status==='complete'&&dailyState.algorithm===DAILY_ALGORITHM&&s.dailySourceRevision===(writer.get('daily/source-revision')?.version||0))&&s.completedDiscoveryVersion===(writer.get(DRIVE_CHANGE_KEY)?.version||0)&&s.completedDirectoryVersion===importDirectoryVersion(writer))return {...view(s),nextScanAt:lastDeltaCheck+DRIVE_CHANGE_LIMITS.intervalMs};
+  const enhanced=deltaEnabled||dailyEnabled;
+  if(enhanced){
+   // Discovery and preparation share this scheduler's durable quota reservation.
+   // An enabled delta cursor replaces full-folder periodic rescans.
+   if(['idle','complete'].includes(s.status)){
+    startNew=!deltaEnabled&&(s.status==='idle'||!Number.isSafeInteger(s.completedAt)||now()>=s.completedAt+scanIntervalMs);
+    if(!startNew){s.status='importing';s.cursor=null;s.queueStarted=false;s.cycleActive=false;}
+   }else startNew=false;
+  }
   if(startNew==='tick'){
    if(scheduledPolicy&&s.status==='complete'){
     const before=meter.usage(),canReconcile=()=>meter.checkBudget()&&meter.usage().calls-before.calls<RECONCILIATION_LIMITS.additionalCalls&&meter.usage().elapsedMs-before.elapsedMs<Math.floor(scheduledPolicy.sliceMs/4);
@@ -164,8 +203,9 @@ export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=O
   s.budgetProfile={calls:limits.calls,checkMs:scheduledPolicy?scheduledPolicy.sliceMs:limits.runtimeMs,catchUp:!!scheduledPolicy?.catchUp,catchUpMs:limits.runtimeMs};
   const hour=Math.floor(now()/3600000);s.buckets=s.buckets.filter(b=>b.hour>=hour-24);
   if(s.buckets.some(b=>b.hour>hour))fail('OWNER_CLOCK_REGRESSED');
-  const calls=s.buckets.reduce((n,b)=>n+b.calls,0),ms=s.buckets.reduce((n,b)=>n+b.ms,0);
-  if(calls+limits.calls>limits.rollingCalls||ms+runtimeAllowance>limits.rollingRuntimeMs)return {...view(s),status:'budget-wait',retryAt:(s.buckets[0].hour+25)*3600000};
+  const extraBuckets=(hints?.read().buckets||[]).filter(b=>b.hour>=hour-24);
+  const calls=[...s.buckets,...extraBuckets].reduce((n,b)=>n+b.calls,0),ms=[...s.buckets,...extraBuckets].reduce((n,b)=>n+b.ms,0);
+  if(calls+limits.calls>limits.rollingCalls||ms+runtimeAllowance>limits.rollingRuntimeMs)return {...view(s),status:'budget-wait',retryAt:(Math.min(...[...s.buckets,...extraBuckets].map(b=>b.hour))+25)*3600000};
   let b=s.buckets.find(b=>b.hour===hour);if(!b){b={hour,calls:0,ms:0};s.buckets.push(b);}b.calls+=limits.calls;b.ms+=runtimeAllowance;
   if(startNew){s.generation++;s.scanId='owner_scan_'+s.generation;s.status='scanning';s.cursor=null;s.queueStarted=false;s.cycleActive=false;s.error=null;s.lastJob=null;s.completedAt=null;}
   else if(s.status==='retry')s.status=s.resumeStatus;
@@ -182,6 +222,11 @@ export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=O
    catch(error){return {...view(s),checkpointReady:false,checkpointError:/^[A-Z0-9_]{1,80}$/.test(error.code||error.message)?error.code||error.message:'CHECKPOINT_PENDING',requiresOwnerAction:true};}
   }; 
   try{
+   let discoveryStatus=null,dailyStatus=null;
+   if(deltaEnabled){
+    const before=meter.usage(),canDiscover=()=>meter.checkBudget()&&meter.usage().calls-before.calls<96&&meter.usage().elapsedMs-before.elapsedMs<15000;
+    for(let i=0;i<16&&canDiscover();i++){discoveryStatus=delta.tick();if(discoveryStatus.requiresOwnerAction||discoveryStatus.waitingSource||discoveryStatus.yielded||!discoveryStatus.queued&&!discoveryStatus.folders&&!discoveryStatus.pending)break;}
+   }
    if(startNew)store.beginScan({operationId:'owner_begin_'+s.generation,scanId:s.scanId});
    // Repair an interruption after scheduler reservation but before scan creation.
    else if(s.status==='scanning')store.beginScan({operationId:'owner_begin_'+s.generation,scanId:s.scanId});
@@ -207,6 +252,11 @@ export function createOwnerScheduler(globals,config,{now=()=>Date.now(),limits=O
     s.attempt=0;s.error=null;if(scheduledPolicy)s.scheduledStall=null;if(fallback)s.scheduledFallback=null;
     if(s.status==='complete')break;
    }
+   if(dailyEnabled&&meter.checkBudget()){
+    const daily=createGasDailyMaterializer(meter.globals,{runtime,config,checkBudget:meter.checkBudget,workBudget:()=>meter.checkBudget()&&now()<meter.deadlineMs-10000,now});
+    for(let i=0;i<16&&meter.checkBudget();i++){dailyStatus=daily.tick();if(['complete','blocked','failed','paused'].includes(dailyStatus.status))break;}
+   }
+   if(enhanced){s.completedDiscoveryVersion=writer.get(DRIVE_CHANGE_KEY)?.version||0;s.dailySourceRevision=writer.get('daily/source-revision')?.version||0;s.discovery=discoveryStatus;s.daily=dailyStatus?{status:dailyStatus.status,error:dailyStatus.error||null}:null;}
    // Seal a quiescent import cut before the final scheduler frame. Cold app
    // reads then replay only the checkpoint publication plus this finish frame.
    if(s.status==='complete'){s.completedDirectoryVersion=importDirectoryVersion(writer);s.completedAt=now();s.error=null;s.attempt=0;s.retryAt=0;if(scheduledPolicy)s.processingMode='idle';}

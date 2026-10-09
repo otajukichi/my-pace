@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createCloudSync} from '../../src/lib/cloud-sync.js';
-import {cloudStatus,renderCloudPanel,renderImportedRuns} from '../../src/lib/cloud-panel.js';
+import {cloudStatus,renderCloudPanel} from '../../src/lib/cloud-panel.js';
 import {fixture} from './fixture.mjs';
+import {renderRunning} from '../../src/views/running.js';
 
 function memory(initial){let value=initial??{format:1,store:null,generation:null,epoch:null,revision:null,entities:{},outbox:[],conflicts:[],importedRuns:[],importStatus:null};return {async read(){return structuredClone(value);},async update(fn){const d=structuredClone(value),r=fn(d);value=d;return structuredClone(r);}};}
 function network(f){const n={failures:{},actions:[],commands:[],hold:null,loseAck:false,receipt:null,bundled:null};n.fetcher=async(path,opts)=>{
@@ -56,7 +57,7 @@ test('another browser can confirm the saved record even when CSV status is busy'
 
 test('failed import listing retains its cached runs while status can still succeed',async()=>{
  const f=fixture(),n=network(f),s=memory(),a=createCloudSync({storage:s,fetcher:n.fetcher});await a.init();await s.update(d=>{d.importedRuns=[{id:'previous',sampleCount:2}];});n.failures.imports='STORE_YIELD';await a.sync();
- assert.equal(a.view().verified,true);assert.equal(a.view().error,null);assert.deepEqual(a.view().importErrors,{imports:'STORE_YIELD'});assert.equal(a.view().importStatus.status,'idle');assert.equal(a.view().importedRuns[0].id,'previous');assert.match(renderImportedRuns(a.view()),/取り込み済みのラン: 確認に時間/);a.destroy();
+ assert.equal(a.view().verified,true);assert.equal(a.view().error,null);assert.deepEqual(a.view().importErrors,{imports:'STORE_YIELD'});assert.equal(a.view().importStatus.status,'idle');assert.equal(a.view().importedRuns[0].id,'previous');assert.match(renderCloudPanel(a.view(),'cloud'),/取り込み済みのラン: 確認に時間/);const dailyMarkup=renderRunning({dailyView:{status:'preparing',daily:{preparationState:'unknown'}}});assert.match(dailyMarkup,/記録の有無を確認中/);assert.doesNotMatch(dailyMarkup,/previous|cloud-route|Drive のラン/);a.destroy();
 });
 
 test('bundled snapshot metadata avoids separate import and status requests',async()=>{

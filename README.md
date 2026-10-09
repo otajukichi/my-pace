@@ -4,7 +4,9 @@
 
 ## 既存環境の修正版導入
 
-本番基準 `4ff0b1c537f78f02141fab4ef8aa811cf21fce59` からの手順は [PRACTICAL-SYNC-INSTALL.md](PRACTICAL-SYNC-INSTALL.md)。短い再開案内は [MORNING-GUIDE.md](MORNING-GUIDE.md)、既存接続の方針は [GOOGLE-DRIVE.md](GOOGLE-DRIVE.md) を参照してください。
+現在の地図対応版から日別ランニングへ更新する手順は [DAILY-RUNNING-INSTALL.md](DAILY-RUNNING-INSTALL.md) です。所有者による通知・日別準備の有効化は、ソースの更新・公開とは別に行います。
+
+以前の増分同期導入に関する資料は [PRACTICAL-SYNC-INSTALL.md](PRACTICAL-SYNC-INSTALL.md)、[MORNING-GUIDE.md](MORNING-GUIDE.md)、[GOOGLE-DRIVE.md](GOOGLE-DRIVE.md) です。新しい更新のために古い初期化や有効化を繰り返さないでください。
 
 ソースの適用だけではクラウド・ブラウザーを移行しません。Drive の明示的な writerFence 有効化と、各ブラウザーの退避・明示承認後の IndexedDB 更新には別々の旧版互換性制限があります。アプリ管理用の非公開ストアを手編集・共有せず、元 CSV と未送信記録を保持します。新しいトリガーを自動設置せず、Drive の履歴削除・GC も行いません。
 
@@ -20,6 +22,10 @@ npm run verify
 
 設計と制限は [PRACTICAL-SYNC-DESIGN.md](PRACTICAL-SYNC-DESIGN.md)。模擬試験合格と本番のブラウザー・Google・Drive・Vercel での動作確認は別です。以前の日付の技術報告は履歴資料で、現在の導入手順ではありません。
 
-## ランニングの地図
+## 日別のランニング記録
 
-GPX・CSVのGPSルートを背景地図と推定速度の色で確認できます。表示の意味、読み込み上限、地図提供元への通信と検査状況は [RUNNING-MAP.md](RUNNING-MAP.md) を参照してください。
+専用アプリが Drive に保存した CSV をバックグラウンドで処理し、日別の軽量な経路・距離・記録時間・平均速度を作成します。ランニング画面は読み取り専用の「記録」にまとめ、表示時は完成した日別データを読みます。編集・手入力・GPX アップロードの入口はありません。既存の手入力・GPX 記録は削除せず、保存データと通常のエクスポートに保持します。
+
+日付は日本時間の午前3時区切りです。同日の複数ファイルを集計しても、ファイル間の経路は接続しません。OpenStreetMap を既定の背景地図に使い、選択した提供元に地図の表示範囲と通常の通信情報が伝わります。追加処理中は前回完成した経路・集計を残し、完了時にまとめて更新します。画面の契約は [DAILY-RUNNING-UI.md](DAILY-RUNNING-UI.md) を参照してください。[RUNNING-MAP.md](RUNNING-MAP.md) は以前の地図表示方式の資料です。
+
+初回の準備30分以内、初めて見る日の経路・集計2秒以内は検証対象の目標であり、実際の Google の待ち時間まで保証するものではありません。背景地図の取得時間は別です。変更通知・定期処理・日別データの作成は、所有者が導入手順に従って明示的に有効化します。ソース更新だけで監視や取り込みを開始しません。

@@ -1,4 +1,6 @@
-import {mountRouteMaps,disposeRouteMaps,updateRouteMap} from './lib/route-map.js';
+import {createDailyCacheStorage} from './lib/daily-cache.js';
+import {createDailyRunning,runningDayKey} from './lib/daily-running.js';
+import {mountRouteMaps,disposeRouteMaps,discardRouteMapRegistration,reusePreparedRouteMap} from './lib/route-map.js';
 import  {
   createInitialState,todayKey,addDays,isDateKey,validateState,parseBackup,serializeBackup,makeId,upsertWake,upsertHabitLog,upsertEvent,removeEvent,upsertDiary,removeDiary
 }
@@ -7,10 +9,6 @@ import  {
   loadState,saveState,STORAGE_KEY
 }
 from './lib/storage.js';
-import  {
-  parseGpx
-}
-from './lib/gpx.js';
 import  {
   e,icon,dayLabel
 }
@@ -24,7 +22,7 @@ import  {
 }
 from './views/wake.js';
 import  {
-  renderRunning,routeMap
+  renderRunning
 }
 from './views/running.js';
 import  {
@@ -36,7 +34,7 @@ import  {
 }
 from './views/settings.js';
 import  {
-  wakeDialog,targetDialog,runDialog,habitDialog,habitLogDialog,confirmDialog
+  wakeDialog,targetDialog,habitDialog,habitLogDialog,confirmDialog
 }
 from './dialogs.js';
 import {captureFocus,restoreFocus as restoreElementFocus} from './lib/focus.js';
@@ -48,7 +46,7 @@ import {eventDialog,diaryDialog} from './journal-dialogs.js';
 import {pageCapacity,habitPageCapacity} from './lib/workspace.js';
 import {gardenProgress,GARDEN_THEMES} from './lib/garden.js';
 import {createCloudSync,createIndexedDBStorage} from './lib/cloud-sync.js';
-import {cloudStatus,cloudErrorText,renderCloudPanel,migrationDialog,loadGoogleIdentity,renderImportedRuns} from './lib/cloud-panel.js';
+import {cloudStatus,cloudErrorText,renderCloudPanel,migrationDialog,loadGoogleIdentity} from './lib/cloud-panel.js';
 const app=document.querySelector('#app'), editor=document.querySelector('#editor'), notice=document.querySelector('#notice');
 bindNavigationTooltips(document);
 const loaded=loadState();
@@ -59,12 +57,13 @@ function rememberMode(value){preferredMode=value;try{localStorage.setItem(MODE_K
 let mode='local',initializing=true,commitPending=false,cloudOperation=false,advisoryRenderPending=false;
 let loginAttempt=null,authUiGeneration=0,authRequestPending=null,localUpgradePrompt=null,legacyUpgradeApproved=null;
 let legacyState=loaded.ok?structuredClone(state):null;
-let selectedDate=todayKey(), previousToday=todayKey(), period=7, undoState=null, dialogContext=null, fileSequence=0, editorNeedsFocus=false;
+let selectedDate=location.hash==='#running'?runningDayKey():todayKey(), previousToday=location.hash==='#running'?runningDayKey():todayKey(), period=7, undoState=null, dialogContext=null, fileSequence=0, editorNeedsFocus=false;
 const viewState={};
+let renderedDailyReady=false;
 let calendarMonth=selectedDate.slice(0,7),pageSize=pageCapacity(window.innerWidth,window.innerHeight),habitSize=habitPageCapacity(window.innerWidth,window.innerHeight);
 const routes={
   home:{label:'ホーム',title:'今日の記録',subtitle:'記録と、これまでの積み重ね。',icon:'home',render:renderDashboard,tabs:[['today','今日'],['rhythm','積み重ね']]},
-  running:{label:'ランニング',title:'ランニング',subtitle:'歩幅も、ペースも、自分らしく。',icon:'run',render:context=>context.tab==='imports'?renderImportedRuns(cloudView(),context.page,context.pageSize):renderRunning({...context,importedRuns:cloudView().importedRuns||[]}),tabs:[['record','記録する'],['trends','推移'],['history','履歴'],['imports','Drive のラン']]},
+  running:{label:'ランニング',title:'ランニング',subtitle:'歩幅も、ペースも、自分らしく。',icon:'run',render:context=>renderRunning({...context,dailyView:dailyRunning.view(),dailyIdentity:dailyScope()}),tabs:[['record','記録']]},
   wake:{label:'早起き',title:'朝の記録',subtitle:'一日の始まりを、心地よく。',icon:'sun',render:renderWake,tabs:[['record','記録する'],['trends','推移'],['history','履歴']]},
   habits:{label:'習慣',title:'習慣',subtitle:'小さな積み重ねが、日常になる。',icon:'habits',render:renderHabits,tabs:[['active','今日の習慣'],['archived','お休み中']]},
   calendar:{label:'カレンダー',title:'カレンダー',subtitle:'予定も、記録も。日々をひと目に。',icon:'calendar',render:renderCalendar,tabs:[['month','月のながめ'],['agenda','予定一覧']]},
@@ -107,6 +106,11 @@ const cloud=createCloudSync({storage:createIndexedDBStorage(globalThis.indexedDB
   }
   storageBlocked=false;render({advisory:true});
 }});
+const dailyCache=createDailyCacheStorage();
+const dailyRunning=createDailyRunning({storage:dailyCache,read:(date,hash)=>cloud.dailyRun(date,hash),onChange:()=>render({advisory:true})});
+function dailyScope(){return preferredMode==='signed-out'||preferredMode==='local'?null:cloud.view().dailyIdentity;}
+function screenToday(){return routeKey()==='running'?runningDayKey():todayKey();}
+
 function cloudView(){const view=cloud.view();return preferredMode==='signed-out'||mode!=='cloud'&&!view.authenticated?{...view,authenticated:false,ready:false,recordsConfirmed:false,importedRuns:[],conflicts:[],importStatus:null,importErrors:{}}:view;}
 const routeKey=()=>Object.hasOwn(routes,location.hash.slice(1))?location.hash.slice(1):'home';
 function activeView() {
@@ -114,6 +118,9 @@ function activeView() {
   return viewState[key]||(viewState[key]={tab:routes[key].tabs[0][0],page:0});
 }
 function render({focus=false,advisory=false}={}) {
+  const previousDaily=dailyRunning.view();
+  dailyRunning.setIdentity(dailyScope());
+  if((previousDaily.daily||renderedDailyReady)&&!dailyRunning.view().daily)advisory=false;
   // A native date control can contain uncommitted segments that its value
   // property cannot represent. Keep the actual node until editing ends.
   if(advisory&&app.contains?.(document.activeElement)&&document.activeElement?.matches?.('input,textarea,select,[contenteditable="true"]')){
@@ -126,15 +133,23 @@ function render({focus=false,advisory=false}={}) {
   const restoreFocus=Boolean(app.contains?.(document.activeElement));
   const focusSnapshot=captureFocus(app,document.activeElement);
   if(editor.open)editorNeedsFocus=true;
-  const current=routeKey(),route=routes[current],today=todayKey(),view=activeView();
+  const current=routeKey(),route=routes[current],today=screenToday(),view=activeView();
+  if(current==='running')void dailyRunning.select(selectedDate>today?today:selectedDate);else dailyRunning.cancel();
   const futureAllowed=['calendar','diary'].includes(current),dateVisible=!['settings','garden'].includes(current);
   if(!futureAllowed&&selectedDate>today)selectedDate=today;
   document.title=`${route.label} · マイペース`;
   document.documentElement.dataset.page=current;
+  const retainedMap=app.querySelector?.('.daily-running [data-map-identity]');
   app.innerHTML=`<div class="workspace"><header class="topbar"><a href="#home" class="topbar-brand" aria-label="マイペース ホーム"><img src="./favicon.svg" width="28" height="28" alt=""><span>マイペース</span></a>${renderNavigation(routes,current)}<span class="local-indicator"><i></i> ${e(cloudStatus(cloud.view(),mode,initializing))}</span></header><main id="main" tabindex="-1"><div class="page-heading"><div><p class="journal-date ${dateVisible&&selectedDate===today?'is-today':''}">${dateVisible?`${selectedDate.slice(0,4)}年 ${dayLabel(selectedDate)}`:e(route.label)}</p><h1>${current==='home'&&selectedDate!==today?'この日の記録':route.title}</h1></div>${dateVisible?`<div class="date-picker"><button class="icon-button" data-action="previous-day" aria-label="前の日" ${selectedDate==='1900-01-01'?'disabled':''}>${icon('left',17)}</button><label><span>${selectedDate===today?'今日':dayLabel(selectedDate,true)}</span><input id="selected-date" type="date" value="${selectedDate}" min="1900-01-01" max="${futureAllowed?'2200-12-31':today}" aria-label="表示する日付"></label><button class="icon-button" data-action="next-day" aria-label="次の日" ${selectedDate>=(futureAllowed?'2200-12-31':today)?'disabled':''}>${icon('right',17)}</button></div>`:''}</div>
   <div class="view-bar"><nav class="view-tabs" aria-label="${route.label}の表示">${route.tabs.map(([key,label])=>`<button type="button" data-action="view-tab" data-tab="${key}" aria-pressed="${view.tab===key}">${label}</button>`).join('')}</nav>${dateVisible&&selectedDate!==today?'<button class="text-link return-today" data-action="today">今日に戻る</button>':''}</div>
   ${storageBlocked?`<div class="error-banner" role="alert">保存データを読み込めません。記録の変更を止めています。<button class="text-link" data-action="backup-raw">既存データを退避</button><a href="#settings">設定で復元</a></div>`:''}
   <div class="view-stage" role="region" aria-label="${route.label}の内容" tabindex="0">${route.render({state,date:selectedDate,today,period,tab:view.tab,page:view.page,pageSize:current==='habits'?habitSize:pageSize,month:calendarMonth})}</div><footer class="app-footer"><span>マイペース</span><nav aria-label="アプリ情報"><a href="./about.html">このアプリについて</a><a href="./privacy.html">プライバシー</a><a href="./terms.html">利用について</a></nav></footer></main></div>`;
+  const replacementMap=app.querySelector?.('.daily-running [data-map-identity]');
+  if(retainedMap?.dataset?.mapDayIdentity&&retainedMap.dataset.mapDayIdentity===replacementMap?.dataset?.mapDayIdentity){
+    replacementMap.replaceWith(retainedMap);
+    if(reusePreparedRouteMap(retainedMap,replacementMap))discardRouteMapRegistration(replacementMap);else retainedMap.replaceWith(replacementMap);
+  }
+  renderedDailyReady=current==='running'&&dailyRunning.view().daily?.status==='ready';
   mountRouteMaps(app);
   if((focus||restoreFocus)&&!editor.open){
     if(focus||!restoreElementFocus(app,focusSnapshot))document.querySelector('main')?.focus();
@@ -204,7 +219,7 @@ function releaseCloudOperation(owner){if(cloudOperation===owner)cloudOperation=f
 function cancelLoginAttempt(){const attempt=loginAttempt;if(!attempt)return;loginAttempt=null;++authUiGeneration;releaseCloudOperation(attempt.operation);}
 function currentLoginAttempt(attempt){return loginAttempt===attempt&&attempt.generation===authUiGeneration&&dialogContext===attempt.context&&fileSequence===attempt.sequence&&editor.open;}
 async function authRequest(owner,request){authRequestPending=owner;try{return await request();}finally{if(authRequestPending===owner)authRequestPending=null;}}
-function cancelRouteRead(){if(dialogContext?.type==='cloud-route')releaseCloudOperation(dialogContext.operation);}
+function cancelRouteRead(){}
 function showDialog(markup,context = {}) {
   cancelRouteRead();
   if(dialogContext?.cloudChanged&&context.type?.endsWith('-delete'))throw Error('EDITOR_REMOTE_CHANGED');
@@ -291,10 +306,11 @@ async function openHabitLog(id) {
   );
 }
 const actions= {
+  'daily-retry':()=>dailyRunning.select(selectedDate,{force:true}),
   'view-tab':el=>{const view=activeView();if(!routes[routeKey()].tabs.some(([key])=>key===el.dataset.tab))return;if(routeKey()==='settings'&&view.tab==='drive'&&el.dataset.tab!=='drive')closeDialog();view.tab=el.dataset.tab;view.page=0;render({focus:true});},
   'view-page':el=>{const page=Number(el.dataset.page);if(!Number.isInteger(page)||page<0)return;activeView().page=page;render({focus:true});},
   'calendar-month':el=>{const offset=Number(el.dataset.offset);if(![-1,1].includes(offset))return;const [year,month]=calendarMonth.split('-').map(Number);const value=new Date(year,month-1+offset,1,12);const key=`${value.getFullYear()}-${String(value.getMonth()+1).padStart(2,'0')}`;if(key<'1900-01'||key>'2200-12')return;calendarMonth=key;activeView().page=0;render({focus:true});},
-  'calendar-today':()=>{selectedDate=todayKey();calendarMonth=selectedDate.slice(0,7);activeView().page=0;render({focus:true});},
+  'calendar-today':()=>{selectedDate=screenToday();calendarMonth=selectedDate.slice(0,7);activeView().page=0;render({focus:true});},
   'calendar-day':el=>{if(!isDateKey(el.dataset.date))return;selectedDate=el.dataset.date;calendarMonth=selectedDate.slice(0,7);activeView().page=0;render({focus:true});},
   'diary-day':el=>{if(!isDateKey(el.dataset.date))return;selectedDate=el.dataset.date;calendarMonth=selectedDate.slice(0,7);viewState.diary={tab:'entry',page:0};if(routeKey()!=='diary')location.hash='#diary';render({focus:true});},
   'event-add':()=>showDialog(eventDialog(null,selectedDate),{type:'event'}),
@@ -314,19 +330,19 @@ const actions= {
     }
   }
   ,   'next-day':()=> {
-    if(selectedDate<(['calendar','diary'].includes(routeKey())?'2200-12-31':todayKey())) {
+    if(selectedDate<(['calendar','diary'].includes(routeKey())?'2200-12-31':screenToday())) {
       selectedDate=addDays(selectedDate,1);
       calendarMonth=selectedDate.slice(0,7);activeView().page=0;
       render();
     }
   }
   ,   today:()=> {
-    selectedDate=todayKey();
+    selectedDate=screenToday();
     calendarMonth=selectedDate.slice(0,7);activeView().page=0;
     render();
   }
   ,   'select-date':el=> {
-    if(!isDateKey(el.dataset.date)||el.dataset.date>todayKey())return;
+    if(!isDateKey(el.dataset.date)||el.dataset.date>screenToday())return;
     selectedDate=el.dataset.date;
     calendarMonth=selectedDate.slice(0,7);
     activeView().page=0;
@@ -361,42 +377,6 @@ const actions= {
   }
   ,   'target-edit':()=>showDialog(targetDialog(state.settings.wakeTarget), {
     type:'target'
-  }
-  ),   'run-add':()=>showDialog(runDialog(null,selectedDate,todayKey()), {
-    type:'run',points:[]
-  }
-  ),   'run-edit':el=> {
-    const run=state.runs.find(r=>r.id===el.dataset.id);
-    if(run)showDialog(runDialog(run,selectedDate,todayKey()), {
-      type:'run',id:run.id,points:run.points||[]
-    }
-    );
-  }
-  ,   'run-delete':()=> {
-    if(dialogContext?.type!=='run'||!dialogContext.id)return;
-    const id=dialogContext.id;
-    showDialog(confirmDialog('ランの記録を削除','この記録を削除します。直後に「元に戻す」で取り消せます。','削除する','run-delete-confirm'), {
-      type:'run-delete',id
-    }
-    );
-  }
-  ,   'run-delete-confirm':async()=> {
-    if(dialogContext?.type!=='run-delete'||!dialogContext.id)return;
-    await commitAndClose( {
-      ...state,runs:state.runs.filter(r=>r.id!==dialogContext.id)
-    }
-    ,'ランの記録を削除しました');
-  }
-  ,   'gpx-import':()=>chooseFile('.gpx,application/gpx+xml,application/xml,text/xml',(text)=> {
-    const parsed=parseGpx(text);
-    const run= {
-      ...parsed,date:parsed.date&&parsed.date<=todayKey()?parsed.date:selectedDate,note:''
-    }
-    ;
-    showDialog(runDialog(run,selectedDate,todayKey(),parsed.warnings), {
-      type:'run',points:parsed.points
-    }
-    );
   }
   ),   'habit-add':()=>showDialog(habitDialog(null), {
     type:'habit'
@@ -490,7 +470,7 @@ async function openCloudLogin(){
   if(currentLoginAttempt(attempt))identity.renderButton(editor.querySelector('#google-signin'),{theme:'outline',size:'large',text:'signin_with'});
  }catch(error){if(currentLoginAttempt(attempt))formError(error.message);}finally{releaseCloudOperation(operation);}
 }
-function showSignedOutState(){const local=loadState();mode='local';const remembered=rememberMode('signed-out');state=local.state||createInitialState();storageBlocked=!local.ok;undoState=null;closeDialog();render();return remembered;}
+function showSignedOutState(){void dailyCache.clear();const local=loadState();mode='local';const remembered=rememberMode('signed-out');state=local.state||createInitialState();storageBlocked=!local.ok;undoState=null;closeDialog();render();return remembered;}
 function logoutMessage(remembered,result){
  const server=result==='pending'?'サーバー側のログアウトを確認しています。':result==='confirmed'?'サーバー側のログアウトは確認できました。':'サーバー側のログアウトは確認できていません。';
  if(!remembered)return `このページのクラウド表示は閉じました。ログアウト状態をこのブラウザーに保存できませんでした。ほかのタブや、再読み込み・開き直しで、端末に残る記録が表示される可能性があります。${server}記録を失わないよう、このサイトのデータは消さないでください。`;
@@ -551,41 +531,6 @@ async function handleCloud(button){
    const conflict=cloud.view().conflicts.find(c=>c.key===button.dataset.key);if(!conflict)return;
    showDialog(`<div class="dialog-top"><h2 id="dialog-title">どちらの記録を残しますか？</h2></div><p>${e(conflict.key)}</p><div class="info-note sync-review"><strong>この端末の変更</strong><p>${e(JSON.stringify(conflict.local))}</p><strong>クラウドの最新</strong><p>${e(JSON.stringify(conflict.remote))}</p></div><p>選んだ内容を残します。この操作の取り消しはできません。必要なら先に JSON を保存してください。</p><div class="dialog-actions"><button class="btn secondary" data-action="dialog-close">キャンセル</button><button class="btn secondary" data-action="cloud-resolve-remote">クラウドを残す</button><button class="btn primary" data-action="cloud-resolve-local">この端末を残す</button></div>`,{type:'cloud-conflict',key:conflict.key,conflict});return;
  }
- if(action==='cloud-route'||action==='cloud-route-next'){
-   if(!cloudView().ready)return;
-   const previous=action==='cloud-route-next'?dialogContext:null;
-   const id=previous?.runId||button.dataset.id;
-   if(!id)return;
-   const context={type:'cloud-route',runId:id,nextCursor:previous?.nextCursor??null,revision:previous?.revision??null,loaded:previous?.loaded||0,points:[],start:(previous?.loaded||0)+1};
-   showDialog(`<div class="dialog-top"><h2 id="dialog-title">CSV のルート</h2><button class="icon-button" data-action="dialog-close" aria-label="閉じる">${icon('close')}</button></div><p class="cloud-route-progress" role="status">ルートを読み込み中… 閉じると読み込みを中止します。</p><div class="cloud-route-result"></div><p id="form-error" class="form-error" role="alert" hidden></p>`,context);
-   const seq=fileSequence,start=routeKey(),operation={kind:'route'};context.operation=operation;cloudOperation=operation;
-   let failure=null;
-   try{
-     // Existing signed/revision-bound pages only; bounded memory, no background prefetch.
-     for(let pages=0;pages<20;pages++){
-       const page=await cloud.routePage(id,context.nextCursor,context.revision);
-       if(seq!==fileSequence||start!==routeKey()||dialogContext!==context||!editor.open)return;
-       const segment=pages; // Conservatively preserve API page boundaries as route breaks.
-       context.points.push(...page.points.map(p=>({...p,segment})));
-       context.loaded+=page.points.length;context.nextCursor=page.nextCursor;context.revision=page.revision;
-       editor.querySelector('.cloud-route-progress').textContent=`${context.loaded.toLocaleString('ja-JP')} サンプルを読み込みました。${page.nextCursor?'続きを読み込み中… 閉じると中止します。':'読み込み完了。'}`;
-       const result=editor.querySelector('.cloud-route-result');
-       if(!result.querySelector('[data-route-map]')){result.innerHTML=routeMap(context.points,'CSV');mountRouteMaps(editor);}
-       else updateRouteMap(result,context.points);
-       if(!page.nextCursor)break;
-     }
-   }catch(error){failure=error;}
-   finally{releaseCloudOperation(operation);}
-   if(seq!==fileSequence||dialogContext!==context||!editor.open)return;
-   editor.querySelector('.cloud-route-progress').textContent=failure?'ルートの読み込みが途中で止まりました。':context.nextCursor?'表示上限に達したため、続きは分けて表示します。':'ルートを読み込みました。';
-   const result=editor.querySelector('.cloud-route-result');
-   if(!result.querySelector('[data-route-map]')){result.innerHTML=routeMap(context.points,'CSV');}
-   const restart=failure&&/CURSOR|REVISION/.test(failure.message);
-   result.insertAdjacentHTML('beforeend',`<p>${context.points.length?`${context.start}〜${context.loaded} サンプルを表示。`:'表示できるサンプルはまだありません。'}${context.nextCursor||failure?'ルートの一部です。':'この読み込み範囲の最後です。'} APIページ間の線は連結しません。</p><p class="hint">速度はGPS座標と時刻からの推定値です。保存済みの距離・ペース・達成回数は変更しません。</p>${restart?`<p>元のルートが更新されたため、最初から読み直してください。</p><button class="btn primary" data-action="cloud-route" data-id="${e(id)}">最初から読み直す</button>`:context.nextCursor||failure?`<button class="btn primary" data-action="${context.loaded?'cloud-route-next':'cloud-route'}" data-id="${e(id)}">${context.loaded?'続きの区間を読む':'もう一度読み込む'}</button>`:''}`);
-   mountRouteMaps(editor);
-   if(failure)formError(failure.message);
-   return;
- }
  const operation={kind:action==='cloud-sync'?'sync':'mutation'};cloudOperation=operation;
  try{
    if(action==='cloud-sync'){await cloud.refreshSession({automatic:false});return;}
@@ -620,7 +565,7 @@ document.addEventListener('click',onClick);
 document.addEventListener('change',event=> {
   if(event.target.id==='selected-date') {
     const value=event.target.value;
-    if(isDateKey(value)&&value<=(['calendar','diary'].includes(routeKey())?'2200-12-31':todayKey())) {
+    if(isDateKey(value)&&value<=(['calendar','diary'].includes(routeKey())?'2200-12-31':screenToday())) {
       selectedDate=value;
       calendarMonth=value.slice(0,7);
       activeView().page=0;
@@ -654,20 +599,6 @@ editor.addEventListener('submit',async event=> {
       }
     }
     ;
-    else if(type==='run') {
-      const id=data.get('id')||makeId();
-      const durationSec=Number(data.get('minutes'))*60+Number(data.get('seconds'));
-      if(durationSec<=0||durationSec>31*24*3600)throw new Error('走行時間は 1 秒以上、31 日以内で入力してください。');
-      const run= {
-        id,date:data.get('date'),distanceKm:Number(data.get('distance')),durationSec,note:data.get('note').trim(),points:dialogContext.points||[]
-      }
-      ;
-      if(run.date>todayKey())throw new Error('今日以前の日付を選んでください。');
-      next= {
-        ...state,runs:[...state.runs.filter(r=>r.id!==id),run]
-      }
-      ;
-    }
     else if(type==='habit') {
       const previous=getHabit(data.get('id'));
       const habitType=previous?.type||data.get('type');
@@ -705,7 +636,7 @@ window.addEventListener('hashchange',()=> {
 }
 );
 window.addEventListener('storage',event=> {
-  if(event.key===MODE_KEY&&event.newValue==='signed-out'){cloud.lock();preferredMode='signed-out';mode='local';const local=loadState();state=local.state||createInitialState();storageBlocked=!local.ok;undoState=null;closeDialog();render();return;}
+  if(event.key===MODE_KEY&&event.newValue==='signed-out'){void dailyCache.clear();cloud.lock();preferredMode='signed-out';mode='local';const local=loadState();state=local.state||createInitialState();storageBlocked=!local.ok;undoState=null;closeDialog();render();return;}
   if(event.key!==STORAGE_KEY&&event.key!==null)return;
   if(mode==='cloud'){const local=loadState();legacyState=local.ok?local.state:null;return;}
   const latest=loadState();
@@ -729,7 +660,7 @@ document.addEventListener('focusout',()=>{queueMicrotask(()=>{if(advisoryRenderP
 document.addEventListener('visibilitychange',()=> {
   if(document.hidden)return;
   if(mode==='cloud')void cloud.refreshSession({automatic:true});
-  const current=todayKey();
+  const current=screenToday();
   if(current!==previousToday) {
     if(selectedDate===previousToday){selectedDate=current;calendarMonth=current.slice(0,7);}
     previousToday=current;
@@ -746,6 +677,6 @@ window.addEventListener('resize',()=>{
 render();
 try{const initial=await cloud.init({resume:preferredMode!=='signed-out'});if(initial.state&&(initial.authenticated||preferredMode==='cloud')&&!['local','signed-out'].includes(preferredMode)){mode='cloud';if(initial.authenticated)rememberMode('cloud');state=validateState(initial.state);storageBlocked=false;}}catch(error){toast(error.message==='INDEXEDDB_UPGRADE_APPROVAL_REQUIRED'?'旧データは更新していません。この端末の退避と確認が済むまで、クラウド保存形式の更新を待ちます。':['INDEXEDDB_BLOCKED_CLOSE_OTHER_TABS','INDEXEDDB_VERSION_CHANGED_RELOAD_REQUIRED','CLOUD_STATE_UNDISPLAYABLE'].includes(error.message)?cloudErrorText(error.message):'クラウド用の端末保存を利用できません。ローカルの記録はそのままです。');}finally{initializing=false;render();}
 
-const refreshTimer=setInterval(()=>{if(!document.hidden&&mode==='cloud'&&!commitPending&&!cloudOperation)void cloud.refreshSession({automatic:true,poll:true});},60000);
+const refreshTimer=setInterval(()=>{if(!document.hidden&&mode==='cloud'&&!commitPending&&!cloudOperation){void cloud.refreshSession({automatic:true,poll:true});if(routeKey()==='running')void dailyRunning.select(selectedDate,{force:true});}},60000);
 refreshTimer?.unref?.();
-window.addEventListener('pagehide',event=>{if(!event.persisted){clearInterval(refreshTimer);cloud.destroy();}});
+window.addEventListener('pagehide',event=>{if(!event.persisted){clearInterval(refreshTimer);dailyRunning.clear();dailyCache.close();cloud.destroy();}});

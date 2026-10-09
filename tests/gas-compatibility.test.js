@@ -59,3 +59,14 @@ test('complete restricted bundle imports source, resumes checkpoint and verifies
  assert.equal(f.calls.filter(c=>c[0]==='create'&&c[1]==='source').length,0);
  assert.equal(vm.runInContext('typeof TextEncoder+","+typeof Object.hasOwn+","+typeof Array.prototype.at+","+typeof crypto+","+typeof structuredClone',context),'undefined,undefined,undefined,undefined,undefined');
 });
+test('prepared daily calculator runs normal, gap and JST boundary branches without newer array builtins',()=>{
+ const context=restrictGasContext(vm.createContext({}));
+ vm.runInContext(fs.readFileSync(new URL('../storage/gas/FolderImport.gs',import.meta.url),'utf8'),context);
+ const result=JSON.parse(vm.runInContext(`JSON.stringify((()=>{const a=MyPaceFolderImport,points=[{time:'2026-10-08T17:59:40Z',lat:35,lon:139},{time:'2026-10-08T17:59:50Z',lat:35.0001,lon:139},{time:'2026-10-08T18:00:00Z',lat:35.0002,lon:139},{time:'2026-10-08T19:00:00Z',lat:35.0003,lon:139},{time:'2026-10-08T19:00:10Z',lat:35.0004,lon:139}];let state=a.startDailyFile({sourceKey:'restricted',version:'1'});state=a.appendDailyPoints(state,points.slice(0,2));state=JSON.parse(JSON.stringify(state));state=a.appendDailyPoints(state,points.slice(2));const file=a.finishDailyFile(state),day=a.assembleDailyDate({date:'2026-10-09',files:[file],storeId:'store',generation:'1'});return {file,day,at:typeof Array.prototype.at};})())`,context));
+ assert.equal(result.at,'undefined');
+ assert.equal(result.file.days['2026-10-08'].durationSeconds,20);
+ assert.equal(result.day.summary.durationSeconds,3610);
+ assert.ok(result.day.summary.distanceMeters>10&&result.day.summary.distanceMeters<12);
+ assert.ok(result.day.segments.length>=2);
+ assert.ok(result.day.quality.includes('GPS_GAP_OR_IMPLAUSIBLE_SPEED'));
+});

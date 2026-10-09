@@ -4,7 +4,8 @@ import {GasStoreIO} from './gas-store-io.mjs';
 import {ReservedSlotWriter} from './reserved-writer.mjs';
 import {ImportStoreBinding} from './import-store.mjs';
 import {ImportCheckpointCoordinator,ImmutableAssetAdapter,createGasAssetMediaReader} from './immutable-assets.mjs';
-import {createDriveSourceTransport} from './transport.mjs';
+import {createDriveSourceTransport,validateSourceIdentity,SOURCE_FOLDER_ID} from './transport.mjs';
+import {createDriveFolderScope} from './drive-folder-scope.mjs';
 import {ImportRunner} from './import-runner.mjs';
 import {createPreparedAppCommand} from '../gas/prepared-app-domain.mjs';
 const fail=code=>{throw Error(code);};
@@ -24,7 +25,8 @@ export function createGasImportRuntime(globals,config){
  const locked=fn=>{if(lock.hasLock())return fn();let acquired=false;try{acquired=lock.tryLock(1000)===true;if(!acquired){const e=Error('WRITER_BUSY');e.retryable=true;throw e;}return fn();}finally{if(acquired)lock.releaseLock();}};
  io=new GasStoreIO({Drive,Utilities,UrlFetchApp,ScriptApp,lock,storeId:config.storeId,managedParentId:config.metadataParentId,checkBudget:config.checkBudget,protocolReadCache:config.protocolReadCache,checkpointHintId:config.checkpointHintId,restTransport:config.restTransport,canWriteHint:config.canWriteHint,managedWritePhase:config.managedWritePhase,trustManagedRecoveryPrefix:config.trustManagedRecoveryPrefix});
  const writer=new ReservedSlotWriter({io,storeId:config.storeId,writerScriptId:config.writerScriptId,anchorId:config.anchorId,limits:config.writerLimits,checkpointHintId:config.checkpointHintId,checkpointHintCodec:config.checkpointHintCodec,checkpointHintAnchorHash:config.checkpointHintAnchorHash,progressiveRecovery:config.progressiveRecovery,canContinueRecovery:config.canContinueRecovery,preparationCodec:config.preparationCodec,preparedAppAdapter:config.preparedAppAdapter??createPreparedAppCommand,canContinuePreparation:config.canContinuePreparation});
- const source=createDriveSourceTransport(globals,{pageSize:32});
+ const membership=config.sourceSubtree===true?createDriveFolderScope({Drive,rootId:SOURCE_FOLDER_ID,excludedIds:[config.rootParentId,config.metadataParentId,config.assetsParentId].filter(Boolean),canContinue:config.checkBudget}):undefined;
+ const source=createDriveSourceTransport(globals,{pageSize:32,membership});
  const budget=()=>{if(config.checkBudget('runtime')!==true){const e=Error('IMPORT_YIELD');e.retryable=true;throw e;}};
  const validateSource=s=>{budget();source.getSource(s,{deadlineMs:config.deadlineMs});return true;};
  let store;
@@ -37,9 +39,9 @@ export function createGasImportRuntime(globals,config){
   if(!m||m.id!==r.fileId||m.trashed!==false||m.ownedByMe!==true||m.shared!==false||m.mimeType!=='application/octet-stream'||!Array.isArray(m.parents)||m.parents.length!==1||m.parents[0]!==config.assetsParentId||String(m.size)!==String(r.byteLength)||Object.keys(markers).some(k=>m.appProperties?.[k]!==markers[k]))fail('ASSET_METADATA_MISMATCH');
   return reader(r.fileId,r.byteLength,2097152);
  };
- store=new ImportStoreBinding({writer,storeId:config.storeId,readAsset:readManaged,validateSourceCurrent:validateSource});
+ store=new ImportStoreBinding({writer,storeId:config.storeId,readAsset:readManaged,validateSourceCurrent:validateSource,normalizeSource:s=>validateSourceIdentity(s,membership)});
  const assets=new ImmutableAssetAdapter({Drive,Utilities,readAssetBytes:reader,managedParentId:config.assetsParentId,storeId:config.storeId,assertReservation:r=>reservationRead(()=>store.assertReservation(r))});
  const coordinator=new ImportCheckpointCoordinator({writer:store,assets,getScriptLock:()=>lock,validateSourceCurrent:validateSource,checkBudget:config.checkBudget});
  const runner=new ImportRunner({store,coordinator,source,allocateIds:n=>io.allocateIds(n),locked,checkBudget:config.checkBudget,rangeBytes:config.rangeBytes,finalizationBatchLimit:config.finalizationBatchLimit,maxFreshOutputs:config.maxFreshOutputs});
- return Object.freeze({writer,store,source,assets,coordinator,runner,locked});
+ return Object.freeze({writer,store,source,assets,coordinator,runner,locked,allocateIds:n=>io.allocateIds(n)});
 }

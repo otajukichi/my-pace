@@ -10,6 +10,7 @@ import {createInitialState, serializeBackup, todayKey, addDays} from '../src/lib
 import {STORAGE_KEY} from '../src/lib/storage.js';
 import {deriveGarden} from '../src/lib/garden.js';
 import {pageCapacity} from '../src/lib/workspace.js';
+import {runningDayKey} from '../src/lib/daily-running.js';
 
 let instance = 0;
 class EventNode {
@@ -167,13 +168,13 @@ test('explicit Back/Forward hash events restore route tabs, close stale editors,
   const date = addDays(todayKey(), -2), ui = await launch(t), before = ui.raw;
   await ui.changeDate(date); await ui.click('view-tab', {tab:'agenda'});
   await ui.clickRoute('diary'); await ui.click('view-tab', {tab:'history'});
-  await ui.clickRoute('running'); await ui.click('view-tab', {tab:'trends'});
+  await ui.clickRoute('wake'); await ui.click('view-tab', {tab:'trends'});
   // These are explicit URL/hashchange controller inputs standing in for Back/Forward.
   // No browser history stack, native timing, or browser focus behavior is asserted.
-  for (const [route, tab] of [['diary','history'], ['calendar','agenda'], ['diary','history'], ['running','trends']]) {
+  for (const [route, tab] of [['diary','history'], ['calendar','agenda'], ['diary','history'], ['wake','trends']]) {
     const source = ui.location.hash.slice(1);
     const [action, type, values] = {
-      running:['run-add', 'run', {id:'', date, distance:'5', minutes:'30', seconds:'0', note:'保存しないラン'}],
+      wake:['wake-edit', 'wake', {time:'06:15'}],
       calendar:['event-add', 'event', valuesForEvent(date)],
       diary:['diary-edit', 'diary', {text:'保存しない古いフォーム', mood:'calm'}],
     }[source];
@@ -243,18 +244,18 @@ test('page palette follows direct entry, every route, invalid hashes and repeate
 
 test('Home record dialogs use entity palettes; nested confirmation retains it and later dialogs reset it',async t=>{
   const ui=await launch(t,{hash:'#home'});
-  for(const [action,theme] of [['wake-edit','wake'],['run-add','running'],['habit-add','habits'],['event-add','calendar'],['diary-edit','diary']]){
+  for(const [action,theme] of [['wake-edit','wake'],['habit-add','habits'],['event-add','calendar'],['diary-edit','diary']]){
     await ui.click(action);
     assert.equal(ui.editor.dataset.theme,theme);
     assert.equal(ui.document.documentElement.dataset.page,'home');
     await ui.click('dialog-close');
   }
-  await ui.click('run-add');
-  await ui.submit('run',{id:'',date:todayKey(),distance:'5',minutes:'30',seconds:'0',note:''});
+  await ui.click('event-add');
+  await ui.submit('event',valuesForEvent());
   assert.equal(ui.document.documentElement.dataset.page,'home');
-  await ui.click('run-edit',{id:ui.state().runs[0].id});
-  await ui.click('run-delete');
-  assert.equal(ui.editor.dataset.theme,'running');
+  await ui.click('event-edit',{id:ui.state().events[0].id});
+  await ui.click('event-delete');
+  assert.equal(ui.editor.dataset.theme,'calendar');
   await ui.click('dialog-close');
   await ui.click('wake-edit');
   assert.equal(ui.editor.dataset.theme,'wake');
@@ -447,12 +448,12 @@ test('diary history page action opens the chosen entry and resets to the first t
   await ui.click('view-tab', {tab:'history'}); await ui.click('diary-day', {date}); assert.match(ui.app.innerHTML, /pagination-position[^>]*>1 \/ /);
 });
 
-test('all primary record routes clamp future selected dates before opening a record editor', async t => {
+test('primary routes clamp future dates and running remains read-only', async t => {
   const today = todayKey(), future = addDays(today, 50), initial = {...createInitialState(), habits:[{id:'read', name:'読書', type:'number', unit:'ページ', target:10, archived:false}]}, ui = await launch(t, {initial});
   await ui.changeDate(future); await ui.changeHash('#wake'); assert.equal(selectedDate(ui), today);
   await ui.click('wake-edit'); await ui.submit('wake', {time:'06:15'}); assert.equal(ui.state().wake[today], '06:15'); assert.equal(ui.state().wake[future], undefined);
-  await ui.changeHash('#calendar'); await ui.changeDate(future); await ui.changeHash('#running'); assert.equal(selectedDate(ui), today);
-  await ui.click('run-add'); assert.match(ui.editor.innerHTML, new RegExp(`name="date"[^>]*value="${today}"`)); await ui.click('dialog-close');
+  await ui.changeHash('#calendar'); await ui.changeDate(future); await ui.changeHash('#running'); assert.equal(selectedDate(ui), runningDayKey());
+  await ui.click('run-add'); assert.equal(ui.editor.open,false);assert.equal(currentTab(ui,'record'),true);assert.doesNotMatch(ui.app.innerHTML,/data-action="run-add"/);
   await ui.changeHash('#diary'); await ui.changeDate(future); await ui.changeHash('#habits'); assert.equal(selectedDate(ui), today);
   await ui.click('habit-log', {id:'read'}); await ui.submit('habit-log', {value:'3'}); assert.equal(ui.state().habitLogs.read[today], 3); assert.equal(ui.state().habitLogs.read[future], undefined);
   await ui.changeHash('#calendar'); await ui.changeDate(future); await ui.changeHash('#home'); assert.equal(selectedDate(ui), today);
@@ -511,9 +512,9 @@ test('delete confirmations require matching editor types and cannot reuse unrela
 });
 
 test('failed stale file reads are ignored after a newer same-route editor or navigation', async t => {
-  const ui = await launch(t, {hash:'#running'}); let fail;
-  await ui.click('gpx-import'); const pending = ui.selectFile({size:100, text:() => new Promise((resolve, reject) => {fail = reject;})});
-  await ui.click('run-add'); const markup = ui.editor.innerHTML, notice = ui.notice.innerHTML;
+  const ui = await launch(t, {hash:'#home'}); let fail;
+  await ui.click('backup-import'); const pending = ui.selectFile({size:100, text:() => new Promise((resolve, reject) => {fail = reject;})});
+  await ui.click('wake-edit'); const markup = ui.editor.innerHTML, notice = ui.notice.innerHTML;
   fail(new Error('Old file cannot be read')); await pending;
   assert.equal(ui.editor.innerHTML, markup); assert.equal(ui.notice.innerHTML, notice); assert.equal(ui.writes, 0);
   await ui.click('dialog-close'); await ui.changeHash('#settings'); await ui.click('backup-import');
@@ -538,4 +539,12 @@ test('resizing an event editor preserves unsaved title, date, time, and notes', 
   assert.equal(ui.editor.innerHTML, markup); assert.equal(ui.editor.open, true); assert.equal(ui.writes, 0);
   for (const [key, value] of Object.entries(values)) assert.equal(ui.editor.querySelector(`[name="${key}"]`).value, value);
   await ui.submit('event', values); assert.equal(ui.state().events[0].date, future); assert.equal(ui.state().events[0].title, values.title);
+});
+
+test('running retains only the record tab and ignores stale history or trends tab actions',async t=>{
+ const ui=await launch(t,{hash:'#running'}),before=ui.raw;
+ assert.equal(currentTab(ui,'record'),true);
+ for(const tab of ['history','trends']){await ui.click('view-tab',{tab});assert.equal(currentTab(ui,'record'),true);}
+ assert.equal((ui.app.innerHTML.match(/data-action="view-tab"/g)||[]).length,1);
+ assert.doesNotMatch(ui.app.innerHTML,/run-add|run-edit|gpx-import|cloud-route/);assert.equal(ui.raw,before);assert.equal(ui.writes,0);
 });

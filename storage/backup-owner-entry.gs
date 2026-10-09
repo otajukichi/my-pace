@@ -12,7 +12,7 @@ function myPaceBackupRun_(mode,event){
  if(!config)throw Error('OWNER_BOOTSTRAP_REQUIRED');
  var lock=globals.LockService.getUserLock();if(!lock.tryLock(1000))return report({status:'backup-busy',nextAction:'Retry the same backup command later.'});
  try{
-  var adapter=MyPaceFolderImport.createGasBackupAdapter(globals,config,{checkBudget:budget,deadlineMs:deadline});if(!adapter.ensure({create:mode==='backup'}))return report({status:'backup-not-configured'});var state=adapter.getState();
+  var adapter=MyPaceFolderImport.createGasBackupAdapter(globals,config,{checkBudget:budget,deadlineMs:deadline,propertyKey:myPaceBackupProperty_(globals,config)});if(!adapter.ensure({create:mode==='backup'}))return report({status:'backup-not-configured'});var state=adapter.getState();
   if(mode==='status')return report({status:state.job?'backup-in-progress':state.latestManifest?'backup-complete':'backup-not-started',backupFolderId:adapter.getConfig().rootId,latestSnapshot:state.latestManifest?{revision:state.latestManifest.view.revision,createdAt:state.latestManifest.createdAt,objects:state.latestManifest.entries.length,hash:state.latestManifest.hash}:null,progress:state.job?{copied:state.job.copied,reused:state.job.reused,remaining:state.job.queue.length}:null,restoreProgress:myPaceBackupRestoreProgress_(state),lastRestore:state.lastRestore,lastFailure:state.lastFailure||null,lastCompletedAt:state.lastCompletedAt||null,schedule:myPaceBackupSchedule_().status()});
   if(mode==='history')return report(Object.assign({status:'backup-history',dateMeaning:'manifestCreatedAt is publication time; selected snapshot reports its actual cutoff'},adapter.listManifestPage(properties.getProperty('MYPACE_BACKUP_HISTORY_PAGE_TOKEN'))));
   if(mode==='restore'||mode==='restore-selected')return myPaceBackupRestore_(globals,config,adapter,budget,deadline,mode==='restore-selected',function(phase){restorePhase=phase;},report);
@@ -20,9 +20,10 @@ function myPaceBackupRun_(mode,event){
   var job=state.job;
   if(!job){
    var runtime=MyPaceFolderImport.createGasImportRuntime(globals,Object.assign({},myPaceOwnerRuntimeConfig_(globals,config),{checkBudget:budget,deadlineMs:deadline,protocolReadCache:{mode:'lock-phase'}}));
-   var view=runtime.locked(function(){runtime.writer.recoveryBarrier();return runtime.writer.captureReadView();});
-   job=MyPaceFolderImport.createBackupJob(view,state.latestManifest,new Date().toISOString());adapter.saveJob(job);
+   var archiveSource=null;var view=runtime.locked(function(){runtime.writer.recoveryBarrier();var oldArchive=runtime.writer.get('daily/archive-source'),dailyHead=runtime.writer.get('daily/head');archiveSource=oldArchive&&!oldArchive.deleted?oldArchive.value:dailyHead&&!dailyHead.deleted&&dailyHead.value.archiveManifestHash?dailyHead.value:null;return runtime.writer.captureReadView();});
+   job=MyPaceFolderImport.createBackupJob(view,state.latestManifest,new Date().toISOString());if(archiveSource)job.archiveSource=archiveSource;adapter.saveJob(job);
   }
+  if(job.archiveSource)adapter.bindArchive(job.archiveSource);
   var result;do{result=MyPaceFolderImport.backupSlice(job,adapter,{maxFiles:4,canContinue:budget});job=result.job;}while(!result.manifest&&budget());
   if(result.manifest){
    // Publish immutable complete manifests before replacing the latest pointer.
@@ -44,7 +45,7 @@ function MyPaceBackupEnableDaily(){
  // A completed backup plus actual isolated restore is required before scheduling.
  var g=myPaceOwnerGlobals_();if(g.Session.getActiveUser().getEmail().toLowerCase()!==MYPACE_IMPORT_OWNER||g.Session.getEffectiveUser().getEmail().toLowerCase()!==MYPACE_IMPORT_OWNER)throw Error('BACKUP_OWNER_REQUIRED');
  var c=MyPaceFolderImport.parsePinnedOwnerStoreConfig(g.PropertiesService.getScriptProperties().getProperty(MyPaceFolderImport.OWNER_STORE_PROPERTY),{ownerEmail:MYPACE_IMPORT_OWNER,writerScriptId:g.ScriptApp.getScriptId()});if(!c)throw Error('OWNER_BOOTSTRAP_REQUIRED');
- var lock=g.LockService.getScriptLock();if(!lock.tryLock(1000))throw Error('BACKUP_BUSY');try{var a=MyPaceFolderImport.createGasBackupAdapter(g,c);if(!a.ensure({create:false}))throw Error('BACKUP_COMPLETE_REQUIRED');var s=a.getState();if(!s.latestManifest||!s.lastRestore||s.lastRestore.status!=='restore-verified'||s.lastRestore.manifestHash!==s.latestManifest.hash||s.lastRestore.manifestId!==s.latestManifestId)throw Error('BACKUP_RESTORE_TEST_REQUIRED');}finally{lock.releaseLock();}
+ var lock=g.LockService.getScriptLock();if(!lock.tryLock(1000))throw Error('BACKUP_BUSY');try{var a=MyPaceFolderImport.createGasBackupAdapter(g,c,{propertyKey:myPaceBackupProperty_(g,c)});if(!a.ensure({create:false}))throw Error('BACKUP_COMPLETE_REQUIRED');var s=a.getState();if(!s.latestManifest||!s.lastRestore||s.lastRestore.status!=='restore-verified'||s.lastRestore.manifestHash!==s.latestManifest.hash||s.lastRestore.manifestId!==s.latestManifestId)throw Error('BACKUP_RESTORE_TEST_REQUIRED');}finally{lock.releaseLock();}
  return myPaceOwnerReport_(myPaceBackupSchedule_().enable());
 }
 function myPaceBackupScheduled_(event){var r=myPaceBackupRun_('backup',event);var continuation=myPaceBackupSchedule_().continueAfter(event,r.status==='backup-in-progress'||r.status==='backup-busy'||r.retryable===true);var report=myPaceOwnerReport_(Object.assign({},r,continuation));if(r.status==='backup-failed'||continuation.continuationWindowExpired)throw Error(continuation.continuationWindowExpired?'BACKUP_CONTINUATION_WINDOW_EXPIRED':'BACKUP_SCHEDULED_FAILED');return report;}
@@ -65,14 +66,16 @@ function myPaceBackupRestore_(globals,source,adapter,budget,deadline,selected,re
  if(target.storeId===source.storeId||target.anchorId===source.anchorId)throw Error('BACKUP_RESTORE_PRODUCTION_FORBIDDEN');
  var runtime=MyPaceFolderImport.createGasImportRuntime(globals,Object.assign({},myPaceOwnerRuntimeConfig_(globals,target),{checkBudget:budget,deadlineMs:deadline,protocolReadCache:{mode:'lock-phase'}}));
  if(!existingJob){reportPhase('activate-isolated-target');MyPaceFolderImport.activateSyncV2(runtime);}
- var job=existingJob||MyPaceFolderImport.createRestoreJob(manifest,{storeId:target.storeId,anchorId:target.anchorId,writerScriptId:target.writerScriptId,datasetGeneration:target.datasetGeneration});
+ var job=existingJob||MyPaceFolderImport.createRestoreJob(manifest,{storeId:target.storeId,anchorId:target.anchorId,writerScriptId:target.writerScriptId,datasetGeneration:target.datasetGeneration},{manifestId:manifestId});
  reportPhase('persist-restore-job');
  var save=function(j){var current=adapter.getState();adapter.saveState(Object.assign({},current,{restoreJob:j,restoreManifestId:manifestId}));};save(job);
  var result={job:job,status:job.status};
  if(['restoring','pausing-imports'].includes(job.status))do{result=runtime.locked(function(){reportPhase(job.status==='pausing-imports'?'pause-restored-imports':'restore-records');return MyPaceFolderImport.restoreSlice(job,{manifest:manifest,readBackup:adapter.readBackup,writer:runtime.writer,saveJob:save},{maxEntities:8,canContinue:budget});});job=result.job;}while(['restoring','pausing-imports'].includes(result.status)&&budget());
  var makeReader=function(w,storeId,readAsset){return MyPaceFolderImport.createImportReader({runtime:{writer:w,store:new MyPaceFolderImport.ImportStoreBinding({writer:w,storeId:storeId,readAsset:readAsset,validateSourceCurrent:function(){return false;}}),locked:function(fn){return fn();}},sealCursor:JSON.stringify,openCursor:JSON.parse});};
+ var dailyHeadStore=null;
+ if(!['restoring','pausing-imports'].includes(job.status)&&job.dailyCapable)dailyHeadStore=MyPaceFolderImport.createGasDailyReadHead(globals,{storeId:target.storeId,generation:target.datasetGeneration});
  var verifyBudget=function(){return Date.now()<deadline-45000;};
- if(!['restoring','pausing-imports'].includes(job.status)&&verifyBudget())do{result=runtime.locked(function(){reportPhase(job.verification&&job.verification.scanDone&&!job.verification.pendingRoute?'write-restore-probe':'verify-restored-records');return MyPaceFolderImport.verifyRestoreSlice(job,{manifest:manifest,readBackup:adapter.readBackup,writer:runtime.writer,saveJob:save,makeImportReader:makeReader},{maxEntities:128,canContinue:verifyBudget});});job=result.job;}while(!['restore-probe-written','restore-verified'].includes(result.status)&&verifyBudget());
+ if(!['restoring','pausing-imports'].includes(job.status)&&verifyBudget())do{result=runtime.locked(function(){reportPhase(job.verification&&job.verification.scanDone&&!job.verification.pendingRoute?'write-restore-probe':'verify-restored-records');return MyPaceFolderImport.verifyRestoreSlice(job,{manifest:manifest,readBackup:adapter.readBackup,writer:runtime.writer,saveJob:save,makeImportReader:makeReader,dailyHeadStore:dailyHeadStore},{maxEntities:128,canContinue:verifyBudget});});job=result.job;}while(!['restore-probe-written','restore-verified'].includes(result.status)&&verifyBudget());
 
  state=adapter.getState();if(result.status==='restore-verified')adapter.saveState(Object.assign({},state,{restoreJob:result.job,lastRestore:{status:'restore-verified',manifestHash:manifest.hash,manifestId:manifestId,storeId:target.storeId,verifiedAt:new Date().toISOString()}}));
  return report({status:result.status,restoreProgress:myPaceBackupRestoreProgress_(adapter.getState()),testStoreId:target.storeId,manifestId:manifestId,capturedAt:manifest.createdAt,revision:manifest.view.revision,nextAction:result.status==='restore-verified'?(manifestId===state.latestManifestId?'Isolated test restore passed. Production configuration is unchanged. You may explicitly run MyPaceBackupEnableDaily.':'Selected older snapshot restored and verified in an isolated store. Production configuration and latest backup are unchanged.'):selected?'Run MyPaceBackupRestoreSelected again with the same manifest selection.':'Run MyPaceBackupRestoreTest again to resume the isolated restore.'});
@@ -99,7 +102,7 @@ function myPaceBackupExport_(globals,source,adapter,budget){
  adapter.createBackup(job.fileId,bytes,'app-recovery-export');return myPaceOwnerReport_({status:'backup-export-complete',fileId:job.fileId,manifestId:selection.manifestId,capturedAt:manifest.createdAt,revision:manifest.view.revision,scope:'App records JSON for the existing importer. Imported route bodies remain in the snapshot archive.',nextAction:'Download this JSON from the private backup folder. No production import or switch has been performed.'});
 }
 
-function myPaceBackupRestoreProgress_(state){var j=state&&state.restoreJob;if(!j)return null;var v=j.verification;return {phase:j.status,position:j.position,restored:j.restored,pendingEntities:j.pendingRestore?j.pendingRestore.entries.length:0,verifiedRecords:v?v.records:0,verifiedRoutePages:v?v.routePages:0,scanDone:v?!!v.scanDone:false};}
+function myPaceBackupRestoreProgress_(state){var j=state&&state.restoreJob;if(!j)return null;var v=j.verification;return {phase:j.status,position:j.position,restored:j.restored,pendingEntities:j.pendingRestore?j.pendingRestore.entries.length:0,verifiedRecords:v?v.records:0,verifiedRoutePages:v?v.routePages:0,verifiedDailyDays:v?v.dailyDays||0:0,verifiedDailyAssets:v?v.dailyAssets||0:0,scanDone:v?!!v.scanDone:false};}
 
 function myPaceBackupAdapterRestoreProgress_(adapter){try{return adapter?myPaceBackupRestoreProgress_(adapter.getState()):null;}catch(ignore){return null;}}
 
@@ -113,3 +116,5 @@ function myPaceBackupInvocation_(original){
  if(typeof original.UrlFetchApp?.fetchAll==='function')globals.UrlFetchApp.fetchAll=function(requests){counts.remoteRequests+=Array.isArray(requests)?requests.length:1;return original.UrlFetchApp.fetchAll(requests);};
  return {globals:globals,usage:function(){return Object.assign({},counts,{elapsedMs:Date.now()-started});}};
 }
+
+function myPaceBackupProperty_(globals,config){var key=MyPaceFolderImport.BACKUP_CONFIG_PROPERTY,raw=globals.PropertiesService.getScriptProperties().getProperty(key);if(!raw)return key;var old;try{old=JSON.parse(raw);}catch(ignore){return key;}return old.sourceStoreId&&old.sourceStoreId!==config.storeId?key+'_'+config.storeId:key;}

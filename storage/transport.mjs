@@ -31,16 +31,16 @@ function decimal(value, code) {
   if (typeof value !== 'string' || value.length > 20 || !DIGITS.test(value)) fail(code);
   return value;
 }
-function inFolder(file) {
+function inFolder(file, membership) {
   return file && file.trashed === false && typeof file.name === 'string' &&
     /\.csv$/i.test(file.name) && typeof file.mimeType === 'string' &&
     file.mimeType.length > 0 && !file.mimeType.startsWith('application/vnd.google-apps.') &&
-    Array.isArray(file.parents) && file.parents.includes(SOURCE_FOLDER_ID);
+    Array.isArray(file.parents) && (typeof membership === 'function' ? membership(file) === true : file.parents.includes(SOURCE_FOLDER_ID));
 }
 // A full, serializable identity is required, never a bare client-supplied file ID.
 // Fresh metadata still rechecks membership before ANY media request on resume.
-export function validateSourceIdentity(file) {
-  if (!inFolder(file)) fail('SOURCE_OUT_OF_SCOPE');
+export function validateSourceIdentity(file, membership) {
+  if (!inFolder(file, membership)) fail('SOURCE_OUT_OF_SCOPE');
   if (typeof file.id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(file.id) ||
       file.name.length > 4096 || file.mimeType.length > 256 || file.parents.length > 32 ||
       file.parents.some(id => typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,256}$/.test(id)) ||
@@ -118,6 +118,9 @@ export function createDriveSourceTransport(globals, options = {}) {
       typeof UrlFetchApp?.fetch !== 'function' || typeof ScriptApp?.getOAuthToken !== 'function' ||
       typeof now !== 'function' || typeof random !== 'function') fail('GAS_SERVICES_REQUIRED');
   if ('folderId' in options && options.folderId !== SOURCE_FOLDER_ID) fail('SOURCE_FOLDER_FIXED');
+  const membership = options.membership;
+  if (membership !== undefined && typeof membership !== 'function') fail('SOURCE_SCOPE_INVALID');
+  const validate = file => validateSourceIdentity(file, membership);
   const pageSize = integer(options.pageSize ?? 100, 1, 100);
   const maxRangeBytes = integer(options.maxRangeBytes ?? MAX_RANGE_BYTES, 1, MAX_RANGE_BYTES);
   const maxAttempts = integer(options.maxAttempts ?? 3, 1, 3);
@@ -173,8 +176,8 @@ export function createDriveSourceTransport(globals, options = {}) {
   }
   function expectedSource(expected, ctx) {
     const actual = driveCall(ctx, () => Drive.Files.get(expected.id, {fields: SOURCE_FIELDS, supportsAllDrives: true}));
-    if (!inFolder(actual)) fail('SOURCE_CHANGED');
-    const current = validateSourceIdentity(actual);
+    if (!inFolder(actual, membership)) fail('SOURCE_CHANGED');
+    const current = validate(actual);
     if (['id', 'version', 'md5Checksum', 'size'].some(key => current[key] !== expected[key])) fail('SOURCE_CHANGED');
     return current;
   }
@@ -207,7 +210,7 @@ export function createDriveSourceTransport(globals, options = {}) {
     return {files, nextPageToken, done: nextPageToken === null};
   }
   function getSource(expected, args = {}) {
-    return expectedSource(validateSourceIdentity(expected), context(args));
+    return expectedSource(validate(expected), context(args));
   }
   function retryAfter(headers) {
     const raw = header(headers, 'retry-after');
@@ -238,7 +241,7 @@ export function createDriveSourceTransport(globals, options = {}) {
     } catch (_) { return forbiddenError(null); }
   }
   function readRange(expectedInput, start, length = maxRangeBytes, args = {}) {
-    const expected = validateSourceIdentity(expectedInput);
+    const expected = validate(expectedInput);
     const size = Number(expected.size);
     integer(start, 0, Math.max(0, size - 1), 'RANGE_REQUEST_INVALID');
     integer(length, 1, maxRangeBytes, 'RANGE_REQUEST_INVALID');

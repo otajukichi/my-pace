@@ -116,16 +116,15 @@ test('zero numeric habit logs, checkbox toggle, archive and restore preserve his
   await ui.click('habit-restore',{id:'read'});assert.equal(ui.state().habits[0].archived,false);assert.equal(ui.state().habitLogs.read[todayKey()],0);
 });
 
-test('run save rejects zero duration; deletion requires confirmation and is undoable',async t=>{
-  const ui=await launch(t,{hash:'#running'});await ui.click('run-add');
-  const values={id:'',date:todayKey(),distance:'5',minutes:'0',seconds:'0',note:'  朝  '};
-  await ui.submit('run',values);assert.equal(ui.writes,0);assert.equal(ui.editor.open,true);
-  await ui.submit('run',{...values,minutes:'30'});assert.equal(ui.state().runs.length,1);assert.equal(ui.state().runs[0].note,'朝');
-  const id=ui.state().runs[0].id;
-  await ui.click('run-edit',{id});await ui.click('run-delete');assert.equal(ui.state().runs.length,1);
-  await ui.click('dialog-close');assert.equal(ui.state().runs.length,1);
-  await ui.click('run-edit',{id});await ui.click('run-delete');await ui.click('run-delete-confirm');assert.equal(ui.state().runs.length,0);
-  await ui.click('undo');assert.equal(ui.state().runs[0].id,id);
+test('removed running actions and forged run forms cannot mutate or delete legacy records',async t=>{
+  const initial={...createInitialState(),runs:[{id:'legacy-run',date:todayKey(),distanceKm:5,durationSec:1800,note:'keep legacy note',points:[{lat:35,lon:139,segment:0}]}]},ui=await launch(t,{initial,hash:'#running'}),before=ui.raw;
+  const values={id:'legacy-run',date:todayKey(),distance:'999',minutes:'30',seconds:'0',note:'forged'};
+  for(const action of ['run-add','run-edit','run-delete','run-delete-confirm','gpx-import'])await ui.click(action,{id:'legacy-run'});
+  await ui.submit('run',values);assert.equal(ui.editor.open,false);assert.equal(ui.fileInput(),undefined);
+  // A forged run submit is also inert while a legitimate editor is open.
+  await ui.click('wake-edit');const markup=ui.editor.innerHTML;await ui.submit('run',values);await ui.click('run-delete-confirm');
+  assert.equal(ui.editor.open,true);assert.equal(ui.editor.innerHTML,markup);assert.equal(ui.raw,before);assert.equal(ui.writes,0);
+  assert.deepEqual(ui.state(),initial);assert.deepEqual(JSON.parse(serializeBackup(ui.state())).runs,initial.runs);
 });
 
 test('latest external-tab state closes stale editors and clears obsolete undo',async t=>{
@@ -172,22 +171,20 @@ test('Close and modeled native cancel after resize discard only the draft and in
 });
 
 test('navigation after resize closes a draft, and Close/Cancel remain safe after modeled history changes',async t=>{
-  const ui=await launch(t,{hash:'#running'}),before=ui.raw;
-  await ui.click('run-add');
-  const stale=ui.form('run',{id:'',date:todayKey(),distance:'5',minutes:'30',seconds:'0',note:'未保存'});
-  await ui.resize(375,640);
-  assert.equal(ui.editor.open,true);
-  const firstFocus=ui.main.focusCalls;
-  await ui.changeHash('#wake');
+  const ui=await launch(t,{hash:'#habits'}),before=ui.raw;
+  await ui.click('habit-add');
+  const stale=ui.form('habit',{id:'',name:'未保存の習慣',type:'number',unit:'回',target:'5'});
+  await ui.resize(375,640);assert.equal(ui.editor.open,true);
+  const firstFocus=ui.main.focusCalls;await ui.changeHash('#wake');
   assert.equal(ui.editor.open,false);assert.ok(ui.main.focusCalls>firstFocus);
   await ui.submitForm(stale);await ui.click('dialog-close');await ui.cancelDialog();
   assert.equal(ui.raw,before);assert.equal(ui.writes,0);
   // Back and Forward are represented only by setting hash and emitting hashchange.
-  for(const hash of ['#running','#wake']){
+  for(const hash of ['#habits','#wake']){
     const focusCalls=ui.main.focusCalls;await ui.changeHash(hash);
     assert.equal(ui.editor.open,false);assert.ok(ui.main.focusCalls>focusCalls);
-    await ui.click(hash==='#running'?'run-add':'wake-edit');assert.equal(ui.editor.open,true);
-    if(hash==='#running')await ui.cancelDialog();else await ui.click('dialog-close');
+    await ui.click(hash==='#habits'?'habit-add':'wake-edit');assert.equal(ui.editor.open,true);
+    if(hash==='#habits')await ui.cancelDialog();else await ui.click('dialog-close');
     assert.equal(ui.editor.open,false);assert.equal(ui.raw,before);assert.equal(ui.writes,0);
   }
 });
@@ -199,12 +196,12 @@ test('a slow file import is ignored after navigation',async t=>{
   assert.equal(ui.editor.open,false);assert.equal(ui.writes,0);
 });
 
-test('a slow file import cannot replace a newer editor on the same page',async t=>{
-  const ui=await launch(t,{hash:'#running'});let finish;
-  await ui.click('gpx-import');const pending=ui.selectFile({size:100,text:()=>new Promise(resolve=>{finish=resolve;})});
-  await ui.click('run-add');const newEditor=ui.editor.innerHTML;
-  finish('<gpx><trk><trkseg><trkpt lat="35" lon="139"/><trkpt lat="35.01" lon="139.01"/></trkseg></trk></gpx>');await pending;
-  assert.equal(ui.editor.innerHTML,newEditor);assert.equal(ui.writes,0);
+test('a slow backup import cannot replace a newer editor on the same page',async t=>{
+  const ui=await launch(t,{hash:'#home'});let finish;
+  await ui.click('backup-import');const pending=ui.selectFile({size:100,text:()=>new Promise(resolve=>{finish=resolve;})});
+  await ui.click('wake-edit');const newEditor=ui.editor.innerHTML;
+  finish(serializeBackup(createInitialState()));await pending;
+  assert.equal(ui.editor.open,true);assert.equal(ui.editor.innerHTML,newEditor);assert.equal(ui.writes,0);
 });
 
 test('minimum date navigation and all allowed input dates render safely',async t=>{
@@ -281,23 +278,26 @@ test('opening local mode and migration preview never silently enqueue legacy dat
  await ui.click('cloud-local');assert.match(ui.app.innerHTML,/このブラウザーのみ/);assert.equal(ui.state().wake[todayKey()],'08:00');assert.equal(idb.read().outbox.length,0);
 });
 
-test('imported routes progressively load signed pages and stale navigation cannot reopen the route dialog',async t=>{
- const idb=cachedCloud();let release;const requests=[];
+test('running reads prepared daily data without raw-route requests, dialogs or record writes',async t=>{
+ const idb=cachedCloud(),requests=[];
  const fetcher=async(path,options)=>{
    if(path==='/api/auth/session')return Response.json({ok:true,authenticated:true,csrf:'test'});
-   const body=JSON.parse(options.body);if(body.action!=='route')return Response.json({ok:false,error:'OFFLINE'},{status:503});requests.push(body);
-   const result={runId:'csv-run',revision:5,points:[{lat:35,lon:139},{lat:35.1,lon:139.1}],nextCursor:body.payload.cursor?null:'next'};
-   if(body.payload.cursor)return Response.json({ok:true,result});
-   return new Promise(resolve=>{release=()=>resolve(Response.json({ok:true,result}));});
+   const body=JSON.parse(options.body);requests.push(body);const cached=idb.read();let result;
+   if(body.action==='dailyRun')result={schema:1,store:'owner',generation:'generation',date:body.payload.date,status:'ready',hash:'prepared-hash',pending:false,summary:{distanceMeters:3456,durationSeconds:1800,averageSpeedKmh:6.912},segments:[]};
+   else if(body.action==='snapshot')result={store:cached.store,generation:cached.generation,epoch:cached.epoch,revision:cached.revision,entities:Object.values(cached.entities),cursor:null};
+   else if(body.action==='imports')result={revision:cached.revision,runs:[],nextCursor:null};
+   else result={status:'idle'};
+   return Response.json({ok:true,result});
  };
- const ui=await launch(t,{idb,fetcher,hash:'#running',modePreference:'cloud'});const legacy=ui.raw;
- const opening=ui.click('cloud-route',{id:'csv-run'});for(let i=0;i<10&&!release;i++)await Promise.resolve();
- await ui.changeHash('#calendar');release();await opening;
- assert.equal(ui.editor.open,false);assert.equal(ui.raw,legacy);assert.equal(idb.read().outbox.length,0);
- const second=ui.click('cloud-route',{id:'csv-run'});for(let i=0;i<10&&requests.length<2;i++)await Promise.resolve();release();await second;
- assert.equal(ui.editor.open,true);assert.match(ui.editor.querySelector('.cloud-route-result').innerHTML,/1〜4 サンプル/);assert.equal(requests[1].payload.cursor,null);
- assert.equal(requests.length,3);assert.match(ui.editor.querySelector('.cloud-route-progress').textContent,/読み込みました/);
- assert.equal(requests[2].payload.cursor,'next');assert.equal(requests[2].payload.revision,5);assert.equal(idb.read().outbox.length,0);
+ const ui=await launch(t,{idb,fetcher,hash:'#running',modePreference:'cloud',timers:[]}),legacy=ui.raw;
+ for(let i=0;i<20&&!ui.app.innerHTML.includes('3.46<small>km');i++)await new Promise(resolve=>setImmediate(resolve));
+ assert.match(ui.app.innerHTML,/3\.46<small>km/);assert.match(ui.app.innerHTML,/6\.9<small>km\/h/);assert.match(ui.app.innerHTML,/00:30:00/);
+ assert.ok(requests.some(request=>request.action==='dailyRun'));assert.ok(requests.every(request=>!['route','command'].includes(request.action)));
+ const reads=requests.filter(request=>request.action==='dailyRun').length;
+ for(const action of ['cloud-route','cloud-route-next','run-add','gpx-import'])await ui.click(action,{id:'csv-run'});
+ assert.equal(ui.editor.open,false);assert.equal(requests.filter(request=>request.action==='dailyRun').length,reads);
+ assert.equal(ui.raw,legacy);assert.equal(ui.writes,0);assert.equal(idb.read().outbox.length,0);
+ await ui.changeHash('#calendar');assert.equal(ui.editor.open,false);assert.doesNotMatch(ui.app.innerHTML,/daily-running-stats/);
 });
 
 test('explicit migration submits the displayed preview and preserves the original legacy backup',async t=>{
@@ -429,12 +429,11 @@ test('an unrelated remote change keeps a diary draft editable and its save prese
  await ui.submit('diary',{text:'save after unrelated update',mood:''});assert.equal(ui.editor.open,false);assert.equal(idb.read().outbox.length,1);assert.equal(idb.read().outbox[0].command.key,'diary:'+date);assert.equal(idb.read().entities['wake:'+date].value,'05:15');
 });
 
-for(const kind of ['wake','target','run','habit','habit-log','event'])test(`remote ${kind} changes preserve the matching open editor and prevent stale submission`,async t=>{
+for(const kind of ['wake','target','habit','habit-log','event'])test(`remote ${kind} changes preserve the matching open editor and prevent stale submission`,async t=>{
  const date=todayKey(),initial=createInitialState();initial.wake[date]='07:00';initial.settings.wakeTarget='07:30';initial.runs=[{id:'run1',date,distanceKm:5,durationSec:1800,note:'original',points:[]}];initial.habits=[{id:'read',name:'Reading',type:'number',unit:'pages',target:10,archived:false}];initial.habitLogs={read:{[date]:2}};initial.events=[{id:'event1',date,time:null,title:'Original event',note:''}];
  const next=structuredClone(initial);let action,context={},key,values;
  if(kind==='wake'){action='wake-edit';key='wake:'+date;next.wake[date]='08:00';values={time:'06:00'};}
  if(kind==='target'){action='target-edit';key='settings:wakeTarget';next.settings.wakeTarget='08:00';values={target:'06:00'};}
- if(kind==='run'){action='run-edit';context={id:'run1'};key='run:run1';next.runs[0].note='Remote run';values={id:'run1',date,distance:'5',minutes:'30',seconds:'0',note:'Typed run'};}
  if(kind==='habit'){action='habit-edit';context={id:'read'};key='habit:read';next.habits[0].name='Remote habit';values={id:'read',name:'Typed habit',type:'number',unit:'pages',target:'12'};}
  if(kind==='habit-log'){action='habit-log';context={id:'read'};key='habitLog:read:'+date;next.habitLogs.read[date]=9;values={id:'read',value:'5'};}
  if(kind==='event'){action='event-edit';context={id:'event1'};key='event:event1';next.events[0].title='Remote event';values={id:'event1',date,time:'',title:'Typed event',note:''};}
@@ -450,4 +449,11 @@ test('advisory cloud renders retain the active date control node until focus lea
  server.change({...initial,wake:{[todayKey()]:'06:20'}},['wake:'+todayKey()]);await ui.click('cloud-sync');
  assert.equal(ui.app.htmlWrites,before,'status and remote-state callbacks do not replace the control');assert.equal(ui.app.querySelector('#selected-date'),input);assert.equal(input.partialNativeSegment,'2026-__-08');
  ui.document.activeElement=null;await ui.document.emit('focusout');await Promise.resolve();assert(ui.app.htmlWrites>before);assert.match(ui.app.innerHTML,/06:20/);
+});
+
+test('remote legacy run updates remain stored but removed editors cannot enqueue a stale run mutation',async t=>{
+ const date=todayKey(),initial={...createInitialState(),runs:[{id:'run1',date,distanceKm:5,durationSec:1800,note:'original',points:[]}]},idb=cachedCloud(initial),server=draftSyncServer(initial),ui=await launch(t,{idb,fetcher:server.fetcher,modePreference:'cloud',pullSupported:true,timers:[]});
+ const next=structuredClone(initial);next.runs[0].note='Remote legacy run';server.change(next,['run:run1']);await ui.click('cloud-sync');
+ await ui.click('run-edit',{id:'run1'});await ui.submit('run',{id:'run1',date,distance:'6',minutes:'40',seconds:'0',note:'stale'});await ui.click('run-delete-confirm');
+ assert.equal(ui.editor.open,false);assert.equal(idb.read().outbox.length,0);assert.equal(idb.read().entities['run:run1'].value.note,'Remote legacy run');
 });

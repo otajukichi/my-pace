@@ -13,7 +13,7 @@ import {renderHabits} from '../src/views/habits.js';
 import {renderCalendar} from '../src/views/calendar.js';
 import {renderDiary} from '../src/views/diary.js';
 import {wakeChart, runChart} from '../src/lib/charts.js';
-import {habitDialog, runDialog} from '../src/dialogs.js';
+import {habitDialog} from '../src/dialogs.js';
 import {eventDialog} from '../src/journal-dialogs.js';
 
 const today='2026-10-06';
@@ -50,7 +50,6 @@ for(const [width,height] of viewports){
     const state=historyFixture(), context={state,date:today,today,pageSize:pageCapacity(width,height)};
     const cases=[
       [renderWake,{tab:'history'},/data-action="wake-history" data-date="([^"]+)"/g,Object.keys(state.wake)],
-      [renderRunning,{tab:'history'},/data-action="run-edit" data-id="([^"]+)"/g,state.runs.map(row=>row.id)],
       [renderHabits,{tab:'active'},/class="habit-name"[^>]*data-id="([^"]+)"/g,state.habits.filter(row=>!row.archived).map(row=>row.id)],
       [renderHabits,{tab:'archived'},/class="habit-name"[^>]*data-id="([^"]+)"/g,state.habits.filter(row=>row.archived).map(row=>row.id)],
       [renderCalendar,{tab:'agenda'},/data-action="event-edit" data-id="([^"]+)"/g,state.events.map(row=>row.id)],
@@ -73,12 +72,11 @@ test('every character of long Japanese, emoji, whitespace and newline diary is r
   }
 });
 
-test('truncated names and notes retain their full editable detail representation',()=>{
+test('editable names and notes retain full detail while running legacy notes remain hidden',()=>{
   const state=historyFixture(),context={state,date:today,today};
   assert.match(renderHabits(context),/class="habit-name"[^>]*data-action="habit-edit"/);
   assert.ok(habitDialog(state.habits[0]).includes(names));
-  assert.match(renderRunning({...context,tab:'history'}),/data-action="run-edit"/);
-  assert.ok(runDialog(state.runs[0],today,today).includes(note));
+  assert.doesNotMatch(renderRunning({...context,tab:'history'}),/run-edit|run-add|非常に長い|長いメモ/);
   assert.match(renderCalendar({...context,tab:'agenda'}),/aria-label="[^\"]+の詳細・編集"/);
   assert.ok(eventDialog(state.events[0],today).includes(names));
   assert.ok(eventDialog(state.events[0],today).includes(note));
@@ -106,4 +104,13 @@ test('populated chart markup is matched by explicit bounded SVG CSS',async()=>{
   assert.match(css,/\.run-bar\s*\{[^}]*fill:/);
   assert.match(css,/\[tabindex\]:focus-visible\s*\{[^}]*outline:\s*3px solid var\(--focus\)/);
   assert.match(css,/\.chart-wrap text\s*\{[^}]*font:12px/);
+});
+
+test('running remains read-only with no legacy history or pagination at every viewport capacity',()=>{
+ const state=historyFixture(),before=structuredClone(state);
+ for(const [width,height] of viewports)for(const tab of ['record','history','trends']){
+  const html=renderRunning({state,date:today,today,tab,pageSize:pageCapacity(width,height)});
+  assert.match(html,/daily-running/);assert.doesNotMatch(html,/run-edit|run-add|gpx-import|cloud-route|次のページ|長いメモ/);
+ }
+ assert.deepEqual(state,before);
 });

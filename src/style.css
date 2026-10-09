@@ -795,3 +795,14 @@ button.theme-choice:disabled:hover { opacity: 1; color: var(--disabled-ink); -we
 
 .route-provider-label { display:flex; gap:7px; align-items:center; font-size:12px; color:var(--muted); flex-wrap:wrap; }
 .route-provider-label select { width:auto; max-width:100%; min-height:38px; font-size:12px; padding:6px 10px; }
+
+/* Prepared read-only daily running. Stats and route share one published payload. */
+.daily-running{width:100%;max-width:1120px;margin:0 auto;min-width:0}
+.daily-running-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px;padding:8px 2px 24px}
+.daily-running-stats>div{min-width:0}.daily-running-stats span{display:block;font-size:11px;letter-spacing:.13em;color:var(--muted,#647269)}
+.daily-running-stats strong{display:block;font-size:clamp(24px,3.3vw,42px);font-weight:500;line-height:1.5;font-variant-numeric:tabular-nums;white-space:nowrap}
+.daily-running-stats small{font-size:13px;margin-left:7px;font-weight:400}.daily-running .route-map{margin:0}
+.daily-running .route-canvas{height:clamp(300px,53vh,620px);min-height:300px}
+.daily-running-status,.daily-running-notice{padding:12px 16px;border-radius:10px;background:var(--surface-soft,#f0f3ed);line-height:1.7}
+.daily-running-boundary{margin-top:16px}.daily-running-status.warning{background:#fff1df}
+@media(max-width:540px){.daily-running-stats{gap:10px;padding-bottom:16px}.daily-running-stats strong{font-size:25px}.daily-running-stats small{font-size:10px;margin-left:3px}.daily-running-stats span{font-size:9px}.daily-running .route-canvas{height:45vh;min-height:280px}}

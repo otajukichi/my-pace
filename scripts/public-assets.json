@@ -43,5 +43,7 @@
   "src/lib/route-map.js",
   "src/vendor/leaflet.js",
   "src/vendor/leaflet.css",
-  "src/vendor/LICENSE.txt"
+  "src/vendor/LICENSE.txt",
+  "src/lib/daily-running.js",
+  "src/lib/daily-cache.js"
 ]

@@ -1,3 +1,5 @@
+> Historical release note: the previous interactive GPX/source-page UI described below is superseded by [DAILY-RUNNING-UI.md](DAILY-RUNNING-UI.md). The current running screen reads backend-prepared daily records and defaults to OpenStreetMap. Earlier test counts below apply only to that earlier release.
+
 # ランニングの速度付きルート
 
 この変更は画面・表示計算だけです。保存形式、既存の距離・時間・ペース、同期、CSVインポート、GAS、バックエンドは変更しません。公開・push・本番データ操作はしていません。

@@ -67,8 +67,9 @@ export const importKeys=Object.freeze({
  * entities remain immutable-reference history until coordinated GC retires them.
  */
 export class ImportStoreBinding {
- constructor({writer,storeId,readAsset,validateSourceCurrent}) {
+ constructor({writer,storeId,readAsset,validateSourceCurrent,normalizeSource=safeSource}) {
   check(writer&&['get','transact','getReceipt','recoveryBarrier'].every(k=>typeof writer[k]==='function')&&token(storeId,100)&&typeof readAsset==='function'&&typeof validateSourceCurrent==='function','IMPORT_STORE_CONFIG');
+  check(typeof normalizeSource==='function','IMPORT_STORE_CONFIG');this.normalizeSource=normalizeSource;
   this.writer=writer;this.storeId=storeId;this.readAsset=readAsset;this.validateSourceCurrent=validateSourceCurrent;
  }
  recoveryBarrier(){return this.writer.recoveryBarrier();}
@@ -79,7 +80,7 @@ export class ImportStoreBinding {
  _job(id){check(token(id,100),'JOB_ID_INVALID');const e=this._required(importKeys.job(id));check(e.value.storeId===this.storeId&&e.value.jobId===id,'JOB_STORE_MISMATCH');return e;}
  _intent(kind,input){check(token(input?.operationId),'OPERATION_ID_INVALID');const clean=clone(input);return {operationId:input.operationId,epoch:'default',digest:digest({protocol:'mypace-import-domain-v1',storeId:this.storeId,kind,input:clean})};}
  _prior(intent){this.recoveryBarrier();const r=this.getReceipt(intent.operationId);if(r)check(r.digest===intent.digest,'OP_ID_REUSED');return r;}
- _commit(intent,changes,result){const r=this.writer.transact({...intent,changes,result});this.recoveryBarrier();return r;}
+ _commit(intent,changes,result){const daily=this.writer.get('daily/source-revision');if(daily&&!daily.deleted&&changes.some(c=>c.key.startsWith('import/job/')||c.key.startsWith('run/'))){changes=[...changes,{key:'daily/source-revision',expectedVersion:daily.version,value:{schema:1,changed:true}}];}const r=this.writer.transact({...intent,changes,result});this.recoveryBarrier();return r;}
  _read(r){
   check(r&&roleLimit(r.role)&&r.storeId===this.storeId,'ASSET_DESCRIPTOR_INVALID');
   const raw=this.readAsset(clone(r));check(raw instanceof Uint8Array&&raw.length===r.byteLength&&raw.length<=roleLimit(r.role)&&hashAssetBytes(raw)===r.sha256,'ASSET_CONTENT_MISMATCH');return raw;
@@ -136,7 +137,7 @@ export class ImportStoreBinding {
  }
  registerJob(input){
   const intent=this._intent('register-job',input),prior=this._prior(intent);if(prior)return prior;
-  const {jobId}=input;check(token(jobId,100),'JOB_ID_INVALID');const source=safeSource(input.sourceIdentity);check(Number(source.size)>0,'SOURCE_EMPTY');
+  const {jobId}=input;check(token(jobId,100),'JOB_ID_INVALID');const source=this.normalizeSource(input.sourceIdentity);check(Number(source.size)>0,'SOURCE_EMPTY');
   const key=sourceKey(source,mappingHash()),ik=importKeys.identity(key),existing=this._entity(ik),sk=importKeys.source(source.id),si=this._entity(sk)?.value;
   if(existing){const priorJob=this._job(existing.value.jobId).value;
    // Every known identity must still be this source's active generation. A

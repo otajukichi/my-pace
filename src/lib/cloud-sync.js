@@ -45,6 +45,7 @@ export function createCloudSync({onChange=()=>{},onRemoteState=()=>{},storage=cr
  const projectionKeys=new Set();
  let data=blank(),auth={authenticated:false},busy=false,error=null,errorPhase=null,phase=null,started=false,syncing=null,syncAgain=false,locked=false,authGeneration=0,refreshing=null,automaticPaused=false,retryAt=0,retryCount=0,verified=false;
  let importErrors={},importRetryAt=0,importRetryCount=0,importAutomaticPaused=false,idlePollCount=0,nextPollAt=0;
+ let dailyOwner=0,dailySession=null;
  let lastFeedback=null,feedbackError=null,maintenanceError=null,maintenanceRetryAt=0,maintenanceRetryCount=0,maintenancePaused=false,maintenanceSupport=null;
  function emit(){
   const feedback=[projectionRevision,auth.authenticated,auth.configured,data.generation,data.outbox.length,data.conflicts.length,busy,phase,error,errorPhase,automaticPaused,retryAt,continuation,verified,recordsConfirmed(data),data.recordConfirmation?.kind,nextPollAt,JSON.stringify(importErrors),importRetryAt,importAutomaticPaused,maintenanceError,maintenanceRetryAt,maintenancePaused,data.importedRuns,data.importStatus];
@@ -83,7 +84,7 @@ export function createCloudSync({onChange=()=>{},onRemoteState=()=>{},storage=cr
   cancelContinuation();continuation=null;error=e.message;errorPhase=failedPhase;retryCount=Math.min(retryCount+1,5);automaticPaused=automaticPaused||e.requiresOwnerAction===true||['WRITER_RECOVERY_SETUP_REQUIRED','SYNC_V2_MIGRATION_REQUIRED','WRITER_FORMAT_FENCE_REQUIRED','WRITER_FORMAT_FENCE_MISSING','INDEXEDDB_VERSION_CHANGED_RELOAD_REQUIRED','INDEXEDDB_BLOCKED_CLOSE_OTHER_TABS'].includes(error);retryAt=automaticPaused?0:now()+Math.min(60000*2**(retryCount-1),900000);}
  const migrationToken=d=>canonical({store:d.store,generation:d.generation,epoch:d.epoch,revision:d.revision,entities:d.entities,outbox:d.outbox,conflicts:d.conflicts});
  const conflictView=(d,c)=>({...clone(c),remote:clone(d.entities[c.key]??null),local:clone(d.outbox.filter(q=>q.command.key===c.key).at(-1)?.command??null),token:canonical({store:d.store,generation:d.generation,epoch:d.epoch,remote:d.entities[c.key]??null,related:d.outbox.filter(q=>q.command.key===c.key),conflict:c})});
- function view(){return {ready:!!data.generation,authenticated:auth.authenticated,configured:auth.configured!==false,pending:data.outbox.length,conflicts:data.conflicts.map(c=>conflictView(data,c)),busy,phase,error,errorPhase,feedbackError,nextPollAt,automaticPaused,retryAt,continuation,verified,recordsConfirmed:recordsConfirmed(data),confirmationKind:recordsConfirmed(data)?data.recordConfirmation.kind:null,maintenanceError,maintenanceRetryAt,maintenancePaused,revision:data.revision,importErrors:clone(importErrors),importRetryAt,importAutomaticPaused,importedRuns:clone(data.importedRuns),importStatus:clone(data.importStatus)};}
+ function view(){if(auth.csrf!==dailySession){dailySession=auth.csrf;dailyOwner++;}return {dailyIdentity:auth.authenticated?{owner:auth.cacheScope||dailyOwner,persistent:typeof auth.cacheScope==='string'&&!!auth.cacheScope,store:data.store,generation:data.generation}:null,ready:!!data.generation,authenticated:auth.authenticated,configured:auth.configured!==false,pending:data.outbox.length,conflicts:data.conflicts.map(c=>conflictView(data,c)),busy,phase,error,errorPhase,feedbackError,nextPollAt,automaticPaused,retryAt,continuation,verified,recordsConfirmed:recordsConfirmed(data),confirmationKind:recordsConfirmed(data)?data.recordConfirmation.kind:null,maintenanceError,maintenanceRetryAt,maintenancePaused,revision:data.revision,importErrors:clone(importErrors),importRetryAt,importAutomaticPaused,importedRuns:clone(data.importedRuns),importStatus:clone(data.importStatus)};}
  async function reload({notify=true}={}){
   const wasHydrated=hydrated,sinceVersion=data.localRevision,result=await storage.read(wasHydrated?{sinceVersion}:undefined),read=wasHydrated?result:{kind:'full',data:result,localRevision:result.localRevision};
   // Reads from another callback may finish after a newer transaction has
@@ -420,15 +421,15 @@ export function createCloudSync({onChange=()=>{},onRemoteState=()=>{},storage=cr
   });
   publishState();resetPoll();void sync({automatic:true,changed:true});
  }
- async function routePage(runId,cursor=null,revision=null){return api('route',{runId,cursor,revision});}
+ async function dailyRun(date,knownHash=null){if(locked||!auth.authenticated)throw Error('AUTH_REQUIRED');return (await request('/api/sync',{action:'dailyRun',payload:{date,knownHash}})).result;}
  function refreshSession({automatic=false,poll=false}={}){
   if(locked||automatic&&(automaticBlocked()||poll&&pollBlocked()))return Promise.resolve();
   if(refreshing)return refreshing;
   if(syncing)return syncing;
   // Visibility, online and timer events share one session check and one sync.
-  refreshing=(async()=>{const generation=authGeneration;try{const session=await request('/api/auth/session');if(generation!==authGeneration)return;auth=session;if(auth.authenticated)await sync({automatic});else{verified=false;emit();}}catch(e){if(generation===authGeneration){syncFailed(e,'session');emit();}}})().finally(()=>{refreshing=null;});
+  refreshing=(async()=>{const generation=authGeneration;try{const session=await request('/api/auth/session');if(generation!==authGeneration)return;auth=session;emit();if(auth.authenticated)await sync({automatic});else{verified=false;emit();}}catch(e){if(generation===authGeneration){syncFailed(e,'session');emit();}}})().finally(()=>{refreshing=null;});
   return refreshing;
  }
  const onOnline=()=>{if(started)void refreshSession({automatic:true});};globalThis.addEventListener?.('online',onOnline);
- return {init,commit,sync,refreshSession,login,completeLogin,logout,lock,view,state:currentState,migrationPreview,migrate,resolveConflict,routePage,maintenance:()=>cleaning??Promise.resolve(),destroy(){lock();globalThis.removeEventListener?.('online',onOnline);storage.close?.();}};
+ return {init,commit,sync,refreshSession,login,completeLogin,logout,lock,view,state:currentState,migrationPreview,migrate,resolveConflict,dailyRun,maintenance:()=>cleaning??Promise.resolve(),destroy(){lock();globalThis.removeEventListener?.('online',onOnline);storage.close?.();}};
 }
