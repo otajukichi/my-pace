@@ -8,7 +8,7 @@ function inspect(p){const s=fs.lstatSync(p);if(s.isSymbolicLink()||(!s.isDirecto
 inspect(path.join(root,'src'));
 const dist=path.join(root,'dist');if(exists(dist)){if(!fs.lstatSync(dist).isDirectory())throw Error('dist must be a real directory');inspect(dist)}
 if(!Array.isArray(assets)||new Set(assets).size!==assets.length)throw Error('Invalid public asset manifest');
-for(const rel of assets){if(typeof rel!=='string'||!['index.html','favicon.svg','about.html','privacy.html','terms.html'].includes(rel)&&!/^src\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.(?:js|css)$/.test(rel))throw Error('Invalid public asset: '+rel);inspect(path.join(root,rel));}
+for(const rel of assets){if(typeof rel!=='string'||!['index.html','favicon.svg','about.html','privacy.html','terms.html','src/vendor/LICENSE.txt'].includes(rel)&&!/^src\/(?:[a-zA-Z0-9_-]+\/)*[a-zA-Z0-9_-]+\.(?:js|css)$/.test(rel))throw Error('Invalid public asset: '+rel);inspect(path.join(root,rel));}
 const stage=fs.mkdtempSync(path.join(root,'.mypace-dist-stage-'));
 let backup=null;
 try{

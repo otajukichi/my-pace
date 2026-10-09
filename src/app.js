@@ -1,3 +1,4 @@
+import {mountRouteMaps,disposeRouteMaps,updateRouteMap} from './lib/route-map.js';
 import  {
   createInitialState,todayKey,addDays,isDateKey,validateState,parseBackup,serializeBackup,makeId,upsertWake,upsertHabitLog,upsertEvent,removeEvent,upsertDiary,removeDiary
 }
@@ -63,7 +64,7 @@ const viewState={};
 let calendarMonth=selectedDate.slice(0,7),pageSize=pageCapacity(window.innerWidth,window.innerHeight),habitSize=habitPageCapacity(window.innerWidth,window.innerHeight);
 const routes={
   home:{label:'ホーム',title:'今日の記録',subtitle:'記録と、これまでの積み重ね。',icon:'home',render:renderDashboard,tabs:[['today','今日'],['rhythm','積み重ね']]},
-  running:{label:'ランニング',title:'ランニング',subtitle:'歩幅も、ペースも、自分らしく。',icon:'run',render:context=>context.tab==='imports'?renderImportedRuns(cloudView(),context.page,context.pageSize):renderRunning(context),tabs:[['record','記録する'],['trends','推移'],['history','履歴'],['imports','Drive のラン']]},
+  running:{label:'ランニング',title:'ランニング',subtitle:'歩幅も、ペースも、自分らしく。',icon:'run',render:context=>context.tab==='imports'?renderImportedRuns(cloudView(),context.page,context.pageSize):renderRunning({...context,importedRuns:cloudView().importedRuns||[]}),tabs:[['record','記録する'],['trends','推移'],['history','履歴'],['imports','Drive のラン']]},
   wake:{label:'早起き',title:'朝の記録',subtitle:'一日の始まりを、心地よく。',icon:'sun',render:renderWake,tabs:[['record','記録する'],['trends','推移'],['history','履歴']]},
   habits:{label:'習慣',title:'習慣',subtitle:'小さな積み重ねが、日常になる。',icon:'habits',render:renderHabits,tabs:[['active','今日の習慣'],['archived','お休み中']]},
   calendar:{label:'カレンダー',title:'カレンダー',subtitle:'予定も、記録も。日々をひと目に。',icon:'calendar',render:renderCalendar,tabs:[['month','月のながめ'],['agenda','予定一覧']]},
@@ -134,6 +135,7 @@ function render({focus=false,advisory=false}={}) {
   <div class="view-bar"><nav class="view-tabs" aria-label="${route.label}の表示">${route.tabs.map(([key,label])=>`<button type="button" data-action="view-tab" data-tab="${key}" aria-pressed="${view.tab===key}">${label}</button>`).join('')}</nav>${dateVisible&&selectedDate!==today?'<button class="text-link return-today" data-action="today">今日に戻る</button>':''}</div>
   ${storageBlocked?`<div class="error-banner" role="alert">保存データを読み込めません。記録の変更を止めています。<button class="text-link" data-action="backup-raw">既存データを退避</button><a href="#settings">設定で復元</a></div>`:''}
   <div class="view-stage" role="region" aria-label="${route.label}の内容" tabindex="0">${route.render({state,date:selectedDate,today,period,tab:view.tab,page:view.page,pageSize:current==='habits'?habitSize:pageSize,month:calendarMonth})}</div><footer class="app-footer"><span>マイペース</span><nav aria-label="アプリ情報"><a href="./about.html">このアプリについて</a><a href="./privacy.html">プライバシー</a><a href="./terms.html">利用について</a></nav></footer></main></div>`;
+  mountRouteMaps(app);
   if((focus||restoreFocus)&&!editor.open){
     if(focus||!restoreElementFocus(app,focusSnapshot))document.querySelector('main')?.focus();
   }
@@ -202,7 +204,9 @@ function releaseCloudOperation(owner){if(cloudOperation===owner)cloudOperation=f
 function cancelLoginAttempt(){const attempt=loginAttempt;if(!attempt)return;loginAttempt=null;++authUiGeneration;releaseCloudOperation(attempt.operation);}
 function currentLoginAttempt(attempt){return loginAttempt===attempt&&attempt.generation===authUiGeneration&&dialogContext===attempt.context&&fileSequence===attempt.sequence&&editor.open;}
 async function authRequest(owner,request){authRequestPending=owner;try{return await request();}finally{if(authRequestPending===owner)authRequestPending=null;}}
+function cancelRouteRead(){if(dialogContext?.type==='cloud-route')releaseCloudOperation(dialogContext.operation);}
 function showDialog(markup,context = {}) {
+  cancelRouteRead();
   if(dialogContext?.cloudChanged&&context.type?.endsWith('-delete'))throw Error('EDITOR_REMOTE_CHANGED');
   cancelLoginAttempt();
   ++fileSequence;
@@ -211,14 +215,18 @@ function showDialog(markup,context = {}) {
   editor.dataset.theme=({wake:'wake',target:'wake',run:'running',habit:'habits','habit-log':'habits',event:'calendar','event-delete':'calendar',diary:'diary','diary-delete':'diary'})[context.type]||previousTheme;
   dialogContext=context;
   editorNeedsFocus=false;
+  disposeRouteMaps(editor);
   editor.innerHTML=markup;
   editor.showModal();
+  mountRouteMaps(editor);
   requestAnimationFrame(()=>editor.querySelector('[autofocus],input:not([type=hidden]),button')?.focus());
 }
 function closeDialog() {
+  cancelRouteRead();
   cancelLoginAttempt();
   ++fileSequence;
   editor.close();
+  disposeRouteMaps(editor);
   dialogContext=null;
   if(editorNeedsFocus){editorNeedsFocus=false;document.querySelector('main')?.focus();}
 }
@@ -545,15 +553,38 @@ async function handleCloud(button){
  }
  if(action==='cloud-route'||action==='cloud-route-next'){
    if(!cloudView().ready)return;
-   const id=action==='cloud-route'?button.dataset.id:dialogContext?.runId;
+   const previous=action==='cloud-route-next'?dialogContext:null;
+   const id=previous?.runId||button.dataset.id;
    if(!id)return;
-   const cursor=action==='cloud-route-next'?dialogContext.nextCursor:null,revision=action==='cloud-route-next'?dialogContext.revision:null;
-   const seq=++fileSequence,start=routeKey();cloudOperation=true;
+   const context={type:'cloud-route',runId:id,nextCursor:previous?.nextCursor??null,revision:previous?.revision??null,loaded:previous?.loaded||0,points:[],start:(previous?.loaded||0)+1};
+   showDialog(`<div class="dialog-top"><h2 id="dialog-title">CSV のルート</h2><button class="icon-button" data-action="dialog-close" aria-label="閉じる">${icon('close')}</button></div><p class="cloud-route-progress" role="status">ルートを読み込み中… 閉じると読み込みを中止します。</p><div class="cloud-route-result"></div><p id="form-error" class="form-error" role="alert" hidden></p>`,context);
+   const seq=fileSequence,start=routeKey(),operation={kind:'route'};context.operation=operation;cloudOperation=operation;
+   let failure=null;
    try{
-     const page=await cloud.routePage(id,cursor,revision);
-     if(seq!==fileSequence||start!==routeKey())return;
-     showDialog(`<div class="dialog-top"><h2 id="dialog-title">CSV のルート</h2><button class="icon-button" data-action="dialog-close" aria-label="閉じる">${icon('close')}</button></div>${routeMap(page.points,'CSV')}<p>${page.points.length} サンプルを表示。大きなルートは分割して読み込みます。ページ間の線は連結しません。</p><p class="hint">このデータから距離・ペースは算出していません。背景地図なし。</p>${page.nextCursor?'<button class="btn primary" data-action="cloud-route-next">次の区間を読む</button>':'<p>最後の区間です。</p>'}`,{type:'cloud-route',runId:id,nextCursor:page.nextCursor,revision:page.revision});
-   }finally{cloudOperation=false;}return;
+     // Existing signed/revision-bound pages only; bounded memory, no background prefetch.
+     for(let pages=0;pages<20;pages++){
+       const page=await cloud.routePage(id,context.nextCursor,context.revision);
+       if(seq!==fileSequence||start!==routeKey()||dialogContext!==context||!editor.open)return;
+       const segment=pages; // Conservatively preserve API page boundaries as route breaks.
+       context.points.push(...page.points.map(p=>({...p,segment})));
+       context.loaded+=page.points.length;context.nextCursor=page.nextCursor;context.revision=page.revision;
+       editor.querySelector('.cloud-route-progress').textContent=`${context.loaded.toLocaleString('ja-JP')} サンプルを読み込みました。${page.nextCursor?'続きを読み込み中… 閉じると中止します。':'読み込み完了。'}`;
+       const result=editor.querySelector('.cloud-route-result');
+       if(!result.querySelector('[data-route-map]')){result.innerHTML=routeMap(context.points,'CSV');mountRouteMaps(editor);}
+       else updateRouteMap(result,context.points);
+       if(!page.nextCursor)break;
+     }
+   }catch(error){failure=error;}
+   finally{releaseCloudOperation(operation);}
+   if(seq!==fileSequence||dialogContext!==context||!editor.open)return;
+   editor.querySelector('.cloud-route-progress').textContent=failure?'ルートの読み込みが途中で止まりました。':context.nextCursor?'表示上限に達したため、続きは分けて表示します。':'ルートを読み込みました。';
+   const result=editor.querySelector('.cloud-route-result');
+   if(!result.querySelector('[data-route-map]')){result.innerHTML=routeMap(context.points,'CSV');}
+   const restart=failure&&/CURSOR|REVISION/.test(failure.message);
+   result.insertAdjacentHTML('beforeend',`<p>${context.points.length?`${context.start}〜${context.loaded} サンプルを表示。`:'表示できるサンプルはまだありません。'}${context.nextCursor||failure?'ルートの一部です。':'この読み込み範囲の最後です。'} APIページ間の線は連結しません。</p><p class="hint">速度はGPS座標と時刻からの推定値です。保存済みの距離・ペース・達成回数は変更しません。</p>${restart?`<p>元のルートが更新されたため、最初から読み直してください。</p><button class="btn primary" data-action="cloud-route" data-id="${e(id)}">最初から読み直す</button>`:context.nextCursor||failure?`<button class="btn primary" data-action="${context.loaded?'cloud-route-next':'cloud-route'}" data-id="${e(id)}">${context.loaded?'続きの区間を読む':'もう一度読み込む'}</button>`:''}`);
+   mountRouteMaps(editor);
+   if(failure)formError(failure.message);
+   return;
  }
  const operation={kind:action==='cloud-sync'?'sync':'mutation'};cloudOperation=operation;
  try{
@@ -662,7 +693,7 @@ editor.addEventListener('submit',async event=> {
 }
 );
 editor.addEventListener('close',()=> {
-  if(!editor.open){cancelLoginAttempt();dialogContext=null;++fileSequence;}
+  if(!editor.open){cancelRouteRead();disposeRouteMaps(editor);cancelLoginAttempt();dialogContext=null;++fileSequence;}
 }
 );
 window.addEventListener('hashchange',()=> {

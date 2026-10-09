@@ -11,7 +11,7 @@ const PORT=Number(getArg('--port',process.env.PORT||'5173'));
 const HOST=getArg('--host','127.0.0.1');
 const directory=args.includes('--dist')?path.join(ROOT,'dist'):ROOT;
 if(!Number.isInteger(PORT)||PORT<1||PORT>65535)throw new Error('Port must be between 1 and 65535.');
-const MIME={'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.json':'application/json; charset=utf-8'};
+const MIME={'.txt':'text/plain; charset=utf-8','.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.json':'application/json; charset=utf-8'};
 export function createStaticServer(root = ROOT) {
 return http.createServer(async(req,res)=>{
   const directory = root;
@@ -28,7 +28,7 @@ return http.createServer(async(req,res)=>{
     if((await fs.lstat(current)).isSymbolicLink()){res.writeHead(404);res.end('Not found');return;}
     for(const part of parts){current=path.join(current,part);const stat=await fs.lstat(current);if(stat.isSymbolicLink()||(!stat.isDirectory()&&(!stat.isFile()||stat.nlink!==1))){res.writeHead(404);res.end('Not found');return;}}
     const body=await fs.readFile(file);
-    res.writeHead(200,{'Content-Type':type,'Content-Length':body.length,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Cross-Origin-Opener-Policy':'same-origin-allow-popups','Referrer-Policy':'strict-origin-when-cross-origin','Content-Security-Policy':"default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; img-src 'self' data:; connect-src 'self' https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'"});
+    res.writeHead(200,{'Content-Type':type,'Content-Length':body.length,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Cross-Origin-Opener-Policy':'same-origin-allow-popups','Referrer-Policy':'strict-origin-when-cross-origin','Content-Security-Policy':"default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; img-src 'self' data: https://tile.openstreetmap.org https://cyberjapandata.gsi.go.jp; connect-src 'self' https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'"});
     res.end(req.method==='HEAD'?undefined:body);
   } catch(error){res.writeHead(error.code==='ENOENT'?404:400);res.end(error.code==='ENOENT'?'Not found':'Bad request');}
 });

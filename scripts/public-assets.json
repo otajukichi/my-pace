@@ -38,5 +38,10 @@
   "src/lib/cloud-pull.js",
   "src/lib/cloud-state-patches.js",
   "src/lib/cloud-local-storage.js",
-  "src/lib/cloud-projection.js"
+  "src/lib/cloud-projection.js",
+  "src/lib/route-speed.js",
+  "src/lib/route-map.js",
+  "src/vendor/leaflet.js",
+  "src/vendor/leaflet.css",
+  "src/vendor/LICENSE.txt"
 ]

@@ -27,3 +27,5 @@ Generated bundles and SHA-256 inventory belong to this exact source release. Rea
 2026-10-09 JST backup verification-cost repair: bounded per-lock verification cache, fixed target view, batched durable progress, one-invocation OAuth reuse and request-free counters. Existing restore jobs resume; no live restore, production switch or schedule activation. See BACKUP-DESIGN.md.
 
 2026-10-09 backup schedule authorization correction: add explicit script.scriptapp scope for the owner-only trigger APIs; preserve existing scopes. Owner consent remains required in the live project. Generated GAS is unchanged. See BACKUP-DESIGN.md.
+
+2026-10-09 running speed-map frontend candidate: self-hosted Leaflet 1.9.4; GSI pale (Japan, zoom 9-18) automatic background and explicit OpenStreetMap switch; local GPS-derived km/h colors; bounded progressive CSV route reading. No schema, sync, API, server, GAS, dependency, or credential changes. See RUNNING-MAP.md for exact limits, provider disclosures, licenses and verification status. No push, deployment or live user-data operation performed.

@@ -112,10 +112,11 @@ test('wake chart leaves gaps for missing days and keeps midnight as a real obser
   assert.match(html,/2026-10-03 00:00/);
 });
 
-test('charts and route preview include accessible summaries, no fake background map', () => {
+test('charts and interactive route maps include accessible summaries and provider disclosure', () => {
   const state=fixture();
-  for(const html of [wakeChart(state,7,date),runChart(state,7,date),routeMap([{lat:35,lon:139},{lat:35.01,lon:139.01}])]) assert.match(html,/role="img" aria-label="[^"]+"/);
-  assert.match(routeMap([{lat:35,lon:139}]),/背景地図なし/);
+  for(const html of [wakeChart(state,7,date),runChart(state,7,date)]) assert.match(html,/role="img" aria-label="[^"]+"/);
+  assert.match(routeMap([{lat:35,lon:139}]),/国土地理院の淡色地図を自動/);
+  assert.match(routeMap([{lat:35,lon:139}]),/role="region" aria-label="[^"]+"/);
   assert.match(periodToggle(30),/data-days="30" aria-pressed="true"/);
   assert.match(periodToggle(30),/data-days="7" aria-pressed="false"/);
 });

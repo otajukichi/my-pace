@@ -19,3 +19,7 @@ npm run verify
 `npm start` は静的な開発画面を起動します。実際の認証・同期は本番 API と Google 側の受入確認が必要です。既存データと同じ origin で新しい画面を試す際も、ブラウザーの退避・移行確認を省略しないでください。
 
 設計と制限は [PRACTICAL-SYNC-DESIGN.md](PRACTICAL-SYNC-DESIGN.md)。模擬試験合格と本番のブラウザー・Google・Drive・Vercel での動作確認は別です。以前の日付の技術報告は履歴資料で、現在の導入手順ではありません。
+
+## ランニングの地図
+
+GPX・CSVのGPSルートを背景地図と推定速度の色で確認できます。表示の意味、読み込み上限、地図提供元への通信と検査状況は [RUNNING-MAP.md](RUNNING-MAP.md) を参照してください。

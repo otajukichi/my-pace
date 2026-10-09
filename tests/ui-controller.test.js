@@ -21,7 +21,8 @@ class EventNode {
   showModal(){this.open=true;}
   close(){if(this.open){this.open=false;for(const handle of this.handlers.get('close')||[])handle({});}}
   focus(){this.focused=true;this.focusCalls++;}
-  querySelector(selector){if(!this.fields.has(selector))this.fields.set(selector,new EventNode());return this.fields.get(selector);}
+  insertAdjacentHTML(position,value){assert.equal(position,'beforeend');this._innerHTML+=value;}
+  querySelector(selector){if(selector==='[data-route-map]'&&!this._innerHTML.includes('data-route-map='))return null;if(!this.fields.has(selector))this.fields.set(selector,new EventNode());return this.fields.get(selector);}
   click(){this.clicked=true;}
 }
 async function launch(t,{initial=createInitialState(),raw:initialRaw,hash='#home',denyRead=false,width=1280,height=900,idb,fetcher,modePreference=null,timers,pullSupported=false,legacySchema=false}={}) {
@@ -280,20 +281,22 @@ test('opening local mode and migration preview never silently enqueue legacy dat
  await ui.click('cloud-local');assert.match(ui.app.innerHTML,/このブラウザーのみ/);assert.equal(ui.state().wake[todayKey()],'08:00');assert.equal(idb.read().outbox.length,0);
 });
 
-test('imported routes load bounded pages on demand and stale navigation cannot reopen the route dialog',async t=>{
+test('imported routes progressively load signed pages and stale navigation cannot reopen the route dialog',async t=>{
  const idb=cachedCloud();let release;const requests=[];
  const fetcher=async(path,options)=>{
    if(path==='/api/auth/session')return Response.json({ok:true,authenticated:true,csrf:'test'});
    const body=JSON.parse(options.body);if(body.action!=='route')return Response.json({ok:false,error:'OFFLINE'},{status:503});requests.push(body);
-   return new Promise(resolve=>{release=()=>resolve(Response.json({ok:true,result:{runId:'csv-run',revision:5,points:[{lat:35,lon:139},{lat:35.1,lon:139.1}],nextCursor:'next'}}));});
+   const result={runId:'csv-run',revision:5,points:[{lat:35,lon:139},{lat:35.1,lon:139.1}],nextCursor:body.payload.cursor?null:'next'};
+   if(body.payload.cursor)return Response.json({ok:true,result});
+   return new Promise(resolve=>{release=()=>resolve(Response.json({ok:true,result}));});
  };
  const ui=await launch(t,{idb,fetcher,hash:'#running',modePreference:'cloud'});const legacy=ui.raw;
  const opening=ui.click('cloud-route',{id:'csv-run'});for(let i=0;i<10&&!release;i++)await Promise.resolve();
  await ui.changeHash('#calendar');release();await opening;
  assert.equal(ui.editor.open,false);assert.equal(ui.raw,legacy);assert.equal(idb.read().outbox.length,0);
  const second=ui.click('cloud-route',{id:'csv-run'});for(let i=0;i<10&&requests.length<2;i++)await Promise.resolve();release();await second;
- assert.equal(ui.editor.open,true);assert.match(ui.editor.innerHTML,/2 サンプル/);assert.equal(requests[1].payload.cursor,null);
- const next=ui.click('cloud-route-next');for(let i=0;i<10&&requests.length<3;i++)await Promise.resolve();release();await next;
+ assert.equal(ui.editor.open,true);assert.match(ui.editor.querySelector('.cloud-route-result').innerHTML,/1〜4 サンプル/);assert.equal(requests[1].payload.cursor,null);
+ assert.equal(requests.length,3);assert.match(ui.editor.querySelector('.cloud-route-progress').textContent,/読み込みました/);
  assert.equal(requests[2].payload.cursor,'next');assert.equal(requests[2].payload.revision,5);assert.equal(idb.read().outbox.length,0);
 });
 
