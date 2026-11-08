@@ -1,0 +1,254 @@
+/* Finishing layer: keep the approved palettes, colored areas and layout.
+   Light comes from above; shadows distinguish controls from recorded data.
+   Sources and tradeoffs are recorded in docs/DESIGN-DECISIONS.md. */
+:root {
+  --finish-rim: color-mix(in srgb, var(--surface) 78%, transparent);
+  --finish-line: color-mix(in srgb, var(--ink) 14%, transparent);
+  --finish-shadow: color-mix(in srgb, var(--ink) 8%, transparent);
+  --finish-shadow-wide: color-mix(in srgb, var(--ink) 5%, transparent);
+  --finish-card: 0 1px 2px var(--finish-shadow), 0 7px 18px var(--finish-shadow-wide);
+  --finish-float: 0 2px 4px var(--finish-shadow), 0 10px 24px color-mix(in srgb, var(--ink) 13%, transparent);
+  --finish-face: linear-gradient(160deg, color-mix(in srgb, var(--surface) 98%, var(--ink)), var(--surface) 48%, color-mix(in srgb, var(--surface) 97%, var(--paper)));
+}
+[data-theme="night"] {
+  --finish-rim: color-mix(in srgb, var(--ink) 12%, transparent);
+  --finish-line: color-mix(in srgb, var(--ink) 17%, transparent);
+  --finish-shadow: color-mix(in srgb, #030b17 25%, transparent);
+  --finish-shadow-wide: color-mix(in srgb, #030b17 16%, transparent);
+  --finish-float: 0 2px 4px var(--finish-shadow), 0 10px 24px #030b1740;
+  --finish-face: linear-gradient(155deg, color-mix(in srgb, var(--surface) 94%, var(--ink)), var(--surface) 65%);
+}
+
+/* A quiet edge catches the light; the header retains its original color area. */
+.header {
+  background: linear-gradient(115deg, color-mix(in srgb, var(--header) 95%, var(--header-ink)), var(--header) 54%, color-mix(in srgb, var(--header) 97%, #000));
+  box-shadow: inset 0 1px 0 #ffffff12, 0 1px 0 var(--finish-line);
+}
+.top-nav {
+  background: color-mix(in srgb, var(--header) 90%, #000);
+  border-color: color-mix(in srgb, var(--header-ink) 15%, transparent);
+  box-shadow: inset 0 1px 3px #0000000c, 0 1px 0 #ffffff08;
+}
+.header .nav-link.active {
+  background: linear-gradient(150deg, var(--surface), var(--paper));
+  box-shadow: 0 1px 3px #0000001a, inset 0 1px 0 var(--finish-rim);
+}
+.header .brand img { filter: drop-shadow(0 2px 2px #00000012); }
+.header .avatar { box-shadow: inset 0 1px 0 #ffffff16; }
+.workspace.history .context {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--paper) 97%, var(--surface)), var(--paper) 60%);
+}
+.workspace.history .map-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 12px;
+  z-index: 450;
+  pointer-events: none;
+  background: linear-gradient(90deg, var(--finish-shadow), transparent);
+}
+
+/* One decorative motif, drawn as track lanes rather than a fabricated chart.
+   The fade keeps the text region clean; the SVG never receives interaction. */
+.running-message {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background: linear-gradient(112deg, color-mix(in srgb, var(--bg) 83%, var(--surface)), var(--bg) 55%, color-mix(in srgb, var(--bg) 94%, var(--anchor)));
+  border-color: color-mix(in srgb, var(--bg) 75%, var(--anchor));
+  box-shadow: inset 0 1px 0 var(--finish-rim);
+}
+.message-lanes {
+  position: absolute;
+  z-index: -1;
+  right: -20px;
+  top: -34px;
+  width: 225px;
+  height: 165px;
+  transform: rotate(-17deg);
+  stroke: var(--anchor);
+  stroke-width: 1;
+  opacity: .13;
+  pointer-events: none;
+  mask-image: linear-gradient(90deg, transparent, #000 68%);
+}
+.message-mark {
+  background: var(--finish-face);
+  border-color: color-mix(in srgb, var(--surface) 80%, var(--anchor));
+  box-shadow: 0 2px 4px var(--finish-shadow), inset 0 1px 0 var(--finish-rim);
+}
+.message-kicker { font-weight: 600; letter-spacing: .18em; }
+.running-message h1 { font-weight: 600; }
+
+/* The rose area stays rose. Small shifts in lightness define its volume. */
+.running-month-summary {
+  background: linear-gradient(128deg, color-mix(in srgb, var(--panel) 84%, var(--surface)), var(--panel) 48%, color-mix(in srgb, var(--panel) 96%, var(--track)));
+  border-color: color-mix(in srgb, var(--panel) 83%, var(--track));
+  box-shadow: inset 0 1px 0 var(--finish-rim), var(--finish-card);
+}
+.running-selection {
+  background: var(--finish-face);
+  border-color: color-mix(in srgb, var(--surface) 80%, var(--anchor));
+  box-shadow: inset 0 1px 0 var(--finish-rim), 0 1px 2px var(--finish-shadow-wide);
+}
+.running-month-distance>strong,
+.running-summary-grid .selection-metrics>div:first-child strong { letter-spacing: -.045em; font-weight: 650; }
+.running-month-distance>strong>.distance-fraction,
+.running-summary-grid .selection-metrics>div:first-child strong .distance-fraction,
+.running-selection .selection-metrics strong .distance-fraction {
+  font-size: .72em;
+  font-weight: 550;
+  letter-spacing: -.025em;
+  margin-left: 0;
+}
+.running-month-distance>strong>.distance-unit,
+.running-summary-grid .selection-metrics>div:first-child strong .distance-unit { margin-left: 7px; }
+.metric-caption, .running-month-label>small, .selection-metrics small,
+.running-month-facts small { font-weight: 450; }
+.running-month-facts, .running-summary-grid .selection-metrics>div:first-child { border-color: var(--finish-line); }
+.running-month-facts>div+div,
+.running-summary-grid .selection-metrics>div:last-child { position: relative; }
+.running-month-facts>div+div::before,
+.running-summary-grid .selection-metrics>div:last-child::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 2px;
+  bottom: 2px;
+  width: 1px;
+  background: linear-gradient(transparent, var(--finish-line) 25%, var(--finish-line) 75%, transparent);
+}
+.running-month-arrows .icon-button {
+  background: color-mix(in srgb, var(--surface) 23%, transparent);
+  border-color: color-mix(in srgb, var(--anchor) 16%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--surface) 35%, transparent);
+}
+.selection-detail { font-weight: 550; }
+
+/* No decorative gradient on data cells: the distance scale remains literal. */
+.calendar-range-options {
+  background: color-mix(in srgb, var(--paper) 97%, var(--ink));
+  border-color: var(--finish-line);
+  box-shadow: inset 0 1px 2px var(--finish-shadow-wide);
+}
+.calendar-range-options button[aria-pressed="true"] {
+  background: var(--panel);
+  box-shadow: 0 1px 3px var(--finish-shadow), inset 0 1px 0 var(--finish-rim);
+  font-weight: 550;
+}
+.calendar-months button { position: relative; }
+.calendar-months button.active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: -3px;
+  height: 1px;
+  width: 14px;
+  background: var(--primary);
+  opacity: .55;
+}
+.run-cell>span { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ink) 4%, transparent); }
+.run-cell.selected>span {
+  outline-color: var(--ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--paper) 85%, transparent);
+}
+.calendar-year-nav strong, .running-period-nav strong,
+.running-month-facts strong, .weather-now strong, .running-weather-hours strong { font-variant-numeric: tabular-nums lining-nums; }
+
+/* Weather remains part of the paper. Forecast slots gain an edge on hover. */
+.running-weather { position: relative; border-top-color: transparent; }
+.running-weather::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--anchor) 35%, transparent), var(--finish-line) 60%, transparent);
+}
+.weather-now>.icon {
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--gold) 23%, transparent), transparent 72%);
+  overflow: visible;
+}
+.running-weather-hours { border-left-color: var(--finish-line); }
+.running-weather-hours button, .weather-now { position: relative; isolation: isolate; border-radius: 7px; }
+.running-weather-hours button::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  inset: -6px -4px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  transition: background-color 150ms, border-color 150ms;
+}
+.running-weather-heading>.text-button { font-weight: 550; }
+
+/* Floating controls get a stronger contact shadow and a nearly opaque face.
+   Transparency is confined to controls, never to the data or text itself. */
+.running-period-nav, .running-view-mode, .running-speed-legend,
+.mp-map__zoom, .mp-map__controls .mp-map__fit {
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--surface) 78%, var(--anchor));
+  box-shadow: inset 0 1px 0 var(--finish-rim), var(--finish-float);
+}
+@supports (backdrop-filter: blur(12px)) {
+  .running-period-nav, .running-view-mode, .running-speed-legend,
+  .mp-map__zoom, .mp-map__controls .mp-map__fit {
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    backdrop-filter: blur(12px);
+  }
+}
+.mp-map__zoom button { background: transparent; }
+.mp-map__zoom button+button { border-top-color: var(--finish-line); }
+.running-view-mode button.active {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 92%, var(--on-primary)), var(--primary));
+  box-shadow: 0 1px 3px var(--finish-shadow), inset 0 1px 0 #ffffff18;
+  font-weight: 550;
+}
+.running-speed-legend .speed-scale>i { box-shadow: inset 0 0 0 1px #0000000a; }
+.running-period-nav .icon-button, .running-view-mode button,
+.running-month-arrows .icon-button, .calendar-range-options button,
+.calendar-year-nav .icon-button, .header .nav-link {
+  transition: background-color 150ms, box-shadow 150ms, color 150ms;
+}
+
+@media (hover:hover) {
+  .running-period-nav .icon-button:not(:disabled):hover,
+  .running-month-arrows .icon-button:not(:disabled):hover,
+  .calendar-year-nav .icon-button:not(:disabled):hover {
+    background: color-mix(in srgb, var(--surface) 65%, transparent);
+    box-shadow: inset 0 0 0 1px var(--finish-line);
+  }
+  .running-weather-hours button:hover::before {
+    background: color-mix(in srgb, var(--surface) 65%, transparent);
+    border-color: var(--finish-line);
+  }
+  .selection-detail:hover, .running-weather-heading>.text-button:hover { text-decoration: underline; text-underline-offset: 4px; }
+}
+.running-weather-hours button:focus-visible::before { background: var(--surface); }
+
+@media (max-width:760px) {
+  .message-lanes { right: -38px; top: -47px; width: 170px; height: 145px; opacity: .09; }
+  .running-month-facts>div+div::before,
+  .running-summary-grid .selection-metrics>div:last-child::before { left: -4px; }
+  .running-month-distance>strong>.distance-unit,
+  .running-summary-grid .selection-metrics>div:first-child strong .distance-unit { margin-left: 4px; }
+  .running-month-summary { box-shadow: inset 0 1px 0 var(--finish-rim), 0 2px 4px var(--finish-shadow-wide); }
+  .workspace.history .map-stage::after { display: none; }
+  .mobile-nav { box-shadow: 0 -1px 0 var(--finish-rim); }
+}
+@media (prefers-reduced-motion:reduce) {
+  .running-dashboard *, .running-dashboard *::before, .running-dashboard *::after,
+  .running-period-nav *, .running-view-mode *, .header * { transition: none !important; }
+}
+@media (prefers-reduced-transparency:reduce) {
+  .running-period-nav, .running-view-mode, .running-speed-legend,
+  .mp-map__zoom, .mp-map__controls .mp-map__fit { background: var(--surface); backdrop-filter: none; }
+}
+@media (prefers-contrast:more) {
+  .running-message, .running-month-summary, .running-selection,
+  .running-period-nav, .running-view-mode, .running-speed-legend,
+  .mp-map__zoom, .mp-map__controls .mp-map__fit { border-color: var(--muted); }
+  .message-lanes { display: none; }
+}

@@ -1,0 +1,142 @@
+/* A quiet records heading and the shared diary action anchor the sidebar. */
+.workspace.with-sidebar, .workspace.with-sidebar.detail { grid-template-columns: clamp(460px, 44vw, 700px) minmax(0, 1fr); }
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: linear-gradient(135deg, color-mix(in srgb, var(--paper) 97%, var(--surface)), var(--paper) 60%);
+  border-right: 1px solid var(--line);
+  z-index: 10;
+}
+.workspace.with-sidebar .context { flex: 1; border: 0; background: transparent; padding: 14px 32px 20px; }
+.sidebar-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 12px 32px 0;
+  border-bottom: 1px solid var(--finish-line);
+  flex-shrink: 0;
+}
+.records-heading {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 40px;
+  margin: 0;
+  padding: 6px 2px 11px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.records-heading .icon { width: 15px; height: 15px; }
+.diary-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+  padding: 4px 0 8px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.diary-trigger .icon { height: 13px; width: 13px; }
+@media (hover: hover) {
+  .diary-trigger:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 4px; }
+}
+.diary-trigger:focus-visible { outline-offset: 3px; border-radius: 3px; }
+.context:focus-visible { outline: 2px solid var(--primary); outline-offset: -3px; }
+
+/* One toolbar row leaves the squares and month labels at their original size. */
+@media (min-width:761px) {
+  .workspace.with-sidebar .running-calendar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; gap: 9px 10px; }
+  .running-calendar-heading, .calendar-period-heading { display: contents; }
+  .running-calendar-heading>div:first-child { grid-area: 1 / 1; }
+  .calendar-year-nav { grid-area: 1 / 2; }
+  .calendar-range-options { grid-area: 1 / 3; }
+  .calendar-period-heading>.text-button { grid-area: 1 / 4; }
+  .calendar-blocks, .calendar-footer { grid-column: 1 / -1; }
+  .calendar-footer { margin-top: 0; }
+  .running-calendar-heading>div:first-child { align-self: center; }
+}
+@media (min-width:761px) and (max-width:1150px) {
+  .workspace.with-sidebar .context { padding-left: 23px; padding-right: 23px; }
+  .sidebar-toolbar { margin-left: 23px; margin-right: 23px; }
+  .calendar-year-summary { display: none; }
+  .workspace.with-sidebar .running-calendar { column-gap: 6px; }
+}
+@media (min-width:761px) and (max-height:820px) {
+  .sidebar-toolbar { margin-top: 7px; }
+  .workspace.with-sidebar .context { padding-top: 11px; padding-bottom: 14px; }
+  .workspace.with-sidebar.history:not(.detail) .context { padding-top: 10px; padding-bottom: 12px; }
+  .workspace.with-sidebar .running-dashboard { gap: 9px; }
+  .workspace.with-sidebar .running-calendar { row-gap: 6px; }
+  .workspace.with-sidebar .running-weather { padding-top: 10px; }
+  .workspace.with-sidebar .running-weather-body { margin-top: 8px; }
+}
+@media (min-width:761px) and (max-height:740px) {
+  .workspace.with-sidebar.history:not(.detail) .context { padding-top: 8px; padding-bottom: 10px; }
+  .workspace.with-sidebar .running-dashboard { gap: 7px; }
+  .message-kicker { display: none; }
+  .running-summary-grid .running-month-summary, .running-summary-grid .running-selection { padding-top: 8px; padding-bottom: 8px; }
+  .running-month-distance, .running-summary-grid .selection-metrics { margin-top: 7px; }
+  .running-month-distance>strong, .running-summary-grid .selection-metrics>div:first-child strong { font-size: 30px; }
+  .running-month-facts { margin-top: 8px; padding-top: 6px; }
+  .running-month-facts>div { gap: 2px; }
+  .running-summary-grid .selection-metrics { row-gap: 6px; }
+  .running-summary-grid .selection-metrics>div:first-child { padding-bottom: 8px; }
+}
+
+/* The diary is deliberately free of activity-specific fields or illustrations. */
+dialog.diary-dialog { width: 570px; background: var(--paper); box-shadow: var(--finish-float), 0 25px 100px #00000022; }
+.diary-dialog .dialog-header { padding-bottom: 14px; }
+.diary-dialog .dialog-header h2 { font-size: 21px; font-weight: 600; }
+.diary-form { display: flex; flex-direction: column; gap: 18px; }
+.diary-date { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--muted); }
+.diary-date>span { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; }
+.diary-date .icon { height: 14px; width: 14px; }
+.diary-date>small { font-size: 10px; }
+.diary-form textarea {
+  display: block;
+  width: 100%;
+  height: clamp(160px, 34dvh, 330px);
+  min-height: 0;
+  resize: none;
+  padding: 18px 20px;
+  border: 1px solid var(--finish-line);
+  border-radius: 12px;
+  background: var(--finish-face);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 2;
+  box-shadow: inset 0 1px 0 var(--finish-rim);
+}
+.diary-form textarea::placeholder { color: var(--muted); }
+.diary-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.diary-footer>div { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.diary-footer small { font-size: 9px; }
+.diary-footer .button { flex-shrink: 0; padding: 10px 14px; font-size: 11px; }
+
+@media (max-width:760px) {
+  .workspace.with-sidebar { height: calc(100dvh - 61px); display: flex; }
+  .workspace.with-sidebar .sidebar { order: 2; flex: none; border-right: 0; border-top: 1px solid var(--line); padding-bottom: env(safe-area-inset-bottom); }
+  .workspace.with-sidebar .map-stage { min-height: 175px; }
+  .workspace.with-sidebar .context { padding: 10px 16px; flex: none; }
+  .sidebar-toolbar { margin: 0 16px; gap: 10px; }
+  .records-heading { min-height: 40px; padding: 8px 2px; font-size: 12px; }
+  .records-heading .icon { height: 14px; width: 14px; }
+  .diary-trigger { font-size: 10px; min-height: 40px; padding: 8px 0 8px 8px; }
+  .diary-trigger .icon { height: 12px; width: 12px; }
+  .diary-dialog .dialog-header { padding: 20px 20px 14px; }
+  .diary-dialog .dialog-content { padding: 0 20px 20px; }
+  .diary-date { flex-wrap: wrap; gap: 6px; }
+  .diary-form { gap: 14px; }
+  .diary-form textarea { font-size: 16px; padding: 14px; }
+  .diary-footer>div { font-size: 10px; }
+}
+@media (max-width:760px) and (max-height:740px) {
+  .workspace.with-sidebar.history:not(.detail) .context { padding: 6px 15px; }
+  .sidebar-toolbar { margin-left: 15px; margin-right: 15px; }
+}

@@ -1,41 +1,152 @@
-/** Local-only static server. No dependencies, proxy, upload, or external calls. */
-import http from 'node:http';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import {fileURLToPath} from 'node:url';
-const PUBLIC_ASSETS=new Set(JSON.parse(await fs.readFile(new URL('./public-assets.json',import.meta.url),'utf8')));
-const ROOT=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const args=process.argv.slice(2);
-const getArg=(flag,fallback)=>{const index=args.indexOf(flag);return index<0?fallback:args[index+1]||fallback;};
-const PORT=Number(getArg('--port',process.env.PORT||'5173'));
-const HOST=getArg('--host','127.0.0.1');
-const directory=args.includes('--dist')?path.join(ROOT,'dist'):ROOT;
-if(!Number.isInteger(PORT)||PORT<1||PORT>65535)throw new Error('Port must be between 1 and 65535.');
-const MIME={'.txt':'text/plain; charset=utf-8','.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.svg':'image/svg+xml','.json':'application/json; charset=utf-8'};
-export function createStaticServer(root = ROOT) {
-return http.createServer(async(req,res)=>{
-  const directory = root;
-  try {
-    if(req.method!=='GET'&&req.method!=='HEAD'){res.writeHead(405);res.end('Method not allowed');return;}
-    const requested=decodeURIComponent(new URL(req.url,'http://localhost').pathname);
-    const relative=requested==='/'?'index.html':requested.replace(/^\/+/, '');
-    const parts=relative.split('/');
-    if(parts.some(part=>part.startsWith('.')||part==='..')||relative.includes('\\')||!PUBLIC_ASSETS.has(relative)){res.writeHead(404);res.end('Not found');return;}
-    const file=path.resolve(directory,relative);
-    if(!file.startsWith(directory+path.sep)){res.writeHead(404);res.end('Not found');return;}
-    const type=MIME[path.extname(file)];if(!type){res.writeHead(404);res.end('Not found');return;}
-    let current=directory;
-    if((await fs.lstat(current)).isSymbolicLink()){res.writeHead(404);res.end('Not found');return;}
-    for(const part of parts){current=path.join(current,part);const stat=await fs.lstat(current);if(stat.isSymbolicLink()||(!stat.isDirectory()&&(!stat.isFile()||stat.nlink!==1))){res.writeHead(404);res.end('Not found');return;}}
-    const body=await fs.readFile(file);
-    res.writeHead(200,{'Content-Type':type,'Content-Length':body.length,'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Cross-Origin-Opener-Policy':'same-origin-allow-popups','Referrer-Policy':'strict-origin-when-cross-origin','Content-Security-Policy':"default-src 'self'; script-src 'self' https://accounts.google.com/gsi/client; style-src 'self' 'unsafe-inline' https://accounts.google.com/gsi/style; img-src 'self' data: https://tile.openstreetmap.org https://cyberjapandata.gsi.go.jp; connect-src 'self' https://accounts.google.com/gsi/; frame-src https://accounts.google.com/gsi/; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'"});
-    res.end(req.method==='HEAD'?undefined:body);
-  } catch(error){res.writeHead(error.code==='ENOENT'?404:400);res.end(error.code==='ENOENT'?'Not found':'Bad request');}
-});
-}
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-const server = createStaticServer(directory);
-server.on('error',error=>{console.error(`Could not start: ${error.message}`);process.exitCode=1;});
-server.listen(PORT,HOST,()=>{console.log(`マイペース (My Pace)  http://${HOST}:${PORT}\nStop: Ctrl+C\nLocal static preview only. Cloud login/sync requires the configured Vercel API. Browser storage is per origin.`);if(HOST!=='127.0.0.1'&&HOST!=='localhost')console.warn('Network access enabled. No authentication is provided. Use a trusted private network only.');});
+import { createServer } from 'node:http';
+import { createReadStream } from 'node:fs';
+import { lstat, realpath, readdir } from 'node:fs/promises';
+import { dirname, extname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { pipeline } from 'node:stream/promises';
+import { createWeatherApiHandler } from './weather-area.mjs';
 
+export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT_FILES = new Set(['index.html', 'app.js', 'styles.css']);
+const EXCLUDED_SEGMENTS = new Set(['旧my-pace', 'tests', 'docs', 'scripts', 'node_modules', 'dist']);
+const MIME_TYPES = new Map([
+  ['.html', 'text/html; charset=utf-8'], ['.js', 'text/javascript; charset=utf-8'],
+  ['.css', 'text/css; charset=utf-8'], ['.json', 'application/json; charset=utf-8'],
+  ['.svg', 'image/svg+xml'], ['.png', 'image/png'], ['.jpg', 'image/jpeg'], ['.jpeg', 'image/jpeg'],
+  ['.webp', 'image/webp'], ['.avif', 'image/avif'], ['.gif', 'image/gif'], ['.ico', 'image/x-icon'],
+  ['.woff', 'font/woff'], ['.woff2', 'font/woff2'], ['.ttf', 'font/ttf'], ['.otf', 'font/otf'],
+  ['.txt', 'text/plain; charset=utf-8'],
+]);
+const ASSET_EXTENSIONS = new Set([
+  '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.avif', '.gif', '.ico',
+  '.woff', '.woff2', '.ttf', '.otf',
+]);
+
+function safeSegments(relativePath) {
+  const segments = relativePath.split('/');
+  return segments.every(segment => segment && !segment.startsWith('.')
+    && !EXCLUDED_SEGMENTS.has(segment) && !/[\\%\x00-\x1f\x7f:#?]/.test(segment));
+}
+
+function allowed(relativePath) {
+  if (!safeSegments(relativePath)) return false;
+  if (ROOT_FILES.has(relativePath) || relativePath === 'data/running.json') return true;
+  if (relativePath.startsWith('lib/')) return ['.js', '.css'].includes(extname(relativePath));
+  if (relativePath.startsWith('assets/')) {
+    return ASSET_EXTENSIONS.has(extname(relativePath)) || relativePath.endsWith('/LICENSE.txt');
+  }
+  return false;
+}
+
+function requestPath(requestTarget) {
+  // Parse the original request target before URL normalization can erase "..".
+  if (typeof requestTarget !== 'string' || requestTarget.length > 4096
+      || !requestTarget.startsWith('/') || requestTarget.startsWith('//')) return null;
+  const encoded = requestTarget.split('?', 1)[0];
+  if (/%(?:2f|5c)/i.test(encoded)) return null;
+  let path;
+  try { path = decodeURIComponent(encoded); } catch { return null; }
+  if (path === '/') return 'index.html';
+  const relativePath = path.slice(1);
+  return allowed(relativePath) ? relativePath : null;
+}
+
+/** Resolve an allowlisted, regular public file; null means 404. Never follows symlinks. */
+export async function resolvePublicPath(requestTarget, { root = PROJECT_ROOT } = {}) {
+  const relativePath = requestPath(requestTarget);
+  if (!relativePath) return null;
+  try {
+    const canonicalRoot = await realpath(root);
+    let filePath = canonicalRoot;
+    const segments = relativePath.split('/');
+    let stat;
+    for (let index = 0; index < segments.length; index++) {
+      filePath = join(filePath, segments[index]);
+      stat = await lstat(filePath);
+      if (stat.isSymbolicLink() || (index < segments.length - 1 && !stat.isDirectory())) return null;
+    }
+    if (!stat?.isFile()) return null;
+    return { filePath, relativePath, mimeType: MIME_TYPES.get(extname(relativePath)), size: stat.size };
+  } catch { return null; }
+}
+
+/** Shared server/build policy: omitted paths can never be copied into a build. */
+export async function listPublicFiles({ root = PROJECT_ROOT } = {}) {
+  const candidates = [...ROOT_FILES, 'data/running.json'];
+  async function visit(relativeDirectory) {
+    if (!safeSegments(relativeDirectory)) return;
+    const directory = join(root, relativeDirectory);
+    let entries;
+    try {
+      if (!(await lstat(directory)).isDirectory()) return;
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch { return; }
+    for (const entry of entries) {
+      const relativePath = relativeDirectory + '/' + entry.name;
+      if (!safeSegments(relativePath) || entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) await visit(relativePath);
+      else if (entry.isFile() && allowed(relativePath)) candidates.push(relativePath);
+    }
+  }
+  await visit('lib');
+  await visit('assets');
+  const files = [];
+  for (const relativePath of candidates.sort()) {
+    const file = await resolvePublicPath('/' + relativePath, { root });
+    if (file) files.push(file);
+  }
+  return files;
+}
+
+function plain(response, status, text) {
+  response.writeHead(status, { 'Content-Type': 'text/plain; charset=utf-8' });
+  response.end(text);
+}
+
+/** Constructs a server without listening. The CLI below binds only to 127.0.0.1. */
+export function createStaticServer({ root = PROJECT_ROOT, weatherArea } = {}) {
+  const handleApi = createWeatherApiHandler({ root, weatherArea });
+  return createServer(async (request, response) => {
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader('X-Content-Type-Options', 'nosniff');
+    response.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+    response.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    if (await handleApi(request, response)) return;
+    // Keep this personal-data server inaccessible through a rebound public hostname.
+    if (!/^(?:127\.0\.0\.1|localhost)(?::\d{1,5})?$/.test(request.headers.host ?? '')) {
+      plain(response, 403, 'Local access only.\n');
+      return;
+    }
+    if (request.method !== 'GET' && request.method !== 'HEAD') {
+      response.setHeader('Allow', 'GET, HEAD');
+      plain(response, 405, 'Method not allowed.\n');
+      return;
+    }
+    const file = await resolvePublicPath(request.url, { root });
+    if (!file) { plain(response, 404, 'Not found.\n'); return; }
+    response.writeHead(200, { 'Content-Type': file.mimeType, 'Content-Length': file.size });
+    if (request.method === 'HEAD') { response.end(); return; }
+    try { await pipeline(createReadStream(file.filePath), response); }
+    catch { if (!response.destroyed) response.destroy(); }
+  });
+}
+
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const value = process.env.PORT ?? '4173';
+  const port = Number(value);
+  if (!/^\d+$/.test(value) || !Number.isInteger(port) || port < 1 || port > 65535) {
+    console.error('PORT must be a whole number between 1 and 65535.');
+    process.exitCode = 1;
+  } else {
+    const server = createStaticServer();
+    server.once('error', error => {
+      console.error(error.code === 'EADDRINUSE'
+        ? `Port ${port} is in use. Choose another PORT.` : 'The local server could not start.');
+      process.exitCode = 1;
+    });
+    server.listen(port, '127.0.0.1', () => {
+      console.log(`MyPace: http://127.0.0.1:${port}`);
+      console.log('Private local preview. The running data and dist build must not be published.');
+    });
+  }
 }

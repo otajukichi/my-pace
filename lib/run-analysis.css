@@ -1,0 +1,75 @@
+/* The log opens in place; the sidebar and selected calendar day stay put. */
+.selection-disclosure { position: relative; margin-top: 12px; }
+.running-log-disclosure { position: relative; padding-bottom: 37px; border-top: 1px solid var(--finish-line); }
+.running-log-disclosure>summary { position: absolute; bottom: 0; right: 0; min-height: 32px; min-width: 120px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; cursor: pointer; list-style: none; border-radius: 6px; padding: 5px 7px; font-size: 11px; font-weight: 550; }
+.running-log-disclosure>summary::-webkit-details-marker { display: none; }
+.running-log-disclosure>summary:focus-visible { outline: 2px solid var(--anchor); outline-offset: 1px; }
+.running-log-disclosure>summary:hover { background: color-mix(in srgb,var(--anchor) 7%,transparent); }
+.running-log-disclosure:not([open]) .detail-label-close,
+.running-log-disclosure[open] .detail-label-open { display: none; }
+.running-log-disclosure[open]>summary .icon { transform: rotate(180deg); }
+.selection-disclosure-legend { position: absolute; bottom: 3px; left: 0; margin: 0; padding: 0; border: 0; }
+.running-log-disclosure .running-analysis { border-top: 0; margin-top: 0; padding-top: 13px; padding-bottom: 12px; }
+.selection-detail[aria-expanded="true"] { color: var(--ink); }
+.running-log-disclosure>summary .icon { display: block; width: 12px; height: 12px; }
+.running-analysis { margin-top: 8px; padding-top: 13px; border-top: 1px solid var(--finish-line); }
+.analysis-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 13px; }
+.analysis-heading h3 { font-size: 12px; font-weight: 600; white-space: nowrap; }
+.analysis-heading>span { margin-left: auto; font-size: 8px; color: var(--muted); white-space: nowrap; }
+.analysis-heading select { min-width: 0; max-width: 160px; background: var(--surface); color: var(--ink); border: 1px solid var(--finish-line); border-radius: 6px; padding: 4px 6px; font: inherit; font-size: 9px; }
+.analysis-columns { display: grid; grid-template-columns: minmax(0,1.45fr) minmax(0,1fr); gap: 22px; }
+.analysis-pace, .analysis-splits { min-width: 0; }
+.analysis-pace-heading { display: flex; align-items: baseline; gap: 7px; margin-bottom: 9px; }
+.analysis-pace-heading>span { color: var(--muted); font-size: 9px; }
+.analysis-pace-heading strong { font-size: 14px; font-weight: 600; }
+.analysis-pace-heading small { font-size: 8px; color: var(--muted); font-weight: 450; }
+.analysis-chart { display: flex; gap: 5px; height: 87px; }
+.analysis-chart svg { display: block; flex: 1; width: 0; height: 100%; overflow: visible; }
+.analysis-grid { stroke: var(--finish-line); stroke-width: .6; fill: none; stroke-dasharray: 2 5; }
+.analysis-average { stroke: var(--track); stroke-width: 1; fill: none; stroke-dasharray: 4 3; opacity: .7; }
+.analysis-line { stroke: var(--anchor); stroke-width: 1.7; fill: none; stroke-linejoin: round; }
+.analysis-point { fill: var(--anchor); }
+.analysis-area { fill: url(#analysis-fill); }
+.analysis-range { display: flex; flex-direction: column; justify-content: space-between; padding: 0 0 4px; color: var(--muted); font-size: 7px; min-width: 28px; }
+.analysis-axis { display: flex; justify-content: space-between; margin: 5px 32px 0 0; color: var(--muted); font-size: 7px; font-variant-numeric: tabular-nums; }
+.analysis-caption { font-size: 7px; color: var(--muted); margin: 8px 0 0; }
+.analysis-chart-empty { display: grid; place-items: center; height: 103px; color: var(--muted); font-size: 10px; }
+.analysis-split-heading { display: flex; justify-content: space-between; margin-bottom: 7px; font-size: 9px; color: var(--muted); }
+.analysis-split { display: grid; grid-template-columns: 42px minmax(0,1fr) 43px; gap: 6px; align-items: center; min-height: 24px; font-size: 10px; font-variant-numeric: tabular-nums; }
+.analysis-split small { font-size: 7px; margin-left: 3px; color: var(--muted); }
+.analysis-split>i { display: block; height: 4px; border-radius: 5px; background: color-mix(in srgb,var(--anchor) 8%,transparent); }
+.analysis-split b { display: block; height: 100%; border-radius: inherit; background: color-mix(in srgb,var(--anchor) 55%,var(--surface)); }
+.analysis-split strong { text-align: right; font-size: 10px; font-weight: 500; }
+.analysis-no-splits { color: var(--muted); font-size: 9px; padding-top: 10px; }
+.analysis-pagination { display: flex; justify-content: flex-end; align-items: center; gap: 5px; margin-top: 3px; font-size: 8px; color: var(--muted); }
+.analysis-pagination .icon-button { height: 23px; width: 23px; border: 0; }
+.analysis-pagination .icon { width: 11px; height: 11px; }
+@media (max-width:920px) and (min-width:761px) {
+  .analysis-columns { grid-template-columns: minmax(0,1.1fr) minmax(0,1fr); gap: 12px; }
+  .analysis-pace-heading { flex-wrap: wrap; gap: 4px; }
+  .analysis-chart { height: 75px; }
+  .analysis-split { grid-template-columns: 32px minmax(0,1fr) 35px; gap: 4px; min-height: 24px; font-size: 9px; }
+  .analysis-split strong { font-size: 9px; }
+}
+@media (max-width:760px) {
+  .running-log-disclosure { padding: 37px 0 0; }
+  .running-log-disclosure>summary { top: 0; bottom: auto; font-size: 10px; }
+  .selection-disclosure-legend { top: 3px; bottom: auto; }
+  .workspace.history.log-expanded .map-stage { z-index: 20; overflow: visible; }
+  .workspace.history.log-expanded .map-bottom { bottom: auto; }
+  .workspace.history.log-expanded .map-bottom>.running-selection { box-shadow: var(--finish-float),0 -12px 60px #10213135; }
+  .running-analysis { padding-top: 10px; margin-top: 6px; }
+  .analysis-heading { margin-bottom: 9px; gap: 6px; }
+  .analysis-heading h3 { font-size: 11px; }
+  .analysis-heading>span { font-size: 7px; }
+  .analysis-heading select { max-width: 135px; font-size: 8px; }
+  .analysis-columns { grid-template-columns: minmax(0,1.2fr) minmax(0,1fr); gap: 12px; }
+  .analysis-pace-heading { flex-wrap: wrap; gap: 3px 5px; margin-bottom: 6px; }
+  .analysis-pace-heading strong { font-size: 12px; }
+  .analysis-chart { height: 71px; }
+  .analysis-caption { margin-top: 5px; font-size: 6.5px; }
+  .analysis-split { grid-template-columns: 35px minmax(0,1fr) 39px; gap: 4px; min-height: 22px; font-size: 9px; }
+  .analysis-split strong { font-size: 9px; }
+  .analysis-split-heading { font-size: 8px; }
+  .analysis-chart-empty { height: 93px; font-size: 8px; }
+}

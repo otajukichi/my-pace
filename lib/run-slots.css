@@ -1,0 +1,316 @@
+/* Route browsing and the floating map summary. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.running-slot { width: 100%; min-width: 0; min-height: 206px; display: flex; flex-direction: column; padding: 13px 12px 12px; border: 1px solid var(--finish-line); border-radius: 14px; background: var(--finish-face); box-shadow: inset 0 1px 0 var(--finish-rim), 0 1px 2px var(--finish-shadow-wide); }
+.run-slot-heading { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 0 3px 8px; }
+.run-slot-heading h2 { font-size: 11px; font-weight: 550; white-space: nowrap; }
+.run-slot-heading>small { color: var(--muted); font-size: 9px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.run-slot-body { display: flex; flex: 1; min-height: 0; gap: 5px; }
+.run-slot-reel { flex: 1; min-width: 0; min-height: 0; overflow: hidden; border-radius: 9px; touch-action: pan-x; overscroll-behavior: contain; }
+.run-slot-reel:focus-visible { outline: 2px solid var(--anchor); outline-offset: 2px; }
+.run-slot-rows { display: grid; grid-template-rows: repeat(var(--slot-rows, 5), minmax(0, 1fr)); height: 100%; gap: 3px; }
+.run-slot-row { display: flex; align-items: center; gap: 11px; width: 100%; min-width: 0; text-align: left; border: 1px solid transparent; border-radius: 9px; padding: 3px 9px; color: var(--muted); }
+.run-slot-row.current { background: color-mix(in srgb, var(--bg) 35%, var(--surface)); border-color: var(--finish-line); }
+.run-slot-row.active { color: var(--ink); background: linear-gradient(105deg, color-mix(in srgb, var(--bg) 72%, var(--surface)), color-mix(in srgb, var(--bg) 38%, var(--surface))); border-color: color-mix(in srgb, var(--anchor) 35%, var(--surface)); box-shadow: inset 3px 0 0 var(--anchor), inset 0 1px 0 var(--finish-rim); }
+.run-slot-thumbnail { position: relative; width: 61px; height: 41px; display: grid; place-items: center; flex-shrink: 0; }
+.run-thumbnail { position: absolute; inset: 0; display: block; width: 100%; height: 100%; overflow: visible; }
+.run-thumbnail path { stroke: var(--anchor); stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.run-slot-row.active .run-thumbnail path { stroke: var(--track); stroke-width: 1.9; }
+.run-slot-row:not(.current) .run-thumbnail { opacity: .7; }
+.run-slot-label { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.run-slot-label>span { font-size: 10px; white-space: nowrap; }
+.run-slot-label>strong { font-size: 17px; font-weight: 550; font-variant-numeric: tabular-nums; white-space: nowrap; letter-spacing: -.5px; }
+.run-slot-label>strong>small { font-size: 9px; margin-left: 4px; font-weight: 450; letter-spacing: 0; }
+.run-slot-row.current .run-slot-label>strong { font-size: 21px; color: var(--ink); }
+.run-slot-count { font-size: 8px; margin-left: auto; white-space: nowrap; color: var(--muted); }
+.run-slot-month-empty { display: grid; place-items: center; font-size: 10px; color: var(--muted); text-align: center; line-height: 1.8; padding: 4px; }
+.run-slot-controls { display: flex; flex-direction: column; justify-content: space-between; padding: 4px 0; }
+.run-slot-controls>.icon-button { width: 24px; height: 29px; border: 0; background: transparent; border-radius: 6px; }
+.run-slot-controls>.icon-button>.icon { height: 13px; width: 13px; }
+.run-slot-controls>span { align-self: center; height: 22px; width: 1px; background: var(--line); }
+.run-slot-controls>.icon-button:disabled { opacity: .25; }
+
+/* A floating card, independent from the map edge. Its measured height is
+   reserved by the camera, for both day and month views. */
+.workspace.history .map-bottom { align-items: center; }
+.workspace.history .map-bottom>.running-selection { width: min(580px, 100%); padding: 15px 20px 10px; border-radius: 15px; box-shadow: inset 0 1px 0 var(--finish-rim), var(--finish-float); background: var(--finish-face); }
+.map-bottom .selection-top { min-height: 0; }
+.map-bottom .selection-top h2 { font-size: 19px; font-weight: 600; }
+.map-bottom .selection-kicker { font-size: 8px; margin-bottom: 4px; color: var(--muted); }
+.map-bottom .selection-count { font-size: 10px; }
+.map-bottom .selection-metrics { display: grid; grid-template-columns: 1.12fr 1fr 1fr 1.3fr; gap: 10px; margin-top: 14px; align-items: center; }
+.map-bottom .selection-metrics>div, .map-bottom .selection-fresh { min-width: 0; padding: 0; text-align: left; }
+.map-bottom .selection-metrics>div+div, .map-bottom .selection-fresh { border-left: 1px solid var(--finish-line); padding-left: 12px; }
+.map-bottom .selection-metrics strong { font-size: 24px; letter-spacing: -.8px; line-height: 1.2; }
+.map-bottom .selection-metrics>div:first-child strong { font-size: 30px; color: var(--anchor); }
+.map-bottom .selection-metrics strong .distance-unit { font-size: 10px; margin-left: 4px; }
+.map-bottom .selection-fresh strong { font-size: 25px; }
+.map-bottom .selection-fresh .approx { font-size: 9px; margin: 0 3px 0 0; font-weight: 450; }
+.map-bottom .selection-metrics small { font-size: 9px; margin-top: 5px; font-weight: 450; white-space: nowrap; }
+.selection-fresh small { display: flex; gap: 4px; align-items: center; }
+.selection-fresh small .icon { width: 10px; height: 10px; }
+.selection-foot { margin-top: 12px; padding-top: 7px; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--finish-line); gap: 8px; }
+.selection-foot .running-speed-legend { background: none; backdrop-filter: none; box-shadow: none; border: 0; padding: 0; gap: 9px; font-size: 8px; min-height: 25px; }
+.selection-foot .running-speed-legend>span:first-child small { font-size: 6px; }
+.selection-foot .speed-scale { width: 95px; }
+.selection-foot .speed-scale>i { height: 3px; }
+.selection-foot .speed-scale>span { margin-top: 3px; }
+.selection-foot .speed-scale small { font-size: 7px; }
+.selection-foot .running-speed-legend>.icon { height: 10px; width: 10px; }
+.selection-foot .selection-detail { font-size: 10px; padding: 4px 0 4px 8px; }
+.selection-month-hint { color: var(--muted); font-size: 9px; }
+.selection-empty { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 9px; padding: 12px 0 2px; }
+.map-bottom .selection-empty p { margin: 0; font-size: 11px; }
+.selection-empty .text-button { padding: 0; font-size: 10px; }
+@media (hover:hover) {
+  .run-slot-row:hover { background: var(--bg); color: var(--ink); border-color: var(--finish-line); }
+  .run-slot-controls>.icon-button:not(:disabled):hover { background: var(--bg); }
+  .selection-fresh:hover small { text-decoration: underline; text-underline-offset: 3px; }
+}
+
+@media (min-width:761px) and (max-height:820px) {
+  .running-slot { min-height: 174px; padding: 9px 10px; }
+  .run-slot-heading { padding-bottom: 5px; }
+  .run-slot-thumbnail { height: 35px; width: 53px; }
+  .run-slot-label>strong { font-size: 15px; }
+  .run-slot-row.current .run-slot-label>strong { font-size: 19px; }
+}
+@media (min-width:761px) and (max-height:740px) { .running-slot { min-height: 160px; } .run-slot-thumbnail { height: 31px; } }
+@media (min-width:761px) and (max-width:1150px) {
+  .run-slot-heading { flex-wrap: wrap; row-gap: 2px; }
+  .run-slot-row { padding-left: 5px; padding-right: 4px; gap: 6px; }
+  .run-slot-thumbnail { width: 43px; }
+  .run-slot-label>span { font-size: 9px; }
+  .run-slot-count { display: none; }
+  .workspace.history .map-bottom>.running-selection { padding: 13px 15px 8px; }
+  .map-bottom .selection-metrics strong, .map-bottom .selection-fresh strong { font-size: 21px; }
+  .map-bottom .selection-metrics>div:first-child strong { font-size: 26px; }
+  .map-bottom .selection-metrics { gap: 8px; }
+  .map-bottom .selection-metrics>div+div, .map-bottom .selection-fresh { padding-left: 8px; }
+  .map-bottom .selection-metrics small { font-size: 8px; }
+}
+@media (min-width:761px) and (max-width:920px) {
+  .map-bottom .selection-metrics { grid-template-columns: 1fr 1fr; row-gap: 10px; }
+  .map-bottom .selection-metrics>div:nth-child(3) { padding-left: 0; border: 0; }
+}
+@media (max-width:760px) {
+  .running-slot { min-height: 136px; padding: 7px 6px; border-radius: 10px; }
+  .run-slot-heading { padding: 0 3px 4px; gap: 3px; }
+  .run-slot-heading h2 { font-size: 9px; }
+  .run-slot-heading>small { font-size: 7px; }
+  .is-month .run-slot-heading h2 { display: none; }
+  .is-month .run-slot-heading>small { font-size: 9px; }
+  .run-slot-body { gap: 0; }
+  .run-slot-rows { gap: 1px; }
+  .run-slot-row { padding: 2px 4px; gap: 4px; border-radius: 6px; }
+  .run-slot-thumbnail { width: 33px; height: 26px; }
+  .run-thumbnail path { stroke-width: 1.2; }
+  .run-slot-row.active .run-thumbnail path { stroke-width: 1.5; }
+  .run-slot-label { flex: 1; gap: 0; }
+  .run-slot-label>span { font-size: 8px; }
+  .run-slot-label>strong { font-size: 12px; line-height: 1.3; }
+  .run-slot-row.current .run-slot-label>strong { font-size: 14px; }
+  .run-slot-label>strong>small { font-size: 7px; margin-left: 2px; }
+  .run-slot-count { display: none; }
+  .run-slot-controls { padding: 0; }
+  .run-slot-controls>.icon-button { width: 24px; height: 30px; padding: 0; }
+  .run-slot-controls>.icon-button>.icon { width: 11px; height: 11px; }
+  .run-slot-controls>span { height: 15px; }
+  .run-slot-month-empty { font-size: 8px; }
+  .workspace.history .map-bottom { bottom: 19px; }
+  .workspace.history .map-bottom>.running-selection { padding: 9px 12px 6px; border-radius: 11px; }
+  .map-bottom .selection-top { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .map-bottom .selection-metrics { grid-template-columns: 1fr .9fr .92fr 1.3fr; gap: 7px; margin: 0; }
+  .map-bottom .selection-metrics strong { font-size: 17px; letter-spacing: -.6px; }
+  .map-bottom .selection-metrics>div:first-child strong { font-size: 23px; }
+  .map-bottom .selection-fresh strong { font-size: 20px; }
+  .map-bottom .selection-metrics>div+div, .map-bottom .selection-fresh { padding-left: 7px; }
+  .map-bottom .selection-metrics strong .distance-unit { font-size: 8px; margin-left: 2px; }
+  .map-bottom .selection-fresh .approx { font-size: 7px; margin-right: 2px; }
+  .map-bottom .selection-metrics small { font-size: 7px; margin-top: 3px; }
+  .selection-fresh small { gap: 2px; }
+  .selection-fresh small .icon { height: 8px; width: 8px; }
+  .selection-foot { margin-top: 7px; padding-top: 4px; }
+  .selection-foot .running-speed-legend { min-height: 20px; gap: 6px; font-size: 7px; }
+  .selection-foot .speed-scale { width: 75px; }
+  .selection-foot .speed-scale small { font-size: 6px; }
+  .selection-foot .selection-detail { font-size: 9px; padding: 3px 0; }
+  .selection-foot .selection-detail .icon { display: block; }
+  .selection-month-hint { font-size: 8px; }
+  .selection-empty { padding-top: 3px; gap: 5px; }
+  .map-bottom .selection-empty p, .selection-empty .text-button { font-size: 9px; }
+
+  /* On a phone, repeated labels and two calendar toolbars cost the map most
+     of its height. Keep the same content with one calendar toolbar. */
+  .workspace.with-sidebar .running-message { min-height: 32px; padding: 5px 9px; }
+  .running-message p { display: none; }
+  .message-mark { width: 24px; height: 24px; }
+  .workspace.with-sidebar .running-summary-grid .running-month-summary { padding: 7px 10px; }
+  .running-month-label>small, .running-month-distance>.metric-caption { display: none; }
+  .running-month-distance { margin-top: 4px; }
+  .running-month-facts { margin-top: 6px; padding-top: 6px; }
+  .running-slot { min-height: 112px; }
+  .running-summary-grid { grid-template-rows: 124px; }
+  .running-slot { height: 100%; min-height: 0; }
+  .run-slot-row { min-height: 0; }
+  .workspace.with-sidebar .running-calendar { display: grid; grid-template-columns: minmax(0,1fr) auto; column-gap: 8px; row-gap: 5px; }
+  .running-calendar-heading { grid-column: 2; grid-row: 1; margin: 0; }
+  .running-calendar-heading>div:first-child { display: none; }
+  .calendar-period-heading { grid-column: 1; grid-row: 1; margin: 0; }
+  .calendar-blocks { grid-column: 1/-1; }
+  .calendar-footer { display: none; }
+  .calendar-months { margin-bottom: 4px; }
+  .workspace.with-sidebar .running-weather { display: flex; align-items: center; gap: 8px; padding-top: 7px; padding-bottom: 9px; }
+  .running-weather-heading { padding-right: 0; }
+  .running-weather-heading h2 { font-size: 9px; }
+  .weather-location { display: none; }
+  .running-weather-heading>.text-button { top: 9px; font-size: 8px; }
+  .workspace.with-sidebar .running-weather-body { flex: 1; min-width: 0; margin: 0; padding-right: 42px; }
+  .weather-now { width: 100%; gap: 5px; }
+  .weather-now>.icon { width: 18px; height: 18px; }
+  .weather-now small { display: none; }
+  .weather-now-detail { margin-left: auto; gap: 6px; font-size: 8px; }
+  .weather-now-detail>span:last-child { display: none; }
+  .weather-now strong { font-size: 17px; }
+  .running-weather-credit { bottom: -1px; font-size: 6px; }
+  .running-weather-empty { font-size: 8px; padding-right: 34px; min-height: 20px; }
+}
+@media (max-width:760px) and (max-height:740px) {
+  .running-slot { min-height: 110px; padding: 4px; }
+  .run-slot-heading { padding-bottom: 1px; }
+  .run-slot-thumbnail { height: 23px; width: 31px; }
+  .run-slot-label>strong { font-size: 11px; }
+  .run-slot-row.current .run-slot-label>strong { font-size: 12px; }
+  .run-slot-label>span { font-size: 7.5px; }
+  .run-slot-controls>.icon-button { height: 27px; }
+  .workspace.history .map-bottom>.running-selection { padding: 6px 10px 4px; }
+  .map-bottom .selection-metrics>div:first-child strong { font-size: 20px; }
+  .map-bottom .selection-metrics strong, .map-bottom .selection-fresh strong { font-size: 16px; }
+  .selection-foot { margin-top: 4px; padding-top: 3px; }
+  .selection-foot .running-speed-legend { min-height: 18px; }
+  .workspace.with-sidebar .running-dashboard { gap: 5px; }
+  .workspace.with-sidebar .running-summary-grid .running-month-summary { padding: 5px 9px; }
+  .workspace.with-sidebar .running-message { min-height: 29px; padding-top: 3px; padding-bottom: 3px; }
+  .workspace.with-sidebar .running-weather { padding-top: 6px; }
+  .running-summary-grid { grid-template-rows: 112px; }
+  .running-slot { min-height: 0; }
+}
+
+/* The calendar stays directly below the greeting. Below it, the narrow
+   weather column gives its former right half to a taller route list. */
+.workspace.with-sidebar .running-dashboard { grid-template-rows: auto auto minmax(0, 1fr); align-content: stretch; min-height: 0; }
+.running-summary-grid { grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr); grid-template-rows: minmax(0,1fr); min-height: 0; }
+.running-overview-stack { container: running-overview / size; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 14px; }
+.running-overview-stack .running-month-summary { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.running-overview-stack .running-month-distance { display: flex; flex-direction: column; justify-content: center; flex: 1; margin-top: 8px; }
+.running-overview-stack .running-month-distance>strong { font-size: 40px; }
+.running-selected-panel { min-height: 0; }
+.running-summary-grid .running-slot { height: 100%; min-height: 0; }
+.running-summary-grid .run-slot-row { min-height: 0; }
+.running-summary-grid .run-slot-thumbnail { width: 68px; height: 100%; max-height: 48px; }
+.running-summary-grid .run-slot-label { display: flex; flex-direction: row; justify-content: space-between; align-items: baseline; flex: 1; gap: 8px; }
+.running-summary-grid .run-slot-label>span { font-size: 11px; line-height: 1.2; }
+.running-summary-grid .run-slot-label>strong { font-size: 18px; line-height: 1.15; }
+.running-summary-grid .run-slot-row.current .run-slot-label>strong { font-size: 21px; }
+.running-overview-stack .running-weather { flex: none; height: 168px; padding-top: 10px; }
+.running-overview-stack .running-weather-heading { gap: 5px; }
+.running-overview-stack .running-weather-heading h2 { font-size: 12px; }
+.running-overview-stack .weather-location { display: none; }
+.running-overview-stack .running-weather-heading>.text-button { font-size: 9px; }
+.running-overview-stack .running-weather-body { display: flex; flex-direction: column; align-items: stretch; gap: 7px; margin-top: 8px; }
+.running-overview-stack .weather-now { gap: 8px; }
+.running-overview-stack .weather-now>.icon { height: 24px; width: 24px; }
+.running-overview-stack .weather-now>div { display: flex; gap: 7px; align-items: baseline; }
+.running-overview-stack .weather-now strong { font-size: 25px; }
+.running-overview-stack .weather-now small { margin: 0; font-size: 9px; }
+.running-overview-stack .weather-now-detail { font-size: 8px; line-height: 1.7; }
+.running-overview-stack .running-weather-hours { width: 100%; padding: 6px 0 0; border-left: 0; border-top: 1px solid var(--finish-line); gap: 5px; }
+.running-overview-stack .running-weather-hours button { flex-direction: row; gap: 5px; justify-content: center; min-height: 24px; }
+.running-overview-stack .running-weather-hours button>small { font-size: 8px; }
+.running-overview-stack .running-weather-hours button>small:last-child { display: none; }
+.running-overview-stack .running-weather-hours button>span { gap: 3px; }
+.running-overview-stack .running-weather-hours .icon { width: 12px; height: 12px; }
+.running-overview-stack .running-weather-hours strong { font-size: 12px; }
+.running-overview-stack .running-weather-credit { font-size: 7px; margin-top: 6px; }
+.running-overview-stack .running-weather-empty { min-height: 75px; font-size: 10px; gap: 6px; }
+.running-overview-stack .running-weather-empty .text-button { font-size: 9px; }
+@media (min-width:761px) and (max-width:1350px) {
+  .running-summary-grid .run-slot-thumbnail { width: 48px; max-height: 43px; }
+  .running-summary-grid .run-slot-label { flex-direction: column; gap: 1px; }
+  .running-summary-grid .run-slot-label>span { font-size: 10px; }
+  .running-overview-stack .weather-now small { display: none; }
+  .running-overview-stack .running-weather-hours { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .running-overview-stack .running-weather-hours button:nth-child(3) { display: none; }
+  .running-overview-stack .running-weather-hours button { gap: 3px; }
+  .running-overview-stack .running-weather-hours button>span { gap: 2px; }
+}
+@media (min-width:761px) and (max-height:820px) {
+  .running-overview-stack { gap: 10px; }
+  .running-overview-stack .running-weather { height: 142px; padding-top: 7px; }
+  .running-overview-stack .running-weather-body { margin-top: 5px; gap: 4px; }
+  .running-overview-stack .weather-now strong { font-size: 23px; }
+  .running-overview-stack .running-weather-credit { margin-top: 3px; }
+  .running-overview-stack .running-month-distance>strong { font-size: 33px; }
+  .running-summary-grid .run-slot-label>strong { font-size: 17px; }
+  .running-summary-grid .run-slot-row.current .run-slot-label>strong { font-size: 19px; }
+}
+/* Compact the summary according to the space it actually receives. A wide
+   calendar can be tall even on a relatively low desktop viewport. */
+@media (min-width:761px) {
+ @container running-overview (max-height:345px) {
+  .running-summary-grid .running-month-summary { padding: 8px 15px; }
+  .running-overview-stack .running-month-nav { min-height: 26px; }
+  .running-overview-stack .running-month-label>small,
+  .running-overview-stack .running-month-distance>.metric-caption { display: none; }
+  .running-overview-stack .running-month-label h2 { font-size: 20px; }
+  .running-overview-stack .running-month-distance { margin-top: 6px; }
+  .running-overview-stack .running-month-distance>strong { font-size: 30px; }
+  .running-overview-stack .running-month-facts { margin-top: 6px; padding-top: 6px; }
+  .running-overview-stack .running-month-facts>div { gap: 2px; }
+  .running-overview-stack .running-month-facts strong { font-size: 17px; }
+  .running-overview-stack .running-month-facts small { font-size: 8px; }
+  .running-overview-stack .running-weather { height: 142px; padding-top: 7px; }
+  .running-overview-stack .running-weather-body { margin-top: 5px; gap: 4px; }
+  .running-overview-stack .weather-now strong { font-size: 23px; }
+  .running-overview-stack .running-weather-credit { margin-top: 3px; }
+ }
+}
+@media (max-width:760px) {
+  .workspace.with-sidebar .running-dashboard { grid-template-rows: auto auto auto; }
+  .running-summary-grid { grid-template-rows: 166px; grid-template-columns: minmax(0,.95fr) minmax(0,1.05fr); }
+  .running-overview-stack { gap: 7px; }
+  .workspace.with-sidebar .running-overview-stack .running-month-summary { padding: 5px 9px; }
+  .running-overview-stack .running-month-nav { min-height: 24px; }
+  .running-overview-stack .running-month-distance { margin-top: 3px; }
+  .running-overview-stack .running-month-distance>strong { font-size: 25px; }
+  .running-overview-stack .running-month-facts { margin-top: 4px; padding-top: 4px; }
+  .running-overview-stack .running-month-facts>div { gap: 2px; }
+  .running-overview-stack .running-month-facts strong { font-size: 12px; }
+  .running-overview-stack .running-month-facts small { font-size: 6.5px; }
+  .running-summary-grid .running-slot { padding: 6px; }
+  .running-summary-grid .run-slot-heading { padding-bottom: 3px; }
+  .running-summary-grid .run-slot-thumbnail { width: 32px; max-height: 25px; }
+  .running-summary-grid .run-slot-row { padding: 1px 3px; gap: 4px; }
+  .running-summary-grid .run-slot-label { flex-direction: row; gap: 3px; }
+  .running-summary-grid .run-slot-label>span { font-size: 8px; }
+  .running-summary-grid .run-slot-label>strong { font-size: 12px; }
+  .running-summary-grid .run-slot-row.current .run-slot-label>strong { font-size: 13px; }
+  .workspace.with-sidebar .running-overview-stack .running-weather { display: block; height: 57px; padding: 5px 0 0; }
+  .running-overview-stack .running-weather-heading h2 { font-size: 9px; }
+  .running-overview-stack .running-weather-heading>.text-button { position: static; font-size: 8px; }
+  .workspace.with-sidebar .running-overview-stack .running-weather-body { margin-top: 4px; padding: 0; }
+  .running-overview-stack .weather-now { gap: 5px; }
+  .running-overview-stack .weather-now>.icon { width: 17px; height: 17px; }
+  .running-overview-stack .weather-now strong { font-size: 18px; }
+  .running-overview-stack .weather-now small, .running-overview-stack .running-weather-hours { display: none; }
+  .running-overview-stack .weather-now-detail { font-size: 8px; }
+  .running-overview-stack .running-weather-credit { font-size: 6px; bottom: 0; margin: 0; }
+  .running-overview-stack .running-weather-empty { min-height: 28px; padding: 0; font-size: 8px; }
+  .running-overview-stack .running-weather-empty .text-button { font-size: 8px; }
+}
+@media (max-width:760px) and (max-height:740px) {
+  /* Keep the fit action above the summary when the phone's map is short. */
+  .workspace.history:not(.detail) .mp-map__controls .mp-map__fit { position: absolute; top: 0; right: calc(50vw - 28px); width: 32px; height: 32px; padding: 7px; }
+}
+@media (max-width:355px) and (max-height:740px) {
+  .workspace.history:not(.detail) .mp-map__controls .mp-map__fit { right: calc(50vw - 20px); }
+}
