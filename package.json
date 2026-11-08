@@ -11,6 +11,10 @@
     "start": "node scripts/serve.mjs",
     "test": "node --test tests/*.test.mjs",
     "build": "node scripts/build.mjs",
-    "build:public": "node scripts/build.mjs --public"
+    "build:public": "node scripts/build.mjs --public",
+    "prepare:running": "node scripts/prepare-running.mjs",
+    "watch:running": "node scripts/watch-running.mjs",
+    "authorize:running": "node scripts/authorize-running-drive.mjs",
+    "prepare:gas-probe": "node scripts/build-running-gas-probe.mjs"
   }
 }

@@ -39,7 +39,7 @@ npm run build:public
 
 公開用ビルドは、ローカルに記録が存在しても必ず `{"days":[]}` を出力します。実際のGPSや記録を読み込ませません。Vercelもこのコマンドでビルドする設定です。
 
-公開側は空のカレンダー・月間集計から始まり、ルートは表示されません。天気は東京駅周辺の公開サンプル地点を使います。Google Driveの自動同期、ログイン、実GPSのアップロードは実装していません。
+公開側は空のカレンダー・月間集計から始まり、ルートは表示されません。天気は東京駅周辺の公開サンプル地点を使います。公開画面へのログイン・個人データの接続はまだ行っていません。DriveのCSVから表示用データを作る処理は、PCの常駐を必要としないApps Scriptでの実測を準備しています。
 
 日記・呼び名はそのブラウザーに保存され、GitHubやサーバーへは送信しません。ローカル版と公開版のブラウザーデータは自動同期されません。
 
@@ -64,5 +64,12 @@ npm run build:public
 - `scripts/serve.mjs`：ローカル専用サーバー
 - `scripts/build.mjs`：公開ファイルを限定して生成するビルド
 - `api/weather-area.js`：公開側でサンプル地点のみを返すAPI
+- `processing/running/`：元CSVから軽い表示用データを生成する処理。ローカル実行・保存形式・次の連携工程は [処理の説明](processing/running/README.md) を参照してください。
+
+ランニング表示用データの生成は `npm run prepare:running -- --input data/raw` で試せます。入力・出力・キャッシュは `data/` 内だけで扱います。現在の画面の読込先や、Driveの自動処理を切り替えるコマンドではありません。
+
+自動更新は、PCを常駐させずGoogle側で完結する構成を目指しています。まず大きいCSV3件を1日分の制限内で処理できるか、[Apps Scriptの検証キット](processing/running/gas/README.md)で実測します。以前作った `watch:running` はローカル検証用として残していますが、運用方式としては採用していません。公開画面の読込先はまだ変更していません。
+
+**ChatGPTと一緒に検証する場合は、[検証の引き継ぎ・結果の報告](processing/running/gas/HANDOFF.md)から始めてください。** 操作手順、合否の確認方法、Codexに返す結果の書式をまとめています。設定済みコードと個人データはGitHubには含めません。
 
 背景地図は [OpenStreetMap](https://www.openstreetmap.org/copyright)、天気は [Open-Meteo](https://open-meteo.com/) を使います。公開用設定は [Vercelの設定仕様](https://vercel.com/docs/project-configuration/vercel-json)に従っています。
