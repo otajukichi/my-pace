@@ -44,7 +44,7 @@ const sum = runs => ({ runs: runs.length, days: new Set(runs.map(r => r.date)).s
 /** Three-source benchmark assembler. Geometry/statistics come from the same
  * modules as the local converter; tests compare every emitted content hash.
  * This is not a replacement for a sharded, lifetime-history cloud worker. */
-export function assembleProbeArtifacts(runs, fresh, mask, { hash, byteLength }) {
+export function assembleProbeArtifacts(runs, fresh, mask, { hash, byteLength, cached = (kind, key, compute) => compute() }) {
   const objects = new Map(), limit = 128 * 1024, json = x => JSON.stringify(x) + '\n';
   function put(value) {
     const content = json(value), bytes = byteLength(content);
@@ -78,13 +78,15 @@ export function assembleProbeArtifacts(runs, fresh, mask, { hash, byteLength }) 
   }
   const entries = new Map(), overviews = new Map();
   for (const run of runs) {
-    const route = displayRoute(run), { segments, ...base } = route;
+    const display = cached('display', { algorithm: ALGORITHM, run }, () => ({ route: displayRoute(run), overview: displayRoute(run, true),
+      analysis: { schema: 1, kind: 'analysis', id: run.id, summary: run.summary,
+        paceSamples: run.paceSamples.map(p => [p.elapsedSeconds, p.paceSecondsPerKm, p.coverage]),
+        splits: run.splits.map(s => [s.kilometer, s.distanceMeters, s.durationSeconds, s.paceSecondsPerKm, s.coverage, !!s.partial]) } }));
+    const route = display.route, { segments, ...base } = route;
     const routeRefs = pages('route', base, 'segments', pieces(route));
-    const analysis = put({ schema: 1, kind: 'analysis', id: run.id, summary: run.summary,
-      paceSamples: run.paceSamples.map(p => [p.elapsedSeconds, p.paceSecondsPerKm, p.coverage]),
-      splits: run.splits.map(s => [s.kilometer, s.distanceMeters, s.durationSeconds, s.paceSecondsPerKm, s.coverage, !!s.partial]) });
+    const analysis = put(display.analysis);
     entries.set(run.id, listEntry(run, { route: routeRefs, analysis }, run.segments.length ? fresh.get(run.id)?.fresh ?? null : null));
-    const overview = displayRoute(run, true);
+    const overview = display.overview;
     overviews.set(run.id, pieces(overview).map(segment => ({ ...overview, segments: [segment] })));
   }
   const years = {}, months = [...new Set(runs.map(r => r.date.slice(0, 7)))].sort();

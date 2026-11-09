@@ -1,6 +1,6 @@
 # Running display preparation
 
-**Deployment direction:** a PC-resident worker has been rejected for normal operation. The next acceptance step is the [three-large-CSV Apps Script experiment](gas/README.md). Existing Node worker code remains useful for local/reference tests; its OAuth and daemon setup are not the current rollout instructions.
+**Deployment direction:** a PC-resident worker has been rejected for normal operation. The owner reported the [three-large-CSV Apps Script experiment](gas/README.md) passing on Google on 2026-11-09. The next step is the [isolated incremental and 24-hour idle experiment](gas/INCREMENTAL.md). Existing Node worker code remains useful for local/reference tests; its OAuth and daemon setup are not the current rollout instructions.
 
 This directory contains the incremental source-to-display pipeline and a Linux/Node worker for local folders or Google Drive. Routes, summaries, new-road distance and exploration are published as one generation. The worker runs on the user's PC; it is not an Apps Script or always-on Google Cloud deployment. Drive mode requires a separate owner OAuth authorization. The existing UI still reads its old local snapshot until authenticated artifact transport is connected. Old application storage formats are not a dependency.
 
@@ -83,7 +83,7 @@ The exploration mask uses Web Mercator zoom 16, 64 cells per map tile (roughly 8
 
 ## Local worker reference (not the deployment plan)
 
-The previous local-worker setup and operating notes are in [WORKER.md](WORKER.md). Do not follow that OAuth/daemon setup for the Apps Script experiment; use the [verification handoff](gas/HANDOFF.md) instead. The following describes the retained Node reference implementation. No extra npm dependencies are required; Linux `flock` is required:
+The previous local-worker setup and operating notes are in [WORKER.md](WORKER.md). Do not follow that OAuth/daemon setup for the Apps Script experiment; use the [current verification manual](gas/INCREMENTAL.md) instead. The following describes the retained Node reference implementation. No extra npm dependencies are required; Linux `flock` is required:
 
 ```bash
 npm run watch:running -- --input data/raw
@@ -101,9 +101,9 @@ One designated PC owns this output folder. Do not copy its worker state to anoth
 
 ## Remaining boundaries
 
-1. Measure the separate three-CSV Apps Script kit on Google's actual runtime using [the verification manual](gas/README.md). Synthetic HTTP/Drive and Apps Script VM tests are not evidence of real Google performance or successful authorization. The Node worker is not the selected deployment.
+1. Measure incremental updates and idle detection on Google's runtime using [the next verification manual](gas/INCREMENTAL.md). The owner's successful cold three-file benchmark is evidence only for that measured scope. Synthetic HTTP/Drive and Apps Script VM tests do not measure Google performance. The Node worker is not the selected deployment.
 2. Connect the current app to owner-authenticated artifact transport. Public builds remain empty; no raw CSV or prepared GPS is a public static asset.
-3. If the cold three-CSV experiment passes, test incremental ingestion with existing history, then add source discovery and automatic updates on Google. The experiment processes only its three fixed inputs; it is not a production folder watcher. Normal operation must not depend on an always-on PC.
+3. After the isolated incremental experiment, validate larger histories and accept arbitrary new input files before connecting the app. The experiment uses fixed reference files plus synthetic control data; it is not a production folder watcher. Normal operation must not depend on an always-on PC.
 4. Preparation on a changed inventory still reads cached normalized runs and walks metadata/dependency/component indexes. It is not O(1) in lifetime history. Heavy route simplification, GPS rasterization and fresh-distance measurements are cached, but a large connected explored region can still require a contour update. Limits are per new geometry/component (50 million cell visits), total distinct tiles (20,000), and occupied topology cells (2 million). A limit failure retains the previous generation and reports an explicit error.
 5. Old snapshots, completed computation caches and unreferenced immutable objects are retained for recovery. Garbage collection and source retention are not implemented; originals are never deleted. Local and Drive disk usage should be monitored during long-term use.
 

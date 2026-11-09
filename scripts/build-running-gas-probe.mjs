@@ -11,7 +11,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Narrow bundle of audited repository modules, not an arbitrary JS compiler.
  * Synchronous Apps Script storage replaces the two async cache boundaries. */
-export async function bundleProbe(config = null) {
+export async function bundleProbe(config = null, { hostPath = 'processing/running/gas/probe-host.gs', extraRoots = {} } = {}) {
   const modules = new Map(), code = [];
   async function include(file) {
     file = resolve(file);
@@ -36,9 +36,9 @@ export async function bundleProbe(config = null) {
     return name;
   }
   const roots = { MP_CORE: 'processing/running/probe-core.js', MP_DERIVE: 'processing/running/derive.js',
-    MP_INCREMENTAL: 'processing/running/incremental.mjs', MP_MASK: 'processing/running/mask.mjs' };
+    MP_INCREMENTAL: 'processing/running/incremental.mjs', MP_MASK: 'processing/running/mask.mjs', ...extraRoots };
   for (const [alias, path] of Object.entries(roots)) code.push(`const ${alias} = ${await include(join(ROOT, path))};`);
-  const host = (await readFile(join(ROOT, 'processing/running/gas/probe-host.gs'), 'utf8')).replace('__MYPACE_PROBE_CONFIG__', JSON.stringify(config));
+  const host = (await readFile(join(ROOT, hostPath), 'utf8')).replace('__MYPACE_PROBE_CONFIG__', JSON.stringify(config));
   return '// Generated MyPace three-CSV experiment. Keep the configured version private.\n'
     + 'if (!Array.prototype.at) Object.defineProperty(Array.prototype,"at",{value:function(i){i=Math.trunc(i)||0;return this[i<0?this.length+i:i];}});\n'
     + code.join('\n\n') + '\n\n' + host;

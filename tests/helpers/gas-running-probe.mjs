@@ -10,8 +10,8 @@ const blob = value => {
 
 /** Simulates persistence and failures, NOT Google's latency, quota or memory.
  * Each invocation gets a completely new VM, like a cold Apps Script run. */
-export async function gasProbeHarness(config, sourceBytes, { requestMs = 5, beforeRequest, afterRequest } = {}) {
-  const code = await bundleProbe({ ...config, environment: 'simulation' }), files = new Map(), properties = new Map(), requests = [], logs = [];
+export async function gasProbeHarness(config, sourceBytes, { requestMs = 5, beforeRequest, afterRequest, bundledCode, listPageSize = 1000, transformList } = {}) {
+  const code = bundledCode || await bundleProbe({ ...config, environment: 'simulation' }), files = new Map(), properties = new Map(), requests = [], logs = [];
   let sequence = 0, clock = Date.parse('2026-01-01T00:00:00Z'), locked = false;
   const triggers = [{ handler: 'unrelatedExistingTestHandler' }];
   files.set(config.sourceFolder, { meta: { id: config.sourceFolder, mimeType: 'application/vnd.google-apps.folder', ownedByMe: true, shared: false, version: '1' }, bytes: Buffer.alloc(0) });
@@ -27,11 +27,25 @@ export async function gasProbeHarness(config, sourceBytes, { requestMs = 5, befo
   function fetch(url, options = {}) {
     clock += requestMs;
     const uri = new URL(url), method = options.method || 'get', path = uri.pathname.replace(/^\/(?:upload\/)?drive\/v3\//, '');
-    requests.push({ method, path, range: options.headers?.Range });
-    beforeRequest?.({ method, path, options, files });
+    requests.push({ method, path, range: options.headers?.Range, media: uri.searchParams.get('alt') === 'media' });
+    const intercepted = beforeRequest?.({ method, path, options, files, uri });
+    if (intercepted) return response(intercepted.status, intercepted.body || {});
     let answer;
     if (path === 'files/generateIds') answer = response(200, { ids: Array.from({ length: Number(uri.searchParams.get('count')) }, () => 'reserved_' + String(++sequence).padStart(5, '0')) });
-    else if (path === 'files' && method === 'post') {
+    else if (path === 'files' && method === 'get') {
+      const q = uri.searchParams.get('q'), folder = q.match(/^'([\w-]+)' in parents and trashed = false$/)?.[1];
+      if (!folder) throw Error('UNEXPECTED_LIST_QUERY');
+      const matches = [...files.values()].filter(f => f.meta.parents?.includes(folder) && !f.meta.trashed).map(f => f.meta);
+      const start = Number(uri.searchParams.get('pageToken') || 0), next = start + listPageSize;
+      const page = { files: matches.slice(start, next), ...(next < matches.length ? { nextPageToken: String(next) } : {}) };
+      answer = response(200, transformList ? transformList(page, { folder, start, files }) : page);
+    } else if (/^files\/[^/]+\/copy$/.test(path) && method === 'post') {
+      const source = files.get(path.split('/')[1]), metadata = JSON.parse(options.payload);
+      if (!source) return response(404, {});
+      if (files.has(metadata.id)) return response(409, {});
+      const meta = { ...source.meta, ...metadata, ownedByMe: true, shared: false, trashed: false, version: '1' };
+      files.set(meta.id, { meta, bytes: Buffer.from(source.bytes) }); answer = response(200, meta);
+    } else if (path === 'files' && method === 'post') {
       let metadata, content = Buffer.alloc(0);
       if (uri.searchParams.get('uploadType') === 'multipart') {
         const boundary = options.contentType.split('boundary=')[1];
@@ -46,7 +60,13 @@ export async function gasProbeHarness(config, sourceBytes, { requestMs = 5, befo
       const file = files.get(path.slice(6));
       if (!file) return response(404, {});
       if (method === 'patch') {
-        file.bytes = Buffer.from(options.payload); file.meta.size = String(file.bytes.length); file.meta.md5Checksum = md5(file.bytes);
+        if (uri.searchParams.get('uploadType') === 'media') {
+          file.bytes = Buffer.from(options.payload); file.meta.size = String(file.bytes.length); file.meta.md5Checksum = md5(file.bytes);
+        } else {
+          Object.assign(file.meta, JSON.parse(options.payload));
+          if (uri.searchParams.has('removeParents')) file.meta.parents = (file.meta.parents || []).filter(p => p !== uri.searchParams.get('removeParents'));
+          if (uri.searchParams.has('addParents')) file.meta.parents = [...new Set([...(file.meta.parents || []), uri.searchParams.get('addParents')])];
+        }
         file.meta.version = String(Number(file.meta.version) + 1); answer = response(200, file.meta);
       } else if (uri.searchParams.get('alt') === 'media') {
         const range = options.headers?.Range;
@@ -56,7 +76,7 @@ export async function gasProbeHarness(config, sourceBytes, { requestMs = 5, befo
         } else answer = response(200, file.bytes);
       } else answer = response(200, file.meta);
     } else throw Error('UNEXPECTED_TEST_REQUEST');
-    afterRequest?.({ method, path, options, files }); return answer;
+    afterRequest?.({ method, path, options, files, uri }); return answer;
   }
   const api = {
     UrlFetchApp: { fetch },

@@ -15,6 +15,7 @@
     "prepare:running": "node scripts/prepare-running.mjs",
     "watch:running": "node scripts/watch-running.mjs",
     "authorize:running": "node scripts/authorize-running-drive.mjs",
-    "prepare:gas-probe": "node scripts/build-running-gas-probe.mjs"
+    "prepare:gas-probe": "node scripts/build-running-gas-probe.mjs",
+    "prepare:gas-incremental": "node scripts/build-running-gas-incremental.mjs"
   }
 }
