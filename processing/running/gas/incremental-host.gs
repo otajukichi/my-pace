@@ -165,8 +165,10 @@ function miMutateFixture(stage) {
       if (key === 'control') meta = miCreate(metadata, MP_SYNC.controlCsv(false));
       else {
         const original = miMeta(source.id);
-        miAssert(original.ownedByMe && !original.shared && !original.trashed && original.parents?.includes(miConfig().sourceFolder)
-          && Number(original.size) === source.size && original.md5Checksum === source.md5, 'ORIGINAL_SOURCE_CHANGED');
+        const config = miConfig(), diagnosis = MP_SYNC.originalSourceDiagnostics(original, source, config.sourceFolder, config.sources.indexOf(source));
+        if (!diagnosis.passesOriginalGuard) {
+          const error = Error('ORIGINAL_SOURCE_CHANGED'); error.sourceDiagnostics = diagnosis; throw error;
+        }
         meta = miApi('files/' + miId(source.id) + '/copy?ignoreDefaultVisibility=true&fields=' + encodeURIComponent(MI_FIELDS), 'post', metadata);
       }
     }
@@ -410,7 +412,8 @@ function miRun(command) {
     status = 'FUNCTIONAL_PASS'; miStop();
   } catch (error) {
     status = miCode(error);
-    if (status !== 'YIELD') miSet('LAST_ERROR', { code: status, driveReasons: error.driveReasons || [], observedAt: Date.now() });
+    if (status !== 'YIELD') miSet('LAST_ERROR', { code: status, driveReasons: error.driveReasons || [], observedAt: Date.now(),
+      ...(error.sourceDiagnostics ? { sourceDiagnostics: error.sourceDiagnostics } : {}) });
     if (status === 'YIELD') { status = 'IN_PROGRESS'; miCount('scheduledResumes'); }
     else if (['DRIVE_RETRYABLE', 'DRIVE_TRANSPORT_ERROR'].includes(status)) miCount('retryableErrors');
     else miStop();
@@ -440,3 +443,40 @@ function myPaceIncrementalTick() { return miRun('tick'); }
 function startMyPaceIdleProbe() { return miRun('idle'); }
 function stopMyPaceIncrementalProbe() { return miRun('stop'); }
 function showMyPaceIncrementalProbeReport() { return miRun('report'); }
+
+/** Read-only diagnosis, independent of miRun/miFetch: no Drive writes, media
+ * downloads, checkpoint/property updates, budget resets or trigger changes.
+ * Run in the same stopped project, using the unchanged private configuration. */
+function diagnoseMyPaceOriginalSources() {
+  const lock = LockService.getScriptLock(), emit = value => { console.log(JSON.stringify(value, null, 2)); return value; };
+  if (!lock.tryLock(1000)) return emit({ kind: 'original-source-diagnostic', status: 'BUSY' });
+  try {
+    const config = miConfig(), props = PropertiesService.getScriptProperties();
+    const saved = props.getProperty(MI_KEY + '_ROOT'), root = saved ? JSON.parse(saved) : null;
+    const configurationMatchesRun = root ? root.script === ScriptApp.getScriptId() && root.config === mpHash(config) : null;
+    const report = { schema: 1, kind: 'original-source-diagnostic', metadataOnly: true, configurationMatchesRun, sources: [] };
+    if (configurationMatchesRun === false) return emit({ ...report, status: 'DIAGNOSTIC_CONFIG_MISMATCH' });
+    const fields = 'ownedByMe,shared,trashed,parents,size,md5Checksum';
+    for (let index = 0; index < config.sources.length; index++) {
+      const source = config.sources[index]; let response;
+      try {
+        response = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + miId(source.id) + '?fields=' + encodeURIComponent(fields),
+          { method: 'get', muteHttpExceptions: true, followRedirects: false, headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() } });
+      } catch {
+        report.sources.push({ source: index + 1, metadataReadable: false, error: 'METADATA_TRANSPORT_ERROR' }); continue;
+      }
+      const status = response.getResponseCode();
+      if (status !== 200) { report.sources.push({ source: index + 1, metadataReadable: false, error: 'METADATA_HTTP_ERROR', httpStatus: status }); continue; }
+      try {
+        const meta = JSON.parse(response.getContentText('UTF-8'));
+        miAssert(meta && typeof meta === 'object' && !Array.isArray(meta), 'METADATA_RESPONSE_INVALID');
+        report.sources.push({ metadataReadable: true, ...MP_SYNC.originalSourceDiagnostics(meta, source, config.sourceFolder, index) });
+      } catch { report.sources.push({ source: index + 1, metadataReadable: false, error: 'METADATA_RESPONSE_INVALID' }); }
+    }
+    report.status = report.sources.some(s => !s.metadataReadable) ? 'DIAGNOSTIC_INCOMPLETE'
+      : report.sources.some(s => !s.passesOriginalGuard) ? 'ORIGINAL_SOURCE_CHECK_FAILED'
+      : report.sources.some(s => s.missingFields.length || s.invalidFields.length) ? 'METADATA_FIELDS_INCOMPLETE' : 'ORIGINAL_SOURCE_CHECKS_PASSED';
+    return emit(report);
+  } catch { return emit({ schema: 1, kind: 'original-source-diagnostic', status: 'DIAGNOSTIC_SETUP_INVALID' }); }
+  finally { lock.releaseLock(); }
+}

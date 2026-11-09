@@ -36,6 +36,32 @@ export function contentStamp(file) {
   return `${file.size}:${file.md5Checksum}`;
 }
 
+/** Export only predicate results, never metadata values (including hashes,
+ * names, sizes, parents or owner identities). Preserve the existing guard's
+ * boolean semantics; missing fields are reported separately, not guessed. */
+export function originalSourceDiagnostics(meta, expected, folder, index) {
+  const validators = {
+    ownedByMe: value => typeof value === 'boolean',
+    shared: value => typeof value === 'boolean',
+    trashed: value => typeof value === 'boolean',
+    parents: value => Array.isArray(value) && value.every(id => typeof id === 'string'),
+    size: value => (typeof value === 'string' && /^\d+$/.test(value) || typeof value === 'number') && Number.isSafeInteger(Number(value)) && Number(value) >= 0,
+    md5Checksum: value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value),
+  };
+  const checks = {
+    ownedByMe: !!meta.ownedByMe,
+    notShared: !meta.shared,
+    notTrashed: !meta.trashed,
+    parentMatches: Array.isArray(meta.parents) && meta.parents.includes(folder),
+    sizeMatches: Number(meta.size) === expected.size,
+    md5Matches: meta.md5Checksum === expected.md5,
+  };
+  const missingFields = Object.keys(validators).filter(key => meta[key] === undefined || meta[key] === null);
+  const invalidFields = Object.keys(validators).filter(key => !missingFields.includes(key) && !validators[key](meta[key]));
+  return { source: index + 1, checks, failedChecks: Object.keys(checks).filter(key => !checks[key]),
+    missingFields, invalidFields, passesOriginalGuard: Object.values(checks).every(Boolean) };
+}
+
 /** Keys are real Drive IDs; ordering, renames, and metadata versions are not
  * content changes. Publication can still retain the updated names. */
 export function inventoryDiff(previous, current) {

@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildIncrementalConfig, bundleIncrementalProbe } from '../scripts/build-running-gas-incremental.mjs';
-import { inventoryDiff, syncStages } from '../processing/running/sync-probe.js';
+import { inventoryDiff, syncStages, originalSourceDiagnostics } from '../processing/running/sync-probe.js';
 import { gasProbeHarness } from './helpers/gas-running-probe.mjs';
 
 const KEY = 'MYPACE_INCREMENTAL_V1_', HANDLER = 'myPaceIncrementalTick';
@@ -37,6 +37,128 @@ test('metadata comparison distinguishes content changes, rename, add and removal
   const f = (name, md5 = 'a'.repeat(32)) => ({ name, size: '100', md5Checksum: md5 });
   const d = inventoryDiff({ a: f('before'), b: f('b'), c: f('c') }, { a: f('after'), b: f('b', 'b'.repeat(32)), d: f('d') });
   assert.deepEqual(d, { added: ['d'], changed: ['b'], removed: ['c'], renamed: ['a'], contentChanged: true });
+});
+
+test('original-source diagnostics distinguish all six guard failures without revealing metadata values', () => {
+  const folder = 'synthetic-private-parent', expected = { size: 987654321, md5: 'abcdef12'.repeat(4) };
+  const meta = { ownedByMe: true, shared: false, trashed: false, parents: [folder], size: String(expected.size), md5Checksum: expected.md5,
+    id: 'synthetic-private-id', name: 'synthetic-private-name', owners: [{ emailAddress: 'private@example.invalid' }], description: 'private-gps-sentinel' };
+  const ok = originalSourceDiagnostics(meta, expected, folder, 2);
+  assert.equal(ok.source, 3); assert.equal(ok.passesOriginalGuard, true);
+  assert.deepEqual(ok.failedChecks, []); assert.deepEqual(ok.missingFields, []); assert.deepEqual(ok.invalidFields, []);
+  const cases = [
+    ['ownedByMe', { ownedByMe: false }], ['notShared', { shared: true }], ['notTrashed', { trashed: true }],
+    ['parentMatches', { parents: ['another-synthetic-parent'] }], ['sizeMatches', { size: '987654322' }], ['md5Matches', { md5Checksum: 'b'.repeat(32) }],
+  ];
+  const reports = [ok];
+  for (const [check, patch] of cases) {
+    const result = originalSourceDiagnostics({ ...meta, ...patch }, expected, folder, 2);
+    assert.deepEqual(result.failedChecks, [check]); assert.equal(result.passesOriginalGuard, false); reports.push(result);
+  }
+  const missing = originalSourceDiagnostics({}, expected, folder, 0);
+  assert.deepEqual(missing.missingFields, ['ownedByMe', 'shared', 'trashed', 'parents', 'size', 'md5Checksum']);
+  // Retain the old !shared / !trashed semantics while explicitly reporting absence.
+  assert.equal(missing.checks.notShared, true); assert.equal(missing.checks.notTrashed, true);
+  const invalid = originalSourceDiagnostics({ ...meta, shared: 'false', parents: folder, size: 'invalid-size', md5Checksum: 'invalid-hash' }, expected, folder, 0);
+  assert.deepEqual(invalid.invalidFields, ['shared', 'parents', 'size', 'md5Checksum']);
+  const text = JSON.stringify([...reports, missing, invalid]);
+  for (const secret of [folder, expected.md5, String(expected.size), meta.id, meta.name, meta.owners[0].emailAddress, meta.description, 'another-synthetic-parent', 'invalid-size', 'invalid-hash']) assert(!text.includes(secret));
+});
+
+const snapshot = h => structuredClone({ files: [...h.files], properties: [...h.properties], triggers: h.triggers });
+const plain = value => JSON.parse(JSON.stringify(value));
+
+test('a stopped original-source failure is diagnosed read-only, preserving the checkpoint, budget, triggers and originals', async t => {
+  const { h, config } = await fixture(t);
+  for (const s of config.sources) h.files.get(s.id).meta.trashed = false;
+  h.files.get(config.sources[0].id).meta.shared = true;
+  h.files.get(config.sources[0].id).meta.parents = ['synthetic-wrong-parent'];
+  h.invoke('startMyPaceIncrementalProbe'); tick(h);
+  const failure = h.invoke('showMyPaceIncrementalProbeReport');
+  assert.equal(failure.status, 'ORIGINAL_SOURCE_CHANGED'); assert.equal(failure.completedStages, 0);
+  assert.deepEqual(plain(failure.lastError.sourceDiagnostics.failedChecks), ['notShared', 'parentMatches']);
+  assert.equal(failure.lastError.sourceDiagnostics.source, 1);
+  assert(!h.triggers.some(t => t.handler === HANDLER)); assert(!h.requests.some(r => r.path.endsWith('/copy')));
+  const before = snapshot(h), start = h.requests.length;
+  const report = h.invoke('diagnoseMyPaceOriginalSources');
+  assert.equal(report.status, 'ORIGINAL_SOURCE_CHECK_FAILED'); assert.equal(report.configurationMatchesRun, true);
+  assert.equal(report.metadataOnly, true); assert.equal(report.sources.length, 3);
+  assert.deepEqual(plain(report.sources[0].failedChecks), ['notShared', 'parentMatches']);
+  assert(report.sources.slice(1).every(s => s.passesOriginalGuard));
+  assert.deepEqual(snapshot(h), before);
+  const requests = h.requests.slice(start);
+  assert.equal(requests.length, 3); assert(requests.every(r => r.method === 'get' && !r.media && !r.range));
+  assert.deepEqual(requests.map(r => r.path), config.sources.map(s => 'files/' + s.id));
+  for (const s of config.sources) assert(!JSON.stringify(h.logs).includes(s.id) && !JSON.stringify(h.logs).includes(s.md5));
+  assert(!JSON.stringify(h.logs).includes(config.sourceFolder));
+});
+
+test('standalone diagnosis uses only six metadata fields and does not initialise or restart processing', async t => {
+  const requests = [];
+  const { h, config } = await fixture(t, { beforeRequest({ uri, options }) { requests.push({ fields: uri.searchParams.get('fields'), options }); } });
+  for (const s of config.sources) h.files.get(s.id).meta.trashed = false;
+  const before = snapshot(h), report = h.invoke('diagnoseMyPaceOriginalSources');
+  assert.equal(report.status, 'ORIGINAL_SOURCE_CHECKS_PASSED'); assert.equal(report.configurationMatchesRun, null);
+  assert.deepEqual(snapshot(h), before); assert.equal(requests.length, 3);
+  for (const { fields, options } of requests) {
+    assert.equal(fields, 'ownedByMe,shared,trashed,parents,size,md5Checksum');
+    assert.equal(options.method, 'get'); assert.equal(options.followRedirects, false); assert.equal(options.payload, undefined);
+  }
+  delete h.files.get(config.sources[0].id).meta.trashed;
+  const incomplete = h.invoke('diagnoseMyPaceOriginalSources');
+  assert.equal(incomplete.status, 'METADATA_FIELDS_INCOMPLETE');
+  assert.deepEqual(plain(incomplete.sources[0].missingFields), ['trashed']);
+});
+
+test('diagnosis reports metadata retrieval failures safely and continues to the other sources', async t => {
+  let fault;
+  const secret = 'synthetic-private-response-do-not-log';
+  const { h, config } = await fixture(t, { beforeRequest({ path }) {
+    if (path !== 'files/private-test-source-0') return;
+    if (fault === 'transport') throw Error(secret);
+    return fault;
+  } });
+  for (const s of config.sources) h.files.get(s.id).meta.trashed = false;
+  const before = snapshot(h);
+  for (const [response, error, status] of [
+    [{ status: 403, body: { error: { message: secret } } }, 'METADATA_HTTP_ERROR', 403],
+    [{ status: 404, body: { error: { message: secret } } }, 'METADATA_HTTP_ERROR', 404],
+    [{ status: 200, body: Buffer.from(secret) }, 'METADATA_RESPONSE_INVALID'],
+    [{ status: 200, body: [secret] }, 'METADATA_RESPONSE_INVALID'],
+    ['transport', 'METADATA_TRANSPORT_ERROR'],
+  ]) {
+    fault = response; const start = h.requests.length, report = h.invoke('diagnoseMyPaceOriginalSources');
+    assert.equal(report.status, 'DIAGNOSTIC_INCOMPLETE'); assert.equal(report.sources.length, 3);
+    assert.equal(report.sources[0].metadataReadable, false); assert.equal(report.sources[0].error, error);
+    assert.equal(report.sources[0].httpStatus, status);
+    assert.equal(report.sources[0].checks, undefined);
+    assert(report.sources.slice(1).every(s => s.metadataReadable && s.passesOriginalGuard));
+    assert.equal(h.requests.length - start, 3); assert.deepEqual(snapshot(h), before);
+  }
+  assert(!JSON.stringify(h.logs).includes(secret));
+});
+
+test('diagnosis refuses a changed project/configuration without requests, state changes or raw errors', async t => {
+  const { h } = await fixture(t); h.invoke('startMyPaceIncrementalProbe'); h.invoke('stopMyPaceIncrementalProbe');
+  const saved = JSON.parse(h.properties.get(KEY + 'ROOT'));
+  for (const patch of [{ config: 'synthetic-private-config-hash' }, { script: 'synthetic-private-other-project' }]) {
+    h.properties.set(KEY + 'ROOT', JSON.stringify({ ...saved, ...patch }));
+    const before = snapshot(h), start = h.requests.length, report = h.invoke('diagnoseMyPaceOriginalSources');
+    assert.equal(report.status, 'DIAGNOSTIC_CONFIG_MISMATCH'); assert.equal(report.configurationMatchesRun, false);
+    assert.equal(report.sources.length, 0); assert.equal(h.requests.length, start); assert.deepEqual(snapshot(h), before);
+  }
+  h.properties.set(KEY + 'ROOT', 'synthetic-private-invalid-json');
+  const before = snapshot(h), start = h.requests.length;
+  assert.equal(h.invoke('diagnoseMyPaceOriginalSources').status, 'DIAGNOSTIC_SETUP_INVALID');
+  assert.equal(h.requests.length, start); assert.deepEqual(snapshot(h), before);
+  assert(!/synthetic-private/.test(JSON.stringify(h.logs)));
+});
+
+test('diagnosis respects the running script lock and never changes an existing trigger', async t => {
+  const { h } = await fixture(t); h.invoke('startMyPaceIncrementalProbe');
+  const before = snapshot(h), start = h.requests.length;
+  const report = h.invoke('diagnoseMyPaceOriginalSources', { LockService: { getScriptLock: () => ({ tryLock: () => false }) } });
+  assert.equal(report.status, 'BUSY'); assert.equal(h.requests.length, start); assert.deepEqual(snapshot(h), before);
 });
 
 test('isolated cloud lifecycle matches independent full rebuilds through all twelve stages', async t => {
