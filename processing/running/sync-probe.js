@@ -36,10 +36,33 @@ export function contentStamp(file) {
   return `${file.size}:${file.md5Checksum}`;
 }
 
+/** Follow actual parent links only; never search other folders or follow
+ * shortcuts. Returned evidence contains no IDs. The reader may cache metadata
+ * for this invocation, but must throw on unreadable/invalid API responses. */
+export function sourceFolderLocation(meta, folder, readFolder) {
+  let parents = meta.parents, depth = 0;
+  const seen = new Set(), result = (status, withinConfiguredFolder) => ({ status, withinConfiguredFolder,
+    ...(withinConfiguredFolder ? { subfolderDepth: depth } : {}) });
+  while (true) {
+    if (Array.isArray(parents) && parents.length === 0) return result('OUTSIDE', false);
+    if (!Array.isArray(parents) || parents.length !== 1 || typeof parents[0] !== 'string' || !/^[\w-]+$/.test(parents[0])) return result('INVALID_PARENTS', false);
+    const parent = parents[0];
+    if (parent === folder) return result(depth ? 'DESCENDANT' : 'DIRECT', true);
+    if (seen.has(parent)) return result('ANCESTRY_CYCLE', false);
+    if (depth >= 16) return result('ANCESTRY_DEPTH_LIMIT', false);
+    seen.add(parent);
+    const ancestor = readFolder(parent); depth++;
+    if (!ancestor || ancestor.mimeType !== 'application/vnd.google-apps.folder' || ancestor.trashed !== false) return result('INVALID_FOLDER', false);
+    // My Drive root has no parents. Missing parents there cannot establish a
+    // connection to the configured folder, and never implies membership.
+    parents = ancestor.parents === undefined ? [] : ancestor.parents;
+  }
+}
+
 /** Export only predicate results, never metadata values (including hashes,
- * names, sizes, parents or owner identities). Preserve the existing guard's
- * boolean semantics; missing fields are reported separately, not guessed. */
-export function originalSourceDiagnostics(meta, expected, folder, index) {
+ * names, sizes, parents or owner identities). The optional reader verifies
+ * subfolder membership without weakening the configured source boundary. */
+export function originalSourceDiagnostics(meta, expected, folder, index, readFolder) {
   const validators = {
     ownedByMe: value => typeof value === 'boolean',
     shared: value => typeof value === 'boolean',
@@ -48,17 +71,20 @@ export function originalSourceDiagnostics(meta, expected, folder, index) {
     size: value => (typeof value === 'string' && /^\d+$/.test(value) || typeof value === 'number') && Number.isSafeInteger(Number(value)) && Number(value) >= 0,
     md5Checksum: value => typeof value === 'string' && /^[a-f0-9]{32}$/.test(value),
   };
+  const directParentMatches = Array.isArray(meta.parents) && meta.parents.length === 1 && meta.parents[0] === folder;
+  const location = readFolder ? sourceFolderLocation(meta, folder, readFolder) : null;
   const checks = {
     ownedByMe: !!meta.ownedByMe,
     notShared: !meta.shared,
     notTrashed: !meta.trashed,
-    parentMatches: Array.isArray(meta.parents) && meta.parents.includes(folder),
+    parentMatches: location ? location.withinConfiguredFolder : directParentMatches,
     sizeMatches: Number(meta.size) === expected.size,
     md5Matches: meta.md5Checksum === expected.md5,
   };
   const missingFields = Object.keys(validators).filter(key => meta[key] === undefined || meta[key] === null);
   const invalidFields = Object.keys(validators).filter(key => !missingFields.includes(key) && !validators[key](meta[key]));
-  return { source: index + 1, checks, failedChecks: Object.keys(checks).filter(key => !checks[key]),
+  return { source: index + 1, ...(location ? { directParentMatches, folderLocation: location } : {}),
+    checks, failedChecks: Object.keys(checks).filter(key => !checks[key]),
     missingFields, invalidFields, passesOriginalGuard: Object.values(checks).every(Boolean) };
 }
 

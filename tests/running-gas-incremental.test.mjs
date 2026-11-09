@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildIncrementalConfig, bundleIncrementalProbe } from '../scripts/build-running-gas-incremental.mjs';
-import { inventoryDiff, syncStages, originalSourceDiagnostics } from '../processing/running/sync-probe.js';
+import { inventoryDiff, syncStages, originalSourceDiagnostics, sourceFolderLocation } from '../processing/running/sync-probe.js';
 import { gasProbeHarness } from './helpers/gas-running-probe.mjs';
 
 const KEY = 'MYPACE_INCREMENTAL_V1_', HANDLER = 'myPaceIncrementalTick';
@@ -68,11 +68,99 @@ test('original-source diagnostics distinguish all six guard failures without rev
 const snapshot = h => structuredClone({ files: [...h.files], properties: [...h.properties], triggers: h.triggers });
 const plain = value => JSON.parse(JSON.stringify(value));
 
+test('source membership follows bounded real folder ancestry and rejects unrelated, invalid, trashed or cyclic paths', () => {
+  const folder = parents => ({ mimeType: 'application/vnd.google-apps.folder', trashed: false, parents });
+  const tree = new Map([
+    ['child', folder(['configured-root'])], ['grandchild', folder(['child'])], ['outside', folder([])],
+    ['cycle-a', folder(['cycle-b'])], ['cycle-b', folder(['cycle-a'])],
+    ['shortcut', { mimeType: 'application/vnd.google-apps.shortcut', trashed: false, parents: ['configured-root'] }],
+    ['trashed', { ...folder(['configured-root']), trashed: true }],
+    ['ambiguous', folder(['configured-root', 'outside'])], ['unknown-state', { mimeType: 'application/vnd.google-apps.folder', parents: ['configured-root'] }],
+  ]);
+  const cases = [
+    [['configured-root'], 'DIRECT', 0], [['child'], 'DESCENDANT', 1], [['grandchild'], 'DESCENDANT', 2],
+    [['outside'], 'OUTSIDE'], [['cycle-a'], 'ANCESTRY_CYCLE'], [['shortcut'], 'INVALID_FOLDER'], [['trashed'], 'INVALID_FOLDER'],
+    [['ambiguous'], 'INVALID_PARENTS'], [['unknown-state'], 'INVALID_FOLDER'], [[], 'OUTSIDE'], [undefined, 'INVALID_PARENTS'],
+    [['configured-root', 'outside'], 'INVALID_PARENTS'], [['bad/id'], 'INVALID_PARENTS'],
+  ];
+  for (const [parents, status, depth] of cases) {
+    const result = sourceFolderLocation({ parents }, 'configured-root', id => tree.get(id));
+    assert.equal(result.status, status); assert.equal(result.withinConfiguredFolder, depth !== undefined);
+    assert.equal(result.subfolderDepth, depth);
+    assert(!/configured-root|grandchild|cycle-a|cycle-b/.test(JSON.stringify(result)));
+  }
+  let reads = 0;
+  const limited = sourceFolderLocation({ parents: ['level-0'] }, 'configured-root', () => folder(['level-' + ++reads]));
+  assert.equal(limited.status, 'ANCESTRY_DEPTH_LIMIT'); assert.equal(reads, 16);
+  assert.throws(() => sourceFolderLocation({ parents: ['child'] }, 'configured-root', () => { throw Error('METADATA_HTTP_ERROR'); }), /METADATA_HTTP_ERROR/);
+});
+
+function nestSources(h, config) {
+  h.files.set('synthetic-child-folder', { meta: { mimeType: 'application/vnd.google-apps.folder', trashed: false, parents: [config.sourceFolder] }, bytes: Buffer.alloc(0) });
+  for (const s of config.sources) Object.assign(h.files.get(s.id).meta, { parents: ['synthetic-child-folder'], trashed: false });
+}
+
+test('nested originals pass read-only diagnosis with one extra folder GET, then resume through all stages without changing configuration', async t => {
+  const { h, config, sourceBytes } = await fixture(t); nestSources(h, config);
+  h.invoke('startMyPaceIncrementalProbe'); h.invoke('stopMyPaceIncrementalProbe');
+  const before = snapshot(h), start = h.requests.length, report = h.invoke('diagnoseMyPaceOriginalSources');
+  assert.equal(report.schema, 2); assert.equal(report.configurationMatchesRun, true);
+  assert.equal(report.status, 'ORIGINAL_SOURCE_CHECKS_PASSED');
+  for (const source of report.sources) {
+    assert.equal(source.directParentMatches, false); assert.equal(source.checks.parentMatches, true);
+    assert.equal(source.folderLocation.status, 'DESCENDANT'); assert.equal(source.folderLocation.subfolderDepth, 1);
+    assert.equal(source.passesOriginalGuard, true);
+  }
+  assert.deepEqual(snapshot(h), before);
+  const reads = h.requests.slice(start); assert.equal(reads.length, 4);
+  assert(reads.every(r => r.method === 'get' && !r.media && !r.range));
+  assert.equal(reads.filter(r => r.path === 'files/synthetic-child-folder').length, 1);
+  h.invoke('startMyPaceIncrementalProbe'); assert.equal(finish(h).functionalPassed, true);
+  for (const [id, bytes] of sourceBytes) {
+    assert.deepEqual(h.files.get(id).bytes, bytes);
+    assert.deepEqual(h.files.get(id).meta.parents, ['synthetic-child-folder']);
+  }
+  assert.equal(h.properties.get(KEY + 'ROOT'), before.properties.find(([key]) => key === KEY + 'ROOT')[1]);
+  assert(!/synthetic-child-folder|private-test-source|private-test-folder/.test(JSON.stringify(h.logs)));
+});
+
+test('unreadable ancestor metadata never permits a copy and is diagnosed without losing other source results', async t => {
+  const { h, config } = await fixture(t, { beforeRequest({ path }) {
+    if (path === 'files/synthetic-child-folder') return { status: 403, body: { error: { message: 'private-ancestor-body' } } };
+  } });
+  nestSources(h, config);
+  for (const s of config.sources.slice(1)) h.files.get(s.id).meta.parents = [config.sourceFolder];
+  const before = snapshot(h), report = h.invoke('diagnoseMyPaceOriginalSources');
+  assert.equal(report.status, 'DIAGNOSTIC_INCOMPLETE');
+  assert.equal(report.sources[0].metadataReadable, true); assert.equal(report.sources[0].folderMetadataReadable, false);
+  assert.equal(report.sources[0].httpStatus, 403); assert(report.sources.slice(1).every(s => s.passesOriginalGuard));
+  assert.deepEqual(snapshot(h), before);
+  h.invoke('startMyPaceIncrementalProbe'); tick(h);
+  assert.equal(status(h), 'DRIVE_HTTP_403'); assert(!h.requests.some(r => r.path.endsWith('/copy')));
+  assert(!JSON.stringify(h.logs).includes('private-ancestor-body'));
+});
+
+test('ancestor membership is re-read in the next invocation and moving it outside blocks later copies', async t => {
+  const { h, config } = await fixture(t); nestSources(h, config);
+  h.invoke('startMyPaceIncrementalProbe');
+  while (!h.state?.catalogHash) tick(h);
+  const copiedBeforeMove = h.requests.filter(r => r.path.endsWith('/copy')).length;
+  assert(copiedBeforeMove > 0 && copiedBeforeMove < config.sources.length);
+  h.files.get('synthetic-child-folder').meta.parents = [];
+  while (h.triggers.some(t => t.handler === HANDLER)) tick(h);
+  assert.equal(status(h), 'ORIGINAL_SOURCE_CHANGED');
+  const report = h.invoke('showMyPaceIncrementalProbeReport');
+  assert.deepEqual(plain(report.lastError.sourceDiagnostics.failedChecks), ['parentMatches']);
+  assert.equal(report.lastError.sourceDiagnostics.folderLocation.status, 'OUTSIDE');
+  assert.equal(h.requests.filter(r => r.path.endsWith('/copy')).length, copiedBeforeMove);
+});
+
 test('a stopped original-source failure is diagnosed read-only, preserving the checkpoint, budget, triggers and originals', async t => {
   const { h, config } = await fixture(t);
   for (const s of config.sources) h.files.get(s.id).meta.trashed = false;
   h.files.get(config.sources[0].id).meta.shared = true;
   h.files.get(config.sources[0].id).meta.parents = ['synthetic-wrong-parent'];
+  h.files.set('synthetic-wrong-parent', { meta: { mimeType: 'application/vnd.google-apps.folder', trashed: false, parents: [] }, bytes: Buffer.alloc(0) });
   h.invoke('startMyPaceIncrementalProbe'); tick(h);
   const failure = h.invoke('showMyPaceIncrementalProbeReport');
   assert.equal(failure.status, 'ORIGINAL_SOURCE_CHANGED'); assert.equal(failure.completedStages, 0);
@@ -87,8 +175,8 @@ test('a stopped original-source failure is diagnosed read-only, preserving the c
   assert(report.sources.slice(1).every(s => s.passesOriginalGuard));
   assert.deepEqual(snapshot(h), before);
   const requests = h.requests.slice(start);
-  assert.equal(requests.length, 3); assert(requests.every(r => r.method === 'get' && !r.media && !r.range));
-  assert.deepEqual(requests.map(r => r.path), config.sources.map(s => 'files/' + s.id));
+  assert.equal(requests.length, 4); assert(requests.every(r => r.method === 'get' && !r.media && !r.range));
+  assert.deepEqual(requests.map(r => r.path).filter(p => p !== 'files/synthetic-wrong-parent'), config.sources.map(s => 'files/' + s.id));
   for (const s of config.sources) assert(!JSON.stringify(h.logs).includes(s.id) && !JSON.stringify(h.logs).includes(s.md5));
   assert(!JSON.stringify(h.logs).includes(config.sourceFolder));
 });
