@@ -11,7 +11,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Narrow bundle of audited repository modules, not an arbitrary JS compiler.
  * Synchronous Apps Script storage replaces the two async cache boundaries. */
-export async function bundleProbe(config = null, { hostPath = 'processing/running/gas/probe-host.gs', extraRoots = {} } = {}) {
+export async function bundleProbe(config = null, { hostPath = 'processing/running/gas/probe-host.gs', hostPaths, extraRoots = {} } = {}) {
   const modules = new Map(), code = [];
   async function include(file) {
     file = resolve(file);
@@ -38,7 +38,11 @@ export async function bundleProbe(config = null, { hostPath = 'processing/runnin
   const roots = { MP_CORE: 'processing/running/probe-core.js', MP_DERIVE: 'processing/running/derive.js',
     MP_INCREMENTAL: 'processing/running/incremental.mjs', MP_MASK: 'processing/running/mask.mjs', ...extraRoots };
   for (const [alias, path] of Object.entries(roots)) code.push(`const ${alias} = ${await include(join(ROOT, path))};`);
-  const host = (await readFile(join(ROOT, hostPath), 'utf8')).replace('__MYPACE_PROBE_CONFIG__', JSON.stringify(config));
+  const template = (await Promise.all((hostPaths || [hostPath]).map(path => readFile(join(ROOT, path), 'utf8')))).join('\n\n');
+  // Fingerprint public processing code only. Private settings never appear in
+  // the printable build identifier, and do not change an existing run identity.
+  const buildId = 'gas-' + hash(code.join('\n\n') + '\n' + template).slice(0, 24);
+  const host = template.replace('__MYPACE_PROBE_CONFIG__', JSON.stringify(config)).replaceAll('__MYPACE_BUILD_ID__', JSON.stringify(buildId));
   return '// Generated MyPace three-CSV experiment. Keep the configured version private.\n'
     + 'if (!Array.prototype.at) Object.defineProperty(Array.prototype,"at",{value:function(i){i=Math.trunc(i)||0;return this[i<0?this.length+i:i];}});\n'
     + code.join('\n\n') + '\n\n' + host;

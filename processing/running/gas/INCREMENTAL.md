@@ -1,10 +1,8 @@
 # 次の検証：変更の検出・差分更新・24時間の待機コスト
 
-**`ORIGINAL_SOURCE_CHANGED` で停止している場合は、まず[診断専用の手順](DIAGNOSTICS.md)へ進んでください。以下の開始・再開操作はまだ行いません。**
+**この検証は利用者のGoogle実行で合格と報告されています。** 12段階は2026年11月9日、24時間アイドルは11月11日に完了しました。[結果と留保](RESULTS.md)を参照してください。次に実行する手順は[継続同期検証](DISCOVERY.md)です。この文書は前段階の仕様・手順として残します。
 
-3件とも `parentMatches` だけが不成立だった今回のケースは、原因確認と修正を行いました。[サブフォルダ対応後の確認・再開手順](SUBFOLDER-FIX.md)を使ってください。
-
-前回の大きいCSV3件の初回変換は、2026年11月9日に利用者がGoogle Apps Scriptで実行し、`TARGET_MET`・全出力の照合一致・時間切れなしと報告しました。今回のコードは、その次の検証です。**今回の差分更新キットのGoogle上での実測は、これから行います。**
+過去の `ORIGINAL_SOURCE_CHANGED` は、原本が設定フォルダ直下ではなくサブフォルダ内にあったためでした。[診断](DIAGNOSTICS.md)と[修正](SUBFOLDER-FIX.md)後に再開して合格しています。
 
 PCの常駐サーバーは使いません。既存アプリ、旧Apps Script、前回の検証プロジェクト、元CSVを切り替えたり書き換えたりしません。本番への接続は今回の検証が済んだ後の工程です。
 
@@ -89,7 +87,7 @@ npm run prepare:gas-incremental -- --manifest data/running-gas-selection.json
 
 ## 第1段階の結果
 
-**`showMyPaceIncrementalProbeReport`** を実行すると、GPS・Drive IDを含まない集計JSONがログに出ます。
+**`showMyPaceIncrementalProbeReport`** を実行すると、GPS・Drive IDを含まない集計JSONがログに出ます。現在のリポジトリ版では短い集計を標準とし、全段階は `showMyPaceIncrementalProbeDetails`、アイドル集計だけなら `showMyPaceIdleMinutes` を使います。新規実行の合格結果は `completedOutcomes` に別保存し、停止しても残します。合格済みGoogleプロジェクトや手元の旧キットは自動更新していません。
 
 - `FUNCTIONAL_PASS`、`functionalPassed: true`、`completedStages: 12` が合格の目安。
 - `results` の全段階が `matched: true`。
@@ -180,7 +178,7 @@ Googleの実行履歴：
 MyPaceの次の検証を一緒に進めてください。
 リンク先の processing/running/gas/INCREMENTAL.md を読んで、
 新規Apps Scriptへの設定 → 差分更新の12段階 → 合格後の24時間監視を案内してください。
-前回の3件CSV変換は合格していますが、今回のGoogle実測はまだです。
+前回の3件CSV変換は合格していますが、この前段階は合格済みです。新しい検証はDISCOVERY.mdを使ってください。
 設定済みコードはPCの data/running-gas-incremental/ にあります。
 個人データをチャットへ貼ったり、旧プロジェクトや原本を編集したりする必要はありません。
 最後に、この文書の書式でCodexに返す結果をまとめてください。

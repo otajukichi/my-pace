@@ -1,6 +1,6 @@
 # Running display preparation
 
-**Deployment direction:** a PC-resident worker has been rejected for normal operation. The owner reported the [three-large-CSV Apps Script experiment](gas/README.md) passing on Google on 2026-11-09. The next step is the [isolated incremental and 24-hour idle experiment](gas/INCREMENTAL.md). Existing Node worker code remains useful for local/reference tests; its OAuth and daemon setup are not the current rollout instructions.
+**Deployment direction:** a PC-resident worker has been rejected for normal operation. The owner reported the [three-large-CSV Apps Script experiment](gas/README.md) passing on Google on 2026-11-09. The owner also reported the incremental and 24-hour idle experiments passing on Google (see [received results](gas/RESULTS.md)). The next step is the [isolated discovery experiment](gas/DISCOVERY.md), which accepts CSVs without precomputed chunk checksums. Existing Node worker code remains useful for local/reference tests; its OAuth and daemon setup are not the current rollout instructions.
 
 This directory contains the incremental source-to-display pipeline and a Linux/Node worker for local folders or Google Drive. Routes, summaries, new-road distance and exploration are published as one generation. The worker runs on the user's PC; it is not an Apps Script or always-on Google Cloud deployment. Drive mode requires a separate owner OAuth authorization. The existing UI still reads its old local snapshot until authenticated artifact transport is connected. Old application storage formats are not a dependency.
 
@@ -83,7 +83,7 @@ The exploration mask uses Web Mercator zoom 16, 64 cells per map tile (roughly 8
 
 ## Local worker reference (not the deployment plan)
 
-The previous local-worker setup and operating notes are in [WORKER.md](WORKER.md). Do not follow that OAuth/daemon setup for the Apps Script experiment; use the [current verification manual](gas/INCREMENTAL.md) instead. The following describes the retained Node reference implementation. No extra npm dependencies are required; Linux `flock` is required:
+The previous local-worker setup and operating notes are in [WORKER.md](WORKER.md). Do not follow that OAuth/daemon setup for the Apps Script experiment; use the [current verification manual](gas/DISCOVERY.md) instead. The following describes the retained Node reference implementation. No extra npm dependencies are required; Linux `flock` is required:
 
 ```bash
 npm run watch:running -- --input data/raw
@@ -101,9 +101,9 @@ One designated PC owns this output folder. Do not copy its worker state to anoth
 
 ## Remaining boundaries
 
-1. Measure incremental updates and idle detection on Google's runtime using [the next verification manual](gas/INCREMENTAL.md). The owner's successful cold three-file benchmark is evidence only for that measured scope. Synthetic HTTP/Drive and Apps Script VM tests do not measure Google performance. The Node worker is not the selected deployment.
+1. Measure the general CSV discovery worker on Google using [the next verification manual](gas/DISCOVERY.md). Earlier cold, incremental and idle results are evidence for those measured implementations. Synthetic HTTP/Drive and Apps Script VM tests do not measure Google performance. The Node worker is not the selected deployment.
 2. Connect the current app to owner-authenticated artifact transport. Public builds remain empty; no raw CSV or prepared GPS is a public static asset.
-3. After the isolated incremental experiment, validate larger histories and accept arbitrary new input files before connecting the app. The experiment uses fixed reference files plus synthetic control data; it is not a production folder watcher. Normal operation must not depend on an always-on PC.
+3. The discovery experiment separates its scenario and reference oracle from a general worker, then offers a bounded watch of additional CSVs. Validate it on Google and test larger histories before connecting the app. Normal operation must not depend on an always-on PC.
 4. Preparation on a changed inventory still reads cached normalized runs and walks metadata/dependency/component indexes. It is not O(1) in lifetime history. Heavy route simplification, GPS rasterization and fresh-distance measurements are cached, but a large connected explored region can still require a contour update. Limits are per new geometry/component (50 million cell visits), total distinct tiles (20,000), and occupied topology cells (2 million). A limit failure retains the previous generation and reports an explicit error.
 5. Old snapshots, completed computation caches and unreferenced immutable objects are retained for recovery. Garbage collection and source retention are not implemented; originals are never deleted. Local and Drive disk usage should be monitored during long-term use.
 
@@ -118,3 +118,7 @@ Official references checked for this design:
 ## Validation
 
 `tests/running-preparation.test.mjs` covers parsing, statistical/geometry contracts, bounded artifacts, and build exclusion. `tests/running-updates.test.mjs` covers append/backfill/edit/delete, equivalence to full rebuild, same-day and date-line behavior, loop closure/retraction, cache reuse over 371 runs, stable-input detection, paginated Drive changes, byte-range resume, checksums, bounded HTTP retries, publication ordering, owner-only output checks, and SIGKILL recovery. Fixtures are synthetic; real GPS and measured private reports belong under `data/` only.
+
+## 継続同期の検証へ
+
+初回3件・差分12段階・24時間アイドルは利用者からGoogle実測の合格が報告されました。[受領結果](gas/RESULTS.md)と[次の検証手順](gas/DISCOVERY.md)を参照してください。新しい同期処理は検証用フォルダで任意のCSVを発見し、事前のチャンクハッシュなしで変換します。本番アプリの読込先はまだ切り替えていません。

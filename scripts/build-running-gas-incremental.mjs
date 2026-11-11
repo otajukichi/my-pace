@@ -10,7 +10,7 @@ import { hash, json } from '../processing/running/cache.mjs';
 import { controlCsv, syncStages } from '../processing/running/sync-probe.js';
 
 export const bundleIncrementalProbe = config => bundleProbe(config, {
-  hostPath: 'processing/running/gas/incremental-host.gs', extraRoots: { MP_SYNC: 'processing/running/sync-probe.js' },
+  hostPaths: ['processing/running/gas/runtime.gs', 'processing/running/gas/fixtures.gs', 'processing/running/gas/incremental-host.gs'], extraRoots: { MP_SYNC: 'processing/running/sync-probe.js' },
 });
 
 export async function describeSource(path, chunkBytes = 1048576) {
@@ -25,14 +25,14 @@ export async function describeSource(path, chunkBytes = 1048576) {
 
 /** Full Node rebuilds in independent caches are the reference, not the GAS
  * incremental algorithm replaying itself. Real data stays in the private kit. */
-export async function buildIncrementalConfig({ sourceFolder, sources, output }) {
+export async function buildIncrementalConfig({ sourceFolder, sources, output, contentIdentity = false }) {
   const order = await prepareRunning({ sources, output: join(output, 'ordering-reference'), cache: join(output, 'ordering-cache') });
   const sorted = [];
   for (const source of sources) {
     const normalized = JSON.parse(await readFile(join(output, 'ordering-cache', hash(source.id) + '.json'), 'utf8')).value;
     const metadata = await describeSource(source.path);
     if (metadata.sha256 !== normalized.contentHash) throw Error('SOURCE_CHANGED_DURING_KIT_BUILD');
-    sorted.push({ ...source, metadata, start: normalized.start });
+    sorted.push({ ...source, metadata, start: normalized.start, gpsHash: normalized.gpsHash });
   }
   sorted.sort((a, b) => a.start - b.start || a.id.localeCompare(b.id));
   const config = { sourceFolder, chunkBytes: 1048576, environment: 'apps-script', sources: sorted.map((s, i) => ({ key: 'source-' + i, id: s.id, ...s.metadata })),
@@ -42,9 +42,18 @@ export async function buildIncrementalConfig({ sourceFolder, sources, output }) 
     const path = join(output, 'control-' + variant + '.csv'); await writeFile(path, controlCsv(variant === 'open'), { mode: 0o600 });
     config.control[variant] = await describeSource(path); paths.set('control-' + variant, path);
   }
+  const identities = new Map(sorted.map((s, i) => ['source-' + i, s.gpsHash]));
+  if (contentIdentity) for (const variant of ['closed', 'open']) {
+    const key = 'control-' + variant, cache = join(output, key + '-identity');
+    await prepareRunning({ sources: [{ id: key, path: paths.get(key) }], output: join(output, key + '-identity-view'), cache });
+    identities.set(key, JSON.parse(await readFile(join(cache, hash(key) + '.json'), 'utf8')).value.gpsHash);
+  }
   const references = new Map();
   for (const stage of syncStages()) {
-    const selected = stage.active.map(key => ({ id: key, path: paths.get(key === 'control' ? 'control-' + (stage.variant || 'closed') : key) }));
+    const selected = stage.active.map(key => {
+      const entry = key === 'control' ? 'control-' + (stage.variant || 'closed') : key;
+      return { id: contentIdentity ? identities.get(entry) : key, path: paths.get(entry) };
+    });
     const signature = hash(selected);
     if (!references.has(signature)) {
       const result = await prepareRunning({ sources: selected, output: join(output, 'reference-' + stage.name), cache: join(output, 'cache-' + stage.name) });

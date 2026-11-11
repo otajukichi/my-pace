@@ -274,6 +274,17 @@ test('24h idle verification reads only folder metadata and the listing, with no 
   assert(requests.every(r => r.method === 'get' && !r.media));
   assert.equal(requests.length, (report.idle.polls + 1) * 2);
   assert(!h.triggers.some(t => t.handler === HANDLER));
+  const outcome = JSON.stringify(report.completedOutcomes);
+  assert.equal(report.completedOutcomes.functional.status, 'FUNCTIONAL_PASS');
+  assert.equal(report.completedOutcomes.idle.status, 'IDLE_PASS');
+  h.invoke('stopMyPaceIncrementalProbe');
+  const properties = [...h.properties], count = h.requests.length;
+  const stopped = h.invoke('showMyPaceIncrementalProbeReport');
+  const short = h.invoke('showMyPaceIdleMinutes');
+  assert.equal(stopped.status, 'USER_STOPPED'); assert.equal(JSON.stringify(stopped.completedOutcomes), outcome);
+  assert.equal(short.completed, true); assert.equal(short.rawBytesRequested, 0);
+  assert.deepEqual([...h.properties], properties); assert.equal(h.requests.length, count);
+  assert(h.logs.every(item => JSON.stringify(item).length < 7000));
 });
 
 test('lost copy and publication acknowledgements retry the same IDs without duplicate runs', async t => {
