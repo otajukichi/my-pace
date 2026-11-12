@@ -1,177 +1,150 @@
-// Isolated integration verification; no application reader or public endpoint.
+// One new CSV on top of the already-passed incremental experiment.
+// The old checkpoint, catalog and completion properties remain read-only.
 const MYPACE_PROBE_CONFIG = __MYPACE_PROBE_CONFIG__;
 const MYPACE_BUILD_ID = __MYPACE_BUILD_ID__;
-const MI_KEY = 'MYPACE_DISCOVERY_V1', MI_HANDLER = 'myPaceDiscoveryTick', MI_MARKER = 'mypaceDiscovery';
+const MI_KEY = 'MYPACE_NEW_CSV_V1', MI_HANDLER = 'myPaceNewCsvTick', MI_MARKER = 'mypaceIncremental';
 const MI_FIELDS = 'id,name,mimeType,size,md5Checksum,version,parents,trashed,ownedByMe,shared,appProperties';
 function miConfig() {
-  const c = MYPACE_PROBE_CONFIG;
-  miAssert(c?.sources?.length === 3 && c.references?.length === 12 && c.chunkBytes === 1048576, 'PRIVATE_DISCOVERY_CONFIG_REQUIRED');
-  miId(c.sourceFolder);
-  for (const s of c.sources) { miId(s.id); MP_SYNC.contentStamp({ size: s.size, md5Checksum: s.md5 }); }
-  return c;
+  miAssert(/^[a-f0-9]{64}$/.test(MYPACE_PROBE_CONFIG?.previousConfigHash || ''), 'PREVIOUS_CONFIG_REQUIRED');
+  return MYPACE_PROBE_CONFIG;
+}
+function mnPrevious(key) {
+  const value = mi.props.getProperty('MYPACE_INCREMENTAL_V1_' + key);
+  return value ? JSON.parse(value) : null;
 }
 function miRequestGuard(url, options) {
-  const method = (options.method || 'get').toLowerCase();
-  if (method === 'get') return;
-  // Defense in depth: no source mutation and no permission/deletion endpoint.
-  miAssert(!url.includes('/permissions') && method !== 'delete', 'WRITE_FORBIDDEN');
-  const match = url.match(/\/files\/([\w-]+)([^?]*)/);
-  if (match && miConfig().sources.some(s => s.id === match[1]))
-    miAssert(method === 'post' && match[2] === '/copy' && mi.category === 'fixture', 'ORIGINAL_WRITE_FORBIDDEN');
-}
-function mdSetup() {
-  if (!mi.root) {
-    const ids = miApi('files/generateIds?count=8&space=drive&type=files').ids;
-    miAssert(ids?.length === 8, 'RESERVED_IDS_REQUIRED');
-    mi.root = { job: Utilities.getUuid(), script: ScriptApp.getScriptId(), config: mpHash(miConfig()), buildId: MYPACE_BUILD_ID, started: Date.now(),
-      folder: ids[0], raw: ids[1], derived: ids[2], system: ids[3], parked: ids[4], state: ids[5], catalog: ids[6] }; miSet('ROOT', mi.root);
-  }
-  const r = mi.root;
-  for (const [key, name, parent] of [['folder', 'MyPace 継続同期検証 ' + r.job.slice(0, 8), null], ['raw', 'inbox', r.folder],
-    ['derived', 'derived', r.folder], ['system', 'system', r.folder], ['parked', 'parked', r.folder]]) {
-    miOwned(miMeta(r[key], true) || miCreate(miMetadata(r[key], name, 'folder', parent)), 'folder', parent);
-  }
-  if (!miMeta(r.state, true)) {
-    mi.state = { stage: 0, phase: 'action', committed: {}, catalogHash: null, generations: [], pool: [], ids: {}, cache: {}, normalized: {}, artifacts: {}, results: [] }; miSave();
+  const method = (options.method || 'get').toLowerCase(), id = url.match(/\/files\/([\w-]+)/)?.[1];
+  if (method === 'get') {
+    miAssert(!(mi.baselineIds?.has(id) && (url.includes('alt=media') || options.headers?.Range)), 'EXISTING_CSV_READ_FORBIDDEN');
+  } else {
+    miAssert(method !== 'delete' && !url.includes('/copy') && !url.includes('/permissions'), 'WRITE_FORBIDDEN');
+    miAssert(!id || ![mi.root?.previousState, mi.root?.previousCatalog, ...Object.keys(mi.state?.check?.baseline || {})].includes(id), 'PREVIOUS_DATA_WRITE_FORBIDDEN');
   }
 }
-function mdLoad() {
+function mnLoad() {
   miOwned(miMeta(mi.root.folder), 'folder'); miOwned(miMeta(mi.root.system), 'folder', mi.root.folder);
-  miOwned(miMeta(mi.root.derived), 'folder', mi.root.folder); mi.state = miRead(mi.root.state, 'state');
+  miOwned(miMeta(mi.root.derived), 'folder', mi.root.folder);
+  mi.state = miRead(mi.root.state, 'state'); mi.baselineIds = new Set(Object.keys(mi.state.check.baseline));
 }
-function mdRecord(result) {
-  const s = mi.state, stage = MP_SYNC.syncStages()[s.stage];
-  miAssert(s.catalogHash === miConfig().references[s.stage], 'REFERENCE_CATALOG_MISMATCH');
-  const metrics = miGet('METRICS', {}), delta = Object.fromEntries(Object.entries(metrics).map(([k, n]) => [k, n - (s.stageStart.metrics[k] || 0)]));
-  if (['unchanged', 'rename', 'final_unchanged', 'move_out', 'move_back', 'trash', 'restore'].includes(stage.name)) miAssert(!delta.rawBytesRequested, 'UNCHANGED_SOURCE_WAS_DOWNLOADED');
-  if (result === 'UNCHANGED') miAssert(!delta.normalizedComputed && !delta.displayComputed && !delta.freshComputed && !delta.corridorComputed, 'UNCHANGED_DATA_WAS_RECOMPUTED');
-  s.results.push({ name: stage.name, matched: true, changes: s.diff, ...delta });
-  s.stage++; s.phase = s.stage === 12 ? 'done' : 'action'; s.stageStart = null; miSave();
+function mnSetup() {
+  if (!mi.root) {
+    const previous = mnPrevious('ROOT');
+    miAssert(previous && previous.script === ScriptApp.getScriptId() && previous.config === miConfig().previousConfigHash, 'PASSED_PROJECT_REQUIRED');
+    miAssert(!ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'myPaceIncrementalTick'), 'PREVIOUS_PROBE_RUNNING');
+    mi.root = previous;
+    miOwned(miMeta(previous.folder), 'folder'); miOwned(miMeta(previous.system), 'folder', previous.folder);
+    miOwned(miMeta(previous.derived), 'folder', previous.folder);
+    const old = miRead(previous.state, 'state');
+    miAssert(old.phase === 'done' && old.results?.length === 12 && old.results.every(r => r.matched), 'PASSED_CHECKPOINT_REQUIRED');
+    const catalog = miRead(previous.catalog, 'catalog', previous.derived);
+    miAssert(mpHash(catalog) === old.catalogHash, 'BASELINE_CATALOG_CHANGED');
+    for (const file of Object.values(old.committed)) miAssert(old.normalized[msNormalizedKey(file)], 'BASELINE_CACHE_MISSING');
+    const ids = miApi('files/generateIds?count=2&space=drive&type=files').ids;
+    miAssert(ids?.length === 2, 'RESERVED_IDS_REQUIRED');
+    mi.root = { ...previous, state: ids[0], catalog: ids[1], previousState: previous.state, previousCatalog: previous.catalog,
+      stateName: 'new-csv-checkpoint.json', catalogName: 'new-csv-index.json', baselineSignature: msSignature(old.committed),
+      config: mpHash(miConfig()), buildId: MYPACE_BUILD_ID, started: Date.now() };
+    miSet('ROOT', mi.root); mi.stateMeta = null;
+    // Existing processing/cache IDs and record identities are retained.
+    mi.state = { ...old, phase: 'wait', job: null, observed: null, generations: [{ id: previous.catalog, hash: old.catalogHash }],
+      check: { baseline: old.committed, baselineCatalog: old.catalogHash } }; miSave();
+  } else if (!miMeta(mi.root.state, true)) {
+    // A lost create response is retried using the same reserved IDs.
+    const old = miRead(mi.root.previousState, 'state'); mi.stateMeta = null;
+    mi.state = { ...old, phase: 'wait', job: null, observed: null, generations: [{ id: mi.root.previousCatalog, hash: old.catalogHash }],
+      check: { baseline: old.committed, baselineCatalog: old.catalogHash } }; miSave();
+  }
 }
-function mdScenarioStep() {
-  const s = mi.state;
-  if (s.phase === 'action') {
-    if (!s.stageStart) { s.stageStart = { metrics: miGet('METRICS', {}) }; miSave(); }
-    mi.category = 'fixture'; miMutateFixture(MP_SYNC.syncStages()[s.stage]); mi.category = 'processing';
-    s.phase = 'sync'; s.observed = null; miSave(); throw Error('YIELD');
+function mnStep() {
+  const s = mi.state, check = s.check;
+  mi.inventory = mi.inventory || msInventory();
+  const diff = MP_SYNC.inventoryDiff(check.baseline, mi.inventory);
+  miAssert(!diff.changed.length && !diff.removed.length, 'BASELINE_INPUT_CHANGED');
+  miAssert(diff.added.length <= 1, 'ADD_ONE_CSV_ONLY');
+  if (!diff.added.length) return 'WAITING_FOR_CSV';
+  if (s.phase === 'check') {
+    miAssert(msSignature(mi.inventory) === msSignature(s.committed), 'INPUT_CHANGED_AFTER_IMPORT');
+    miAssert((miGet('METRICS', {}).rawBytesRequested || 0) === check.bytesAfterImport, 'CSV_WAS_READ_AGAIN');
+    miSet('SUMMARY', { imported: true, catalogChanged: true, existingCsvReread: false, unchangedPollPassed: true });
+    return 'NEW_CSV_PASS';
   }
-  const result = msSyncStep();
-  if (result === 'SETTLING') throw Error('YIELD');
-  if (['SYNCED', 'UNCHANGED'].includes(result)) mdRecord(result);
-}
-function mdFastSignature(files) { return mpHash(Object.keys(files).sort().map(id => [id, MP_SYNC.contentStamp(files[id]), files[id].name])); }
-function mdWatch() {
-  const watch = miGet('WATCH');
-  if (Date.now() - watch.started >= 86400000) {
-    const pending = !!miGet('SUMMARY', {}).pendingUpdate;
-    watch.finished = true; watch.completed = !pending; watch.finishedAt = Date.now(); miSet('WATCH', watch); miStop();
-    return pending ? 'WATCH_INCOMPLETE' : 'WATCH_COMPLETE';
+  // Publication may have completed before its final phase save was acknowledged.
+  if (!s.job && s.catalogHash !== check.baselineCatalog && msSignature(mi.inventory) === msSignature(s.committed)) {
+    s.phase = 'check'; check.bytesAfterImport = miGet('METRICS', {}).rawBytesRequested || 0; miSave();
+    return 'CHECKING_NO_REREAD';
   }
-  mi.inventory = msInventory(); watch.polls++; miSet('WATCH', watch);
-  const signature = mdFastSignature(mi.inventory), fast = miGet('FAST', null);
-  if (fast === signature) return 'WATCHING'; // No checkpoint/media/Drive writes.
-  miSet('FAST', null); mdLoad();
-  // A corrected/removed/replaced input invalidates only the pending generation.
-  // Completed artifacts and the currently published catalog stay available.
-  if (mi.state.job && (msSignature(mi.state.job.files) !== msSignature(mi.inventory)
-      || Object.keys(mi.inventory).some(id => mi.inventory[id].version !== mi.state.job.files[id]?.version))) {
-    mi.state.job = null; mi.state.observed = null; miSave(); miCount('abandonedGenerations');
+  // A changed upload invalidates the unfinished generation, not completed caches.
+  if (s.job && (msSignature(s.job.files) !== msSignature(mi.inventory)
+      || Object.keys(mi.inventory).some(id => mi.inventory[id].version !== s.job.files[id]?.version))) {
+    s.job = null; s.observed = null; mi.result = null; miSave();
   }
+  s.phase = 'process';
   while (true) {
     miYield(); const result = msSyncStep();
-    if (result === 'SETTLING') return 'WATCHING';
-    if (['SYNCED', 'UNCHANGED'].includes(result)) {
-      miSet('FAST', mdFastSignature(mi.state.committed));
-      if (result === 'SYNCED') { watch.updates++; watch.lastPublishedAt = Date.now(); miSet('WATCH', watch); }
-      return 'WATCHING';
+    if (result === 'SETTLING') return 'CONFIRMING_CSV';
+    if (result === 'SYNCED') {
+      miAssert(s.catalogHash !== check.baselineCatalog, 'DUPLICATE_CSV');
+      s.phase = 'check'; check.bytesAfterImport = miGet('METRICS', {}).rawBytesRequested || 0; miSave();
+      miSet('SUMMARY', { imported: true, catalogChanged: true, existingCsvReread: false, unchangedPollPassed: false });
+      return 'CHECKING_NO_REREAD';
     }
+    miAssert(result !== 'UNCHANGED', 'IMPORT_STATE_MISMATCH');
   }
 }
-function mdReport() {
-  const b = miGet('BUDGET', {}), m = miGet('METRICS', {}), watch = miGet('WATCH', null);
-  return { schema: 1, kind: 'running-discovery-probe', buildId: MYPACE_BUILD_ID, scope: 'ISOLATED_DISCOVERY_PROBE',
-    environment: miConfig().environment || 'apps-script', status: miGet('STATUS', 'NOT_STARTED'),
-    ...miGet('SUMMARY', { completedStages: 0, stageCount: 12 }), completedOutcome: miGet('OUTCOME', null),
-    metrics: { polls: m.polls || 0, requests: m.requests || 0, rawBytesRequested: m.rawBytesRequested || 0, csvChunks: m.csvChunks || 0,
-      normalizedComputed: m.normalizedComputed || 0, normalizedReused: m.normalizedReused || 0, publications: m.publications || 0,
-      abandonedGenerations: m.abandonedGenerations || 0, retryableErrors: m.retryableErrors || 0 },
-    measuredMinutes: +((b.measuredMs || 0) / 60000).toFixed(2), accountedMinutes: +((b.totalMs || 0) / 60000).toFixed(2),
-    maximumExecutionSeconds: Math.ceil((b.maximumMs || 0) / 1000), interruptedInvocations: miGet('INTERRUPTIONS', 0),
-    watch: watch ? { completed: watch.completed, polls: watch.polls, updates: watch.updates, lastPublishedAt: watch.lastPublishedAt || null,
-      elapsedHours: +(((watch.finishedAt || Date.now()) - watch.started) / 3600000).toFixed(2),
-      rawBytesRequested: (m.rawBytesRequested || 0) - watch.startBytes } : null,
-    lastError: miGet('LAST_ERROR', null), includesOtherScripts: false };
+function mnReport() {
+  const m = miGet('METRICS', {}), b = miGet('BUDGET', {}), start = miGet('START_BUDGET', {});
+  return { schema: 1, kind: 'one-new-csv-check', buildId: MYPACE_BUILD_ID, status: miGet('STATUS', 'NOT_STARTED'),
+    ...miGet('SUMMARY', {}), completedOutcome: miGet('OUTCOME', null),
+    rawBytesRequested: m.rawBytesRequested || 0, requests: m.requests || 0, csvChunks: m.csvChunks || 0,
+    measuredMinutes: +(((b.measuredMs || 0) - (start.measuredMs || 0)) / 60000).toFixed(2),
+    accountedMinutes: +(((b.totalMs || 0) - (start.totalMs || 0)) / 60000).toFixed(2), lastError: miGet('LAST_ERROR', null) };
 }
-function mdRun(command) {
+function mnRun(command) {
   const lock = LockService.getScriptLock(); if (!lock.tryLock(1000)) return { status: 'BUSY' };
-  mi = { props: PropertiesService.getScriptProperties(), started: Date.now(), memory: new Map(), category: 'setup' };
+  mi = { props: PropertiesService.getScriptProperties(), started: Date.now(), memory: new Map() };
   let status;
   try {
     miConfig(); mi.root = miGet('ROOT', null);
     if (mi.root) miAssert(mi.root.script === ScriptApp.getScriptId() && mi.root.config === mpHash(miConfig()) && mi.root.buildId === MYPACE_BUILD_ID, 'PROJECT_OR_CONFIG_CHANGED');
     if (command === 'stop') { miStop(); status = 'USER_STOPPED'; }
-    else if (command === 'start' && miGet('OUTCOME', null)) status = miGet('MODE') === 'watch' ? miGet('STATUS') : 'ALREADY_COMPLETED';
-    else if (command === 'tick' && ['DISCOVERY_PASS', 'DISCOVERY_TIMING_MISSED', 'ALREADY_COMPLETED', 'USER_STOPPED', 'WATCH_COMPLETE', 'WATCH_INCOMPLETE'].includes(miGet('STATUS'))) status = miGet('STATUS');
+    else if (miGet('OUTCOME', null)) { miStop(); status = 'NEW_CSV_PASS'; }
+    else if (command === 'tick' && miGet('STATUS') === 'USER_STOPPED') status = 'USER_STOPPED';
     else {
-      miBudgetBegin(); miCount('invocations');
-      if (command === 'start') { mdSetup(); miSet('MODE', 'scenario'); miSchedule(); status = 'SCHEDULED'; }
-      else {
-        miAssert(mi.root, 'START_REQUIRED');
-        if (command === 'watch') {
-          miAssert(miGet('OUTCOME', null)?.status === 'DISCOVERY_PASS', 'DISCOVERY_PASS_REQUIRED');
-          miAssert(!miGet('WATCH', null)?.finished, 'WATCH_ALREADY_COMPLETED');
-          if (!miGet('WATCH', null)) miSet('WATCH', { started: Date.now(), completed: false, polls: 0, updates: 0, startBytes: miGet('METRICS', {}).rawBytesRequested || 0 });
-          const watch = miGet('WATCH'); delete watch.finishedAt; miSet('WATCH', watch);
-          miSet('MODE', 'watch'); miSchedule(); status = 'WATCHING';
-        } else if (miGet('MODE') === 'watch') status = mdWatch();
-        else {
-          miAssert(Date.now() - mi.root.started < 86400000, 'SCENARIO_DEADLINE_MISSED'); mdLoad();
-          while (mi.state.phase !== 'done') { miYield(); mdScenarioStep(); }
-          status = 'DISCOVERY_PASS'; miStop();
-        }
+      if (!miGet('BUDGET', null)) {
+        // Reuse the existing rolling time budget; do not reset today's allowance.
+        const old = mnPrevious('BUDGET');
+        if (old) miSet('BUDGET', old);
+        miSet('START_BUDGET', { measuredMs: old?.measuredMs || 0, totalMs: old?.totalMs || 0 });
       }
+      miBudgetBegin();
+      if (command === 'start') miSchedule();
+      if (command === 'start' || !mi.root) mnSetup();
+      miAssert(mi.root, 'START_REQUIRED');
+      miAssert(Date.now() - mi.root.started < 14400000, 'CHECK_WINDOW_ENDED');
+      if (command === 'tick' && miGet('STATUS') === 'WAITING_FOR_CSV') mi.inventory = msInventory();
+      if (mi.inventory && msSignature(mi.inventory) === mi.root.baselineSignature) status = 'WAITING_FOR_CSV';
+      else { mnLoad(); miSchedule(); status = mnStep(); }
+      if (status === 'NEW_CSV_PASS') { miSet('OUTCOME', { status, completedAt: Date.now(), buildId: MYPACE_BUILD_ID }); miStop(); }
     }
   } catch (error) {
     status = miCode(error);
-    if (status === 'YIELD') { status = miGet('MODE') === 'watch' ? 'WATCHING' : 'IN_PROGRESS'; miCount('scheduledResumes'); }
+    if (status === 'YIELD') status = 'PROCESSING';
     else {
-      miSet('LAST_ERROR', { code: status, driveReasons: error.driveReasons || [],
-        ...(error.sourceDiagnostics ? { sourceDiagnostics: error.sourceDiagnostics } : {}) });
-      if (['DRIVE_RETRYABLE', 'DRIVE_TRANSPORT_ERROR'].includes(status)) miCount('retryableErrors');
-      else miStop();
+      miSet('LAST_ERROR', { code: status, driveReasons: error.driveReasons || [] });
+      if (!['DRIVE_RETRYABLE', 'DRIVE_TRANSPORT_ERROR'].includes(status)) miStop();
     }
   } finally {
-    try {
-      if (mi.state) {
-        for (let i = 0; i < mi.state.results.length; i++) miSet('RESULT_' + i, mi.state.results[i]);
-        miSet('SUMMARY', { completedStages: mi.state.results.length, stageCount: 12, currentStage: MP_SYNC.syncStages()[mi.state.stage]?.name || 'done',
-          publishedSources: Object.keys(mi.state.committed).length, retainedGenerations: mi.state.generations.length,
-          pendingUpdate: !!(mi.state.job || mi.state.observed), processingPhase: mi.state.job?.phase || null });
-      }
-      miBudgetEnd();
-      if (status === 'DISCOVERY_PASS') {
-        if (miGet('BUDGET').maximumMs > 240000 || miGet('INTERRUPTIONS', 0)) status = 'DISCOVERY_TIMING_MISSED';
-        if (!miGet('OUTCOME', null)) miSet('OUTCOME', { status, completedAt: Date.now(), buildId: MYPACE_BUILD_ID, completedStages: 12 });
-      }
-      if (['USER_STOPPED', 'WATCH_COMPLETE'].includes(status) && miGet('WATCH', null)) { const w = miGet('WATCH'); w.finishedAt = Date.now(); miSet('WATCH', w); }
-      miSet('STATUS', status || 'STOPPED'); console.log(JSON.stringify(mdReport()));
-    } finally { mi = null; lock.releaseLock(); }
+    try { miBudgetEnd(); miSet('STATUS', status || 'STOPPED'); console.log(JSON.stringify(mnReport())); }
+    finally { mi = null; lock.releaseLock(); }
   }
   return { status };
 }
-function startMyPaceDiscoveryProbe() { return mdRun('start'); }
-function myPaceDiscoveryTick() { return mdRun('tick'); }
-function startMyPaceDiscoveryWatch() { return mdRun('watch'); }
-function stopMyPaceDiscoveryProbe() { return mdRun('stop'); }
-function mdView(details) {
+function startMyPaceNewCsvCheck() { return mnRun('start'); }
+function myPaceNewCsvTick() { return mnRun('tick'); }
+function stopMyPaceNewCsvCheck() { return mnRun('stop'); }
+function showMyPaceNewCsvReport() {
   const lock = LockService.getScriptLock(); if (!lock.tryLock(1000)) return { status: 'BUSY' };
   mi = { props: PropertiesService.getScriptProperties() };
-  try {
-    const report = mdReport(); console.log(JSON.stringify(report));
-    if (details) for (let i = 0; i < (report.completedStages || 0); i++) console.log(JSON.stringify(miGet('RESULT_' + i, {})));
-    return report;
-  } catch (e) { const report = { status: miCode(e) }; console.log(JSON.stringify(report)); return report; }
+  try { const report = mnReport(); console.log(JSON.stringify(report)); return report; }
   finally { mi = null; lock.releaseLock(); }
 }
-function showMyPaceDiscoveryReport() { return mdView(false); }
-function showMyPaceDiscoveryDetails() { return mdView(true); }

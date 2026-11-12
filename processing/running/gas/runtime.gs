@@ -92,7 +92,7 @@ function miWrite(id, name, value, role, parent, immutable) {
   miOwned(after, role, parent); miAssert(after.md5Checksum === md5 && Number(after.size) === bytes.length, 'WRITE_INTEGRITY');
   if (role === 'state') mi.stateMeta = after;
 }
-function miSave() { miWrite(mi.root.state, 'checkpoint.json', mi.state, 'state', mi.root.system, false); }
+function miSave() { miWrite(mi.root.state, mi.root.stateName || 'checkpoint.json', mi.state, 'state', mi.root.system, false); }
 function miAllocate(key) {
   const s = mi.state;
   if (!s.ids[key]) {

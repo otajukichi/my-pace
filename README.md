@@ -68,7 +68,7 @@ npm run build:public
 
 ランニング表示用データの生成は `npm run prepare:running -- --input data/raw` で試せます。入力・出力・キャッシュは `data/` 内だけで扱います。現在の画面の読込先や、Driveの自動処理を切り替えるコマンドではありません。
 
-自動更新は、PCを常駐させずGoogle側で完結する構成を目指しています。[大きいCSV3件の初回検証](processing/running/gas/README.md)は利用者のGoogle実行で合格と報告されました。[変更の検出・差分更新・24時間監視](processing/running/gas/INCREMENTAL.md)もGoogle実行で合格と報告されました（[受領結果](processing/running/gas/RESULTS.md)）。次は[事前登録していないCSVの継続同期](processing/running/gas/DISCOVERY.md)を検証します。以前作った `watch:running` はローカル検証用として残していますが、運用方式としては採用していません。公開画面の読込先はまだ変更していません。
+自動更新は、PCを常駐させずGoogle側で完結する構成を目指しています。[大きいCSV3件の初回検証](processing/running/gas/README.md)は利用者のGoogle実行で合格と報告されました。[変更の検出・差分更新・24時間監視](processing/running/gas/INCREMENTAL.md)もGoogle実行で合格と報告されました（[受領結果](processing/running/gas/RESULTS.md)）。次は合格済みのプロジェクト・キャッシュを使い、[新しいCSV1件の取込み](processing/running/gas/DISCOVERY.md)だけを確認します。12段階や24時間監視は繰り返しません。以前作った `watch:running` はローカル検証用として残していますが、運用方式としては採用していません。公開画面の読込先はまだ変更していません。
 
 **今回ChatGPTと一緒に検証する場合は、[継続同期の検証マニュアル](processing/running/gas/DISCOVERY.md)から始めてください。** 操作手順、合否の確認方法、Codexに返す結果の書式をまとめています。設定済みコードと個人データはGitHubには含めません。
 

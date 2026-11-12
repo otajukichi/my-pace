@@ -11,7 +11,8 @@ const blob = value => {
 /** Simulates persistence and failures, NOT Google's latency, quota or memory.
  * Each invocation gets a completely new VM, like a cold Apps Script run. */
 export async function gasProbeHarness(config, sourceBytes, { requestMs = 5, beforeRequest, afterRequest, bundledCode, listPageSize = 1000, transformList } = {}) {
-  const code = bundledCode || await bundleProbe({ ...config, environment: 'simulation' }), files = new Map(), properties = new Map(), requests = [], logs = [];
+  let code = bundledCode || await bundleProbe({ ...config, environment: 'simulation' });
+  const files = new Map(), properties = new Map(), requests = [], logs = [];
   let sequence = 0, clock = Date.parse('2026-01-01T00:00:00Z'), locked = false;
   const triggers = [{ handler: 'unrelatedExistingTestHandler' }];
   files.set(config.sourceFolder, { meta: { id: config.sourceFolder, mimeType: 'application/vnd.google-apps.folder', ownedByMe: true, shared: false, version: '1' }, bytes: Buffer.alloc(0) });
@@ -100,5 +101,5 @@ export async function gasProbeHarness(config, sourceBytes, { requestMs = 5, befo
   return { invoke, files, properties, requests, logs, triggers, advance: milliseconds => { clock += milliseconds; },
     get state() { const f = [...files.values()].find(f => f.meta.appProperties?.role === 'state'); return f ? JSON.parse(f.bytes) : null; },
     get report() { const f = [...files.values()].find(f => f.meta.appProperties?.role === 'report'); return f ? JSON.parse(f.bytes) : null; },
-    code };
+    get code() { return code; }, replaceCode: next => { code = next; } };
 }

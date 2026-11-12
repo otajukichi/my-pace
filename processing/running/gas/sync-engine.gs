@@ -110,7 +110,7 @@ function msSyncStep() {
   miAssert(mpHash(miRead(generation, 'generation', mi.root.derived)) === digest, 'CATALOG_READBACK_MISMATCH');
   // Only a fully verified catalog replaces the current view. The previous
   // catalog remains immutable and all referenced objects are retained.
-  miWrite(mi.root.catalog, 'index.json', result.catalogContent, 'catalog', mi.root.derived, false);
+  miWrite(mi.root.catalog, mi.root.catalogName || 'index.json', result.catalogContent, 'catalog', mi.root.derived, false);
   miAssert(mpHash(miRead(mi.root.catalog, 'catalog', mi.root.derived)) === digest, 'CATALOG_READBACK_MISMATCH');
   if (s.catalogHash !== digest) s.generations = [...s.generations, { id: generation, hash: digest }].slice(-2);
   s.catalogHash = digest; s.committed = current; s.job = null; s.observed = null; mi.result = null;
