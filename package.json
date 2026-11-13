@@ -18,5 +18,8 @@
     "prepare:gas-probe": "node scripts/build-running-gas-probe.mjs",
     "prepare:gas-incremental": "node scripts/build-running-gas-incremental.mjs",
     "prepare:gas-discovery": "node scripts/build-running-gas-discovery.mjs"
+  },
+  "dependencies": {
+    "google-auth-library": "^11.3.4"
   }
 }

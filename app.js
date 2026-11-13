@@ -1,3 +1,4 @@
+import { createDriveRunningSource, driveRequest } from './lib/running-drive.js';
 import { createStore, localDate } from './lib/state.js';
 import { createDiaryController } from './lib/diary-view.js';
 import { mountMap } from './lib/map.js';
@@ -16,6 +17,9 @@ let workspaceState=workspaceStore.get();
 let runs=[],selectedRunId=null,logExpanded=false,splitPage=0;
 let runsLoaded=false,runDays=new Map(),runningMonth=localDate().slice(0,7),selectedDay=null;
 let runsTask=null,runsError='';
+const usingDrive = new URLSearchParams(location.search).get('source') === 'drive';
+let driveSource = null, driveRoutes = [], driveViewKey = '', driveLoadedKey = '', driveVersion = 0, driveViewError = '', maskErrorShown = false;
+
 let lastSelectedDay=localDate(),calendarEnd=localDate().slice(0,7),calendarMonths=6;
 let area={mode:'demo',areaName:'東京駅周辺（公開サンプル）',center:{lat:35.7,lon:139.8}};
 let explorationStats=new Map();
@@ -32,13 +36,13 @@ normalizeLocation();
 let activePage=pageForHash(location.hash);
 const isRunning=()=>activePage.id==='records';
 function selectedRunningRuns(){return selectedDay?(runDays.get(selectedDay)?.runs||[]):monthSummary(runDays,runningMonth).days.flatMap(day=>day.runs);}
-function explorationHelp(){openDialog('探索マップ',`<div class="stack"><div class="source-box"><strong>走った道から、地図が開きます</strong>取得済みの全ランのGPSを使い、走った道と、その道で囲まれた内側を明るくします。別の日の経路がつながって囲んだ場所も含まれます。日付や月を変えても残ります。</div><p class="form-hint">薄い陰影の場所は、まだこのアプリの記録で開いていない範囲です。実際の訪問歴とは限りません。山や池なども、走った道で囲めば内側が開きます。道の周囲は最大約60mまで柔らかく明るくし、囲みの判定では小さなGPSのずれを吸収します。欠測や250mを超える点の間に直線を補うことはありません。</p><p class="form-hint">「新しく走った道」は、その日より前の記録から約30m以上離れた区間の走行距離を、GPSから推定した値です。月表示では、その月の各日の推定距離を合計します。同じ日の往復や繰り返しも含むため、道路そのものの延長とは異なります。囲んで開いた面積や道路そのものの踏破率ではなく、実際の経路を比較した値で、GPSのずれも含みます。同じ日を何度見ても、同じ道を繰り返しても、地図の範囲は水増ししません。</p><p class="form-hint">探索表示は常に有効です。探索範囲の計算は端末内で行い、この機能のために新しい外部サービスへGPSを送りません。</p></div>`);}
+function explorationHelp(){openDialog('探索マップ',`<div class="stack"><div class="source-box"><strong>走った道から、地図が開きます</strong>取り込まれたランの記録から、走った道と、その道で囲まれた内側を明るくします。別の日の経路がつながって囲んだ場所も含まれます。日付や月を変えても残ります。</div><p class="form-hint">薄い陰影の場所は、まだこのアプリの記録で開いていない範囲です。実際の訪問歴とは限りません。山や池なども、走った道で囲めば内側が開きます。道の周囲は最大約60mまで柔らかく明るくし、囲みの判定では小さなGPSのずれを吸収します。欠測や250mを超える点の間に直線を補うことはありません。</p><p class="form-hint">「新しく走った道」は、その日より前の記録から約30m以上離れた区間の走行距離を、GPSから推定した値です。月表示では、その月の各日の推定距離を合計します。同じ日の往復や繰り返しも含むため、道路そのものの延長とは異なります。囲んで開いた面積や道路そのものの踏破率ではなく、実際の経路を比較した値で、GPSのずれも含みます。同じ日を何度見ても、同じ道を繰り返しても、地図の範囲は水増ししません。</p><p class="form-hint">探索表示は常に有効です。${usingDrive?'探索範囲と新しく走った距離は、Google側で作成済みの表示用データを使います。':'探索範囲の計算は端末内で行います。'}</p></div>`);}
 function toast(message){clearTimeout(toastTimer);$('#toast').textContent=message;$('#toast').classList.add('visible');toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),3500);}
 function checkStorage(){const errors=[workspaceStore.status().error].filter(Boolean);$('#save-warning').hidden=!errors.length;$('#save-warning').textContent=errors.join(' ');}
 function saveWorkspace(mutator){workspaceState=workspaceStore.update(mutator);checkStorage();}
 function savedNotice(message){toast(workspaceStore.status().available?message:'変更はこの画面内のみです。設定から書き出せます。');}
 async function api(path,body){const options=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};const response=await fetch(path,options);let data;try{data=await response.json();}catch{throw new Error('ローカルサーバーを再起動して、もう一度お試しください。');}if(!response.ok){const error=new Error(data.error?.message||'データを取得できませんでした。');error.code=data.error?.code;error.retryAfterSeconds=data.error?.retryAfterSeconds;throw error;}return data;}
-function renderHeader(){const name=workspaceState.profile.name||'Guest';$('#header').innerHTML=`<a class="brand" href="#home" aria-label="my pace ホーム" ${activePage.id==='home'?'aria-current="page"':''}><img src="/assets/mark.svg" alt=""><span class="brand-word">my pace<span class="brand-dot">.</span></span></a><nav class="top-nav" aria-label="取り組み">${categoryNavigation(activePage.id)}</nav><div class="header-right"><span class="local-status">ローカル</span><button class="profile-button" data-action="settings" aria-label="設定"><span class="avatar">${esc(name.slice(0,1).toUpperCase())}</span><span>${esc(name)}</span>${icon('settings')}</button></div>`;$('#records-heading').innerHTML=`${icon('calendar')}記録`;$('.diary-trigger').innerHTML=`${icon('note')}<span>今日の日記</span>`;}
+function renderHeader(){const name=workspaceState.profile.name||'Guest';$('#header').innerHTML=`<a class="brand" href="#home" aria-label="my pace ホーム" ${activePage.id==='home'?'aria-current="page"':''}><img src="/assets/mark.svg" alt=""><span class="brand-word">my pace<span class="brand-dot">.</span></span></a><nav class="top-nav" aria-label="取り組み">${categoryNavigation(activePage.id)}</nav><div class="header-right"><button class="local-status source-status" data-action="connection">${usingDrive?'Drive プレビュー':'ローカル'}</button><button class="profile-button" data-action="settings" aria-label="設定"><span class="avatar">${esc(name.slice(0,1).toUpperCase())}</span><span>${esc(name)}</span>${icon('settings')}</button></div>`;$('#records-heading').innerHTML=`${icon('calendar')}記録`;$('.diary-trigger').innerHTML=`${icon('note')}<span>今日の日記</span>`;}
 
 function historyPanel(){return runningPanel(runningContext());}
 function historyCard(){return runningSelectionCard(runningContext());}
@@ -49,11 +53,11 @@ function renderPanel(){
   if(!runsLoaded){$('#context').innerHTML='<div class="loading"><span class="spinner"></span>記録を読み込んでいます</div>';return;}
   $('#context').innerHTML=historyPanel();
 }
-function renderMapTop(){ $('#map-top').className='map-top history-map-top'; $('#map-top').innerHTML=runningMapHeading(runningContext()); }
+function renderMapTop(){ $('#map-top').className='map-top history-map-top'; $('#map-top').innerHTML=runningMapHeading(runningContext())+(driveViewError?`<button class="drive-view-retry" data-action="retry-drive-view">${esc(driveViewError)} · 再読込</button>`:''); }
 function renderMapBottom(){ $('#map-bottom').innerHTML=historyCard(); }
 function mapOptions(){
   const padding={top:Math.ceil($('#map-top').getBoundingClientRect().height)+45,right:isMobile()?55:65,bottom:Math.ceil($('#map-bottom').getBoundingClientRect().height)+34,left:isMobile()?22:35};
-  const exploration={exploredRuns:runs,explorationEnabled:true};
+  const exploration={exploredRuns:usingDrive?[]:runs,explorationEnabled:true,maskTiles:driveSource?.maskTiles,onMaskError:()=>{if(!maskErrorShown){maskErrorShown=true;toast('探索範囲を読み込めませんでした。接続から読み込み直せます。');}}};
     const overlay=$('#map-bottom');
     if(isMobile()&&logExpanded){
       const stage=$('.map-stage').getBoundingClientRect(),card=overlay.querySelector('.running-selection'),analysis=overlay.querySelector('.running-analysis');
@@ -68,8 +72,8 @@ function mapOptions(){
     const stage=$('.map-stage').getBoundingClientRect(),top=$('#map-top').getBoundingClientRect(),bottom=$('#map-bottom').getBoundingClientRect();
     padding.top=Math.ceil(top.bottom-stage.top)+(isMobile()?10:18);
     padding.bottom=Math.max(24,Math.ceil(stage.bottom-bottom.top)+(isMobile()?10:22));
-    const shown=selectedRunningRuns();
-    return {...exploration,fitPadding:padding,runs:shown,selectedRunId:selectedDay&&shown.length===1?shown[0].id:null,selectedRunIds:selectedDay?shown.map(r=>r.id):[],speedRoutes:true,overview:!selectedDay,viewportKey:`records:${runningMonth}:${selectedDay||'month'}:`};
+    const shown=usingDrive?driveRoutes:selectedRunningRuns();
+    return {...exploration,fitPadding:padding,runs:shown,selectedRunId:selectedDay&&shown.length===1?shown[0].id:null,selectedRunIds:selectedDay?shown.map(r=>r.id):[],speedRoutes:true,overview:!selectedDay,viewportKey:`records:${runningMonth}:${selectedDay||'month'}:${usingDrive?driveLoadedKey:''}`};
   }
 
 function render(){
@@ -89,6 +93,7 @@ function render(){
   renderPanel();
   if(!runsLoaded){if(!runsError)void loadRuns();return;}
   renderMapTop();renderMapBottom();
+  if(usingDrive)void loadDriveView();
   if(mapView)mapView.update(mapOptions());else mapView=mountMap($('#map'),mapOptions());
   void loadWeather();
 }
@@ -105,7 +110,7 @@ window.addEventListener('hashchange',()=>{
 function openDialog(title,content,wide=false){dialog.className=wide?'dialog-wide':'';dialog.innerHTML=`<div class="dialog-header"><h2 id="dialog-title">${title}</h2><button class="icon-button" data-action="close" aria-label="閉じる">${icon('close')}</button></div><div class="dialog-content">${content}</div>`;if(!dialog.open)dialog.showModal();}
 function closeDialog(){dialog.close();}
 function settingsDialog(){
-  openDialog('マイスペース',`<div class="stack"><form class="form" id="profile-form"><label class="field">呼び名<input name="name" value="${esc(workspaceState.profile.name)}" maxlength="100" required></label><div class="form-actions"><button class="button secondary" type="submit">名前を保存</button></div></form>${themeSettings()}<section class="settings-section"><div class="settings-line"><span>天気のエリア</span><button class="text-button" data-action="weather-area">変更 ${icon('arrow')}</button></div><div class="settings-line"><span>ローカルデータ</span><button class="text-button" data-action="export">${icon('download')}書き出す</button></div><p class="form-hint">日記と、以前の予定・習慣・ノートを含めて書き出します。</p><button class="text-button" data-action="sources">データと外部サービスについて ${icon('arrow')}</button></section></div>`);
+  openDialog('マイスペース',`<div class="stack"><form class="form" id="profile-form"><label class="field">呼び名<input name="name" value="${esc(workspaceState.profile.name)}" maxlength="100" required></label><div class="form-actions"><button class="button secondary" type="submit">名前を保存</button></div></form>${themeSettings()}<section class="settings-section"><div class="settings-line"><span>ランニングの接続</span><button class="text-button" data-action="connection">${usingDrive?'Drive プレビュー':'ローカル'} ${icon('arrow')}</button></div></section><section class="settings-section"><div class="settings-line"><span>天気のエリア</span><button class="text-button" data-action="weather-area">変更 ${icon('arrow')}</button></div><div class="settings-line"><span>ローカルデータ</span><button class="text-button" data-action="export">${icon('download')}書き出す</button></div><p class="form-hint">日記と、以前の予定・習慣・ノートを含めて書き出します。</p><button class="text-button" data-action="sources">データと外部サービスについて ${icon('arrow')}</button></section></div>`);
 }
 function weatherAreaDialog(){
   openDialog('天気のエリア',`<div class="stack"><div class="source-box"><strong>現在：${esc(area.areaName)}</strong>現在・今後の予報に使うエリアです。選択しているランの日付とは連動しません。</div><p class="form-hint">記録の周辺を選ぶと、最新の記録の位置を緯度・経度0.1度単位に丸めて、Open-Meteoに送ります。現在地のGPS取得は行いません。</p><div class="form-actions"><button class="button secondary" data-action="weather-area-demo">東京駅周辺</button><button class="button" data-action="weather-area-recorded">記録の周辺</button></div></div>`);
@@ -114,13 +119,21 @@ async function setWeatherArea(recorded){
   const buttons=[...dialog.querySelectorAll('[data-action^="weather-area-"]')];
   buttons.forEach(button=>button.disabled=true);
   try{
-    const value=await api('/api/weather-area',{useRecordedLocation:recorded});
+    let value;
+    if(usingDrive&&recorded){
+      const latest=runs.at(-1);
+      if(!latest)throw Error('位置のある記録がまだありません。');
+      const result=await driveSource.view({day:latest.date,month:latest.date.slice(0,7)});
+      const point=result.routes.flatMap(r=>r.segments).find(s=>s.points.length)?.points[0];
+      if(!point)throw Error('この記録には位置情報がありません。');
+      value={mode:'recorded',areaName:'記録の周辺',center:{lat:Math.round(point[0]*10)/10,lon:Math.round(point[1]*10)/10}};
+    }else value=await api('/api/weather-area',{useRecordedLocation:recorded});
     weatherVersion++;weatherController?.abort();weatherTask=null;weatherBusy=false;weather=null;weatherError='';
     area=value;areaTask=Promise.resolve();closeDialog();renderWeather();loadWeather();
   }catch(error){buttons.forEach(button=>button.disabled=false);toast(error.message);}
 }
 function sourcesDialog(){
-  openDialog('データと出典',`<div class="stack"><div class="source-box"><strong>走った記録：Google Driveの実データ</strong>取得済みCSVから距離とペースを計算したローカル記録です。Googleへの自動書き込みは行いません。</div><p class="form-hint">地図は選んだ日の経路を速度に応じた色で表示し、「月全体」ではその月の経路をまとめます。カレンダーの濃さは1日の合計距離、空白は取得済みの記録がない日です。日付は日本時間・午前3時区切り。停止時間を含み、GPSの欠測はつなぎません。</p><div class="source-box"><strong>背景地図と天気</strong>背景地図はOpenStreetMap、天気はOpen-Meteoです。地図には表示範囲のタイルを取得し、天気には0.1度単位に丸めた位置を使います。無料の公開サービスのため、通信できない場合があります。</div><div class="source-links"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a><a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo</a></div><p class="form-hint">日記・呼び名・配色はこのブラウザーに保存します。</p></div>`);
+  openDialog('データと出典',`<div class="stack"><div class="source-box"><strong>走った記録：Google Driveの実データ</strong>${usingDrive?'本人のGoogleログインで、Driveに作成済みの表示用データを読み込んでいます。CSV本文の取得・変換や、Driveへの書き込みは行いません。':'取得済みCSVから距離とペースを計算したローカル記録です。Googleへの自動書き込みは行いません。'}</div><p class="form-hint">地図は選んだ日の経路を速度に応じた色で表示し、「月全体」ではその月の経路をまとめます。カレンダーの濃さは1日の合計距離、空白は取得済みの記録がない日です。日付は日本時間・午前3時区切り。停止時間を含み、GPSの欠測はつなぎません。</p><div class="source-box"><strong>背景地図と天気</strong>背景地図はOpenStreetMap、天気はOpen-Meteoです。地図には表示範囲のタイルを取得し、天気には0.1度単位に丸めた位置を使います。無料の公開サービスのため、通信できない場合があります。</div><div class="source-links"><a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a><a href="https://open-meteo.com/" target="_blank" rel="noreferrer">Open-Meteo</a></div><p class="form-hint">日記・呼び名・配色はこのブラウザーに保存します。</p></div>`);
 }
 function download(contents,type,name){const url=URL.createObjectURL(new Blob([contents],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function ensureArea(){
@@ -168,6 +181,10 @@ document.addEventListener('click',event=>{
   if(d.splitStep){splitPage=Math.max(0,splitPage+Number(d.splitStep));refreshRunningLog(`[data-split-step="${d.splitStep}"]`);return;}
   if(d.weatherHour!==undefined){selectedWeatherHour=Number(d.weatherHour);renderWeatherDialog();return;}
   switch(d.action){
+    case'connection':connectionDialog();break;
+    case'drive-refresh':location.reload();break;
+    case'drive-logout':logoutDrive();break;
+    case'retry-drive-view':driveViewKey='';driveViewError='';render();break;
     case'exploration-help':explorationHelp();break;
     case'diary':diary.open();break;
     case'close':closeDialog();break;
@@ -236,6 +253,7 @@ function stepRunningDay(direction){
 }
 function speedHelp(){openDialog('経路の色と重なり',`<div class="stack"><p class="form-hint">GPSから推定した区間ごとの速度です。青 → 青緑 → 緑 → 黄 → 赤茶へ、速度に応じて色相が変わります。日別・月全体で同じ基準を使います。</p><p class="form-hint">6〜14 km/hの固定スケールで、6 km/h以下は青、14 km/h以上は赤茶です。取得済みの記録は0.5 km/h刻みの速度色を保持しています。色の境目は前後の区間から滑らかに補間しています。GPSの誤差や停止付近の揺れを含む推定値で、補間によって精度が上がるものではありません。速度が不明な区間は灰色で表示します。</p><p class="form-hint">経路は不透明度68%で重ねています。同じ道を走った記録が重なるほど色が深まります。GPS点ごとのつなぎ目で濃い斑点が出ないよう、1回のランをまとめて半透明にしています。異なる速度の記録が重なると色は混ざるため、1回ごとの速度色は日別で確認してください。</p></div>`);}
 function refreshRunningLog(focusSelector){
+  if(usingDrive)void loadDriveView();
   $('#workspace').classList.toggle('log-expanded',logExpanded);
   renderMapBottom();mapView?.update(mapOptions());mapView?.fit();
   if(focusSelector)$(focusSelector)?.focus({preventScroll:true});
@@ -246,6 +264,7 @@ $('#map-bottom').addEventListener('toggle',event=>{
   disclosure.querySelector('summary').setAttribute('aria-expanded',String(disclosure.open));
   if(logExpanded===disclosure.open)return;
   logExpanded=disclosure.open;
+  if(usingDrive)void loadDriveView();
   $('#workspace').classList.toggle('log-expanded',logExpanded);
   // Native details performs the open/close. Map work cannot prevent closing.
   mapView?.update(mapOptions());mapView?.fit();
@@ -271,10 +290,17 @@ function loadRuns(){
   if(runsTask||runsLoaded)return runsTask;
   runsTask=(async()=>{
     try{
-      const response=await fetch('/data/running.json');
-      if(!response.ok)throw new Error('ランニング記録を読み込めませんでした。');
-      const data=await response.json();runDays=indexRunDays(data.days);runs=[...runDays.values()].flatMap(day=>day.runs);
-      explorationStats=explorationByRun(runs);selectedDay=[...runDays.keys()].at(-1)||null;
+      if(usingDrive){
+        const session=await driveRequest('/api/google-auth');
+        if(!session.authenticated)throw Error('Googleでログインすると、Driveの記録を表示できます。右上の「Drive プレビュー」から接続してください。');
+        driveSource?.clear();driveSource=createDriveRunningSource();
+        const data=await driveSource.load();runDays=indexRunDays(data.runs);explorationStats=data.explorationStats;
+      }else{
+        const response=await fetch('/data/running.json');
+        if(!response.ok)throw new Error('ランニング記録を読み込めませんでした。');
+        const data=await response.json();runDays=indexRunDays(data.days);
+      }
+      runs=[...runDays.values()].flatMap(day=>day.runs);if(!usingDrive)explorationStats=explorationByRun(runs);selectedDay=[...runDays.keys()].at(-1)||null;
       runningMonth=initialRunningMonth(runDays);lastSelectedDay=selectedDay||localDate();calendarEnd=runningMonth;
       selectedRunId=runDays.get(selectedDay)?.runs.at(-1)?.id||null;runsLoaded=true;
     }catch(error){runsError=error.message;}
@@ -284,3 +310,35 @@ function loadRuns(){
 }
 
 render();
+
+async function loadDriveView() {
+  if(!driveSource||!runsLoaded)return;
+  const key=JSON.stringify([selectedDay,runningMonth,logExpanded,selectedRunId]);
+  if(driveViewKey===key)return;
+  driveViewKey=key;driveViewError='';const version=++driveVersion;
+  const previousSelection=driveLoadedKey.split('|')[0], selection=`${runningMonth}/${selectedDay||'month'}`;
+  if(previousSelection!==selection)driveRoutes=[];
+  try{
+    const value=await driveSource.view({day:selectedDay,month:runningMonth,analysis:logExpanded,runId:selectedRunId});
+    if(version!==driveVersion)return;
+    if(value.detail){const run=runs.find(r=>r.id===value.detail.id);if(run)Object.assign(run,value.detail);}
+    driveRoutes=value.routes;driveLoadedKey=selection+'|'+key;render();
+  }catch(error){
+    if(version!==driveVersion)return;
+    if(error.code==='SIGN_IN'){driveSource.clear();driveRoutes=[];runs=[];runDays=new Map();explorationStats.clear();runsLoaded=false;runsError=error.message;mapView?.destroy();mapView=null;$('#map-top').innerHTML='';$('#map-bottom').innerHTML='';render();}
+    else{driveViewError=error.message;renderMapTop();toast(error.message);}
+  }
+}
+async function connectionDialog(){
+  openDialog('ランニングの接続','<p class="form-hint">接続を確認しています…</p>');
+  let session,error;
+  const authError=new URLSearchParams(location.search).get('authError');
+  try{session=await driveRequest('/api/google-auth');}catch(e){error=e.message;}
+  if(!dialog.open)return;
+  if(authError&&!session?.authenticated)error=['OWNER_ONLY','DRIVE_ACCESS'].includes(authError)?'表示用フォルダを所有するGoogleアカウントでログインしてください。':'Googleへの接続を完了できませんでした。もう一度ログインしてください。';
+  openDialog('ランニングの接続',`<div class="stack"><p>Driveの記録は、このフォルダを所有するGoogleアカウントだけが読み込めます。</p>${error?`<p class="form-hint">${esc(error)}</p>${session?.configured?'<a class="button" href="/api/google-auth?start=1">Googleでログイン</a>':''}`:session.authenticated?'<p>Googleに接続済みです。</p>':'<a class="button" href="/api/google-auth?start=1">Googleでログイン</a>'}${session?.authenticated?'<div class="form-actions"><a class="button" href="/?source=drive#records">Driveの記録を開く</a><button class="button secondary" data-action="drive-logout">ログアウト</button></div>':''}${usingDrive?'<button class="button secondary" data-action="drive-refresh">Driveから読み込み直す</button>':''}<a class="text-button" href="/?source=local#records">元の表示方式に戻す ${icon('arrow')}</a><p class="form-hint">この切り替えでDriveのファイルを変更することはありません。日記・呼び名・配色はそのままです。</p></div>`);
+}
+async function logoutDrive(){
+  try{await driveRequest('/api/google-auth',{action:'logout'});driveSource?.clear();location.assign('/?source=local#records');}
+  catch(error){toast(error.message);}
+}

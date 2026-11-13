@@ -16,13 +16,14 @@ PCではスクロールを使わず、画面の高さに合わせて余白・表
 
 ## ローカルで使う
 
-Node.js 20以上を使います。追加パッケージのインストールは不要です。
+Node.js 20以上を使います。初回に認証用パッケージをインストールします。
 
 ```bash
+npm ci
 npm start
 ```
 
-`http://localhost:4173/#records` を開きます。ローカルのランニング記録は `data/running.json` から読み込みます。このファイルはGitに含めません。個人データのない公開画面は下記の公開用ビルドで作ります。
+`http://127.0.0.1:4173/#records` を開きます。ローカルのランニング記録は `data/running.json` から読み込みます。このファイルはGitに含めません。個人データのない公開画面は下記の公開用ビルドで作ります。
 
 ```bash
 npm test
@@ -39,7 +40,7 @@ npm run build:public
 
 公開用ビルドは、ローカルに記録が存在しても必ず `{"days":[]}` を出力します。実際のGPSや記録を読み込ませません。Vercelもこのコマンドでビルドする設定です。
 
-公開側は空のカレンダー・月間集計から始まり、ルートは表示されません。天気は東京駅周辺の公開サンプル地点を使います。公開画面へのログイン・個人データの接続はまだ行っていません。DriveのCSVから表示用データを作る処理は、PCの常駐を必要としないApps Scriptで検証しています。
+公開側は空のカレンダー・月間集計から始まり、ルートは表示されません。天気は東京駅周辺の公開サンプル地点を使います。本人のGoogleログインで、Driveの完成データを読むプレビューを追加しました。通常の表示は従来どおりで、`/?source=drive#records` から切り替えます。設定と戻し方は [画面接続の手順](processing/running/CONNECT.md) を参照してください。
 
 日記・呼び名はそのブラウザーに保存され、GitHubやサーバーへは送信しません。ローカル版と公開版のブラウザーデータは自動同期されません。
 
@@ -64,12 +65,11 @@ npm run build:public
 - `scripts/serve.mjs`：ローカル専用サーバー
 - `scripts/build.mjs`：公開ファイルを限定して生成するビルド
 - `api/weather-area.js`：公開側でサンプル地点のみを返すAPI
+- `api/google-auth.js`、`api/running-drive.js`、`server/drive-auth.js`：本人認証と完成JSONの読み取り専用接続
 - `processing/running/`：元CSVから軽い表示用データを生成する処理。ローカル実行・保存形式・次の連携工程は [処理の説明](processing/running/README.md) を参照してください。
 
 ランニング表示用データの生成は `npm run prepare:running -- --input data/raw` で試せます。入力・出力・キャッシュは `data/` 内だけで扱います。現在の画面の読込先や、Driveの自動処理を切り替えるコマンドではありません。
 
-自動更新は、PCを常駐させずGoogle側で完結する構成を目指しています。[大きいCSV3件の初回検証](processing/running/gas/README.md)は利用者のGoogle実行で合格と報告されました。[変更の検出・差分更新・24時間監視](processing/running/gas/INCREMENTAL.md)もGoogle実行で合格と報告されました（[受領結果](processing/running/gas/RESULTS.md)）。次は合格済みのプロジェクト・キャッシュを使い、[新しいCSV1件の取込み](processing/running/gas/DISCOVERY.md)だけを確認します。12段階や24時間監視は繰り返しません。以前作った `watch:running` はローカル検証用として残していますが、運用方式としては採用していません。公開画面の読込先はまだ変更していません。
-
-**今回ChatGPTと一緒に検証する場合は、[継続同期の検証マニュアル](processing/running/gas/DISCOVERY.md)から始めてください。** 操作手順、合否の確認方法、Codexに返す結果の書式をまとめています。設定済みコードと個人データはGitHubには含めません。
+Apps Scriptでは初回3件・差分12段階・24時間監視・未登録CSV1件の取り込みがGoogle実環境で合格しました（[実測結果](processing/running/gas/RESULTS.md)）。現在は [完成データの画面接続](processing/running/CONNECT.md) へ進んでいます。過去の大規模検証をやり直す必要はありません。元のApps Scriptやキャッシュは変更せず、常時監視への切り替えはまだ行っていません。`watch:running` はローカル検証用で、常駐運用には採用していません。
 
 背景地図は [OpenStreetMap](https://www.openstreetmap.org/copyright)、天気は [Open-Meteo](https://open-meteo.com/) を使います。公開用設定は [Vercelの設定仕様](https://vercel.com/docs/project-configuration/vercel-json)に従っています。

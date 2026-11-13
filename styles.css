@@ -28,3 +28,6 @@
 .route-card,.history-card{position:relative}
 .route-card::before,.history-card::before{content:'';position:absolute;top:0;left:24px;width:36px;height:6px;border-top:2px solid var(--track);border-bottom:2px solid var(--track);pointer-events:none}
 @media(max-width:760px){.panel-heading::after{display:none}.route-card::before,.history-card::before{left:15px;width:30px;height:5px;border-width:1.5px}}
+
+.source-status{border:0;background:none;color:inherit;font:inherit;font-size:11px;cursor:pointer;padding:8px;border-radius:8px}.source-status:hover{background:color-mix(in srgb,currentColor 8%,transparent)}
+.drive-view-retry{position:absolute;top:52px;left:0;max-width:min(400px,80vw);border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface);color:var(--ink);font:inherit;font-size:11px;pointer-events:auto}

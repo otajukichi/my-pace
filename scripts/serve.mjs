@@ -5,6 +5,7 @@ import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import { createWeatherApiHandler } from './weather-area.mjs';
+import { createDriveService } from '../server/drive-auth.js';
 
 export const PROJECT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const ROOT_FILES = new Set(['index.html', 'app.js', 'styles.css']);
@@ -106,6 +107,7 @@ function plain(response, status, text) {
 /** Constructs a server without listening. The CLI below binds only to 127.0.0.1. */
 export function createStaticServer({ root = PROJECT_ROOT, weatherArea } = {}) {
   const handleApi = createWeatherApiHandler({ root, weatherArea });
+  const drive = createDriveService();
   return createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('X-Content-Type-Options', 'nosniff');
@@ -117,6 +119,9 @@ export function createStaticServer({ root = PROJECT_ROOT, weatherArea } = {}) {
       plain(response, 403, 'Local access only.\n');
       return;
     }
+    const pathname = request.url.split('?')[0];
+    if (pathname === '/api/google-auth') return drive.auth(request, response);
+    if (pathname === '/api/running-drive') return drive.artifact(request, response);
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       response.setHeader('Allow', 'GET, HEAD');
       plain(response, 405, 'Method not allowed.\n');
@@ -132,6 +137,7 @@ export function createStaticServer({ root = PROJECT_ROOT, weatherArea } = {}) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try { process.loadEnvFile?.(join(PROJECT_ROOT, '.env.local')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   const value = process.env.PORT ?? '4173';
   const port = Number(value);
   if (!/^\d+$/.test(value) || !Number.isInteger(port) || port < 1 || port > 65535) {
