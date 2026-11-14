@@ -31,3 +31,23 @@
 
 .source-status{border:0;background:none;color:inherit;font:inherit;font-size:11px;cursor:pointer;padding:8px;border-radius:8px}.source-status:hover{background:color-mix(in srgb,currentColor 8%,transparent)}
 .drive-view-retry{position:absolute;top:52px;left:0;max-width:min(400px,80vw);border:1px solid var(--border);border-radius:10px;padding:9px 12px;background:var(--surface);color:var(--ink);font:inherit;font-size:11px;pointer-events:auto}
+
+/* Account access stays in one place; diagnostic source switches live in settings. */
+.account-trigger{border-radius:999px;min-width:42px;min-height:42px;padding:5px;position:relative}
+.account-trigger:hover{background:color-mix(in srgb,currentColor 8%,transparent)}
+.account-trigger .avatar{position:relative;width:34px;height:34px}
+.account-trigger .avatar .icon{width:19px;height:19px}
+.account-trigger.is-signed-in .avatar:after{content:'';position:absolute;right:-1px;bottom:0;width:8px;height:8px;border:2px solid var(--header);border-radius:50%;background:var(--gold)}
+.account-name{padding-right:5px}.account-identity{display:flex;align-items:center;gap:15px}
+.account-symbol{width:48px;height:48px;border:1px solid var(--line);background:var(--paper);border-radius:50%;display:grid;place-items:center;color:var(--anchor)}
+.account-symbol .icon{width:24px;height:24px}.account-identity>div{display:flex;flex-direction:column;gap:5px}.account-identity strong{font-size:17px}.account-identity span:not(.account-symbol){font-size:12px;color:var(--muted)}
+.account-actions{border-block:1px solid var(--line);padding:6px 0;display:grid;gap:2px}
+.account-actions button{display:flex;align-items:center;gap:12px;padding:13px 9px;border-radius:9px;text-align:left;font-size:14px}
+.account-actions button:hover{background:color-mix(in srgb,var(--anchor) 6%,transparent)}
+.account-actions button>.icon{width:18px;height:18px}.account-actions button>.icon:last-child{margin-left:auto;width:14px;height:14px}
+.account-storage-note{display:flex;align-items:flex-start;gap:10px;color:var(--muted);font-size:12px;line-height:1.7}
+.account-storage-note>.icon{width:16px;height:16px;flex-shrink:0;margin-top:2px}.account-storage-note small{font-size:11px}
+.account-error{font-size:12px;line-height:1.8;color:var(--track)}.account-welcome small{color:var(--muted);font-size:11px;line-height:1.8;max-width:260px}
+.connection-diagnostics{border-top:1px solid var(--line);padding-top:15px}.connection-diagnostics>summary{cursor:pointer;font-size:12px;color:var(--muted)}
+.connection-diagnostics[open]>summary{margin-bottom:12px}.diagnostic-links{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.diagnostic-links>a{border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:11px}.diagnostic-links>a[aria-current]{background:var(--anchor);color:var(--paper)}

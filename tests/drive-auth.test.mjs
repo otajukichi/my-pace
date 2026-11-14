@@ -51,7 +51,7 @@ test('OAuth uses PKCE/state/nonce and private folder ownership; browser gets no 
   await h.service.auth({method:'GET',url:'/api/google-auth?start=1',headers:{host:'preview.example'}},alias);
   assert.equal(alias.headers.Location,env.MYPACE_ORIGIN+'/api/google-auth?start=1');assert(!alias.headers['Set-Cookie']);
   const done = await h.login();
-  assert.equal(done.status, 303); assert.equal(done.headers.Location, env.MYPACE_ORIGIN + '/?source=drive#records');
+  assert.equal(done.status, 303); assert.equal(done.headers.Location, env.MYPACE_ORIGIN + '/#records');
   assert(h.options.scope.includes('https://www.googleapis.com/auth/drive.readonly')); assert.equal(h.options.code_challenge_method, 'S256');
   assert.match(cookies(done), /__Host-mypace-session=/); assert(!cookies(done).includes('synthetic-access'));
   assert(done.headers['Set-Cookie'].every(c => c.includes('HttpOnly') && c.includes('SameSite=Lax') && c.includes('Secure')));

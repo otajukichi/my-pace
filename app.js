@@ -1,3 +1,4 @@
+import { sourceOverride, runningSource, readAccount, loginErrorMessage } from './lib/account.js';
 import { createDriveRunningSource, driveRequest } from './lib/running-drive.js';
 import { createStore, localDate } from './lib/state.js';
 import { createDiaryController } from './lib/diary-view.js';
@@ -17,7 +18,12 @@ let workspaceState=workspaceStore.get();
 let runs=[],selectedRunId=null,logExpanded=false,splitPage=0;
 let runsLoaded=false,runDays=new Map(),runningMonth=localDate().slice(0,7),selectedDay=null;
 let runsTask=null,runsError='';
-const usingDrive = new URLSearchParams(location.search).get('source') === 'drive';
+const diagnosticSource = sourceOverride(location.search);
+let account = { phase:'checking', configured:null, authenticated:null, error:'' }, accountTask=null, accountVersion=0;
+let activeSource=diagnosticSource==='local'?'local':'checking', usingDrive=false, runsVersion=0;
+const authError=loginErrorMessage(new URLSearchParams(location.search).get('authError'));
+let loggingOut=false;
+const accountChannel=typeof BroadcastChannel==='function'?new BroadcastChannel('mypace-account'):null;
 let driveSource = null, driveRoutes = [], driveViewKey = '', driveLoadedKey = '', driveVersion = 0, driveViewError = '', maskErrorShown = false;
 
 let lastSelectedDay=localDate(),calendarEnd=localDate().slice(0,7),calendarMonths=6;
@@ -42,13 +48,21 @@ function checkStorage(){const errors=[workspaceStore.status().error].filter(Bool
 function saveWorkspace(mutator){workspaceState=workspaceStore.update(mutator);checkStorage();}
 function savedNotice(message){toast(workspaceStore.status().available?message:'変更はこの画面内のみです。設定から書き出せます。');}
 async function api(path,body){const options=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};const response=await fetch(path,options);let data;try{data=await response.json();}catch{throw new Error('ローカルサーバーを再起動して、もう一度お試しください。');}if(!response.ok){const error=new Error(data.error?.message||'データを取得できませんでした。');error.code=data.error?.code;error.retryAfterSeconds=data.error?.retryAfterSeconds;throw error;}return data;}
-function renderHeader(){const name=workspaceState.profile.name||'Guest';$('#header').innerHTML=`<a class="brand" href="#home" aria-label="my pace ホーム" ${activePage.id==='home'?'aria-current="page"':''}><img src="/assets/mark.svg" alt=""><span class="brand-word">my pace<span class="brand-dot">.</span></span></a><nav class="top-nav" aria-label="取り組み">${categoryNavigation(activePage.id)}</nav><div class="header-right"><button class="local-status source-status" data-action="connection">${usingDrive?'Drive プレビュー':'ローカル'}</button><button class="profile-button" data-action="settings" aria-label="設定"><span class="avatar">${esc(name.slice(0,1).toUpperCase())}</span><span>${esc(name)}</span>${icon('settings')}</button></div>`;$('#records-heading').innerHTML=`${icon('calendar')}記録`;$('.diary-trigger').innerHTML=`${icon('note')}<span>今日の日記</span>`;}
+function renderHeader(){
+  const name=workspaceState.profile.name||'';
+  const label=account.authenticated===true?'ログイン済み':account.phase==='checking'?'接続を確認中':'アカウント';
+  $('#header').innerHTML=`<a class="brand" href="#home" aria-label="my pace ホーム" ${activePage.id==='home'?'aria-current="page"':''}><img src="/assets/mark.svg" alt=""><span class="brand-word">my pace<span class="brand-dot">.</span></span></a><nav class="top-nav" aria-label="取り組み">${categoryNavigation(activePage.id)}</nav><div class="header-right"><button class="profile-button account-trigger ${account.authenticated===true?'is-signed-in':''}" data-action="account" aria-label="アカウント" aria-haspopup="dialog" title="${label}"><span class="avatar">${account.authenticated===true&&name?esc(name.slice(0,1).toUpperCase()):icon('user')}</span>${name?`<span class="account-name">${esc(name)}</span>`:''}</button></div>`;
+  $('#records-heading').innerHTML=`${icon('calendar')}記録`;$('.diary-trigger').innerHTML=`${icon('note')}<span>今日の日記</span>`;
+}
 
 function historyPanel(){return runningPanel(runningContext());}
 function historyCard(){return runningSelectionCard(runningContext());}
 function renderPanel(){
   if(!isRunning())return;
   $('#workspace').className=`workspace with-sidebar history ${logExpanded?'log-expanded':''}`;
+  if(activeSource==='checking'){$('#context').innerHTML='<div class="loading"><span class="spinner"></span>アカウントを確認しています</div>';return;}
+  if(activeSource==='unavailable'){$('#context').innerHTML=`<div class="empty">${icon('cloud')}<h2>接続を確認できませんでした</h2><p>${esc(account.error)}</p><button class="button" data-action="account-retry">もう一度確認</button></div>`;return;}
+  if(activeSource==='guest'){$('#context').innerHTML=`<div class="empty account-welcome">${icon('run')}<h2>自分の記録を、ここに。</h2><p>${authError?esc(authError):'Googleでログインすると、走った記録を表示できます。'}</p><button class="button" data-action="account">アカウントを開く</button><small>日記と設定は、このブラウザーに保存されます。</small></div>`;return;}
   if(runsError){$('#context').innerHTML=`<div class="empty">${icon('note')}<h2>記録を読み込めませんでした</h2><p>${esc(runsError)}</p><button class="button" data-action="retry-runs">読み込み直す</button></div>`;return;}
   if(!runsLoaded){$('#context').innerHTML='<div class="loading"><span class="spinner"></span>記録を読み込んでいます</div>';return;}
   $('#context').innerHTML=historyPanel();
@@ -57,7 +71,7 @@ function renderMapTop(){ $('#map-top').className='map-top history-map-top'; $('#
 function renderMapBottom(){ $('#map-bottom').innerHTML=historyCard(); }
 function mapOptions(){
   const padding={top:Math.ceil($('#map-top').getBoundingClientRect().height)+45,right:isMobile()?55:65,bottom:Math.ceil($('#map-bottom').getBoundingClientRect().height)+34,left:isMobile()?22:35};
-  const exploration={exploredRuns:usingDrive?[]:runs,explorationEnabled:true,maskTiles:driveSource?.maskTiles,onMaskError:()=>{if(!maskErrorShown){maskErrorShown=true;toast('探索範囲を読み込めませんでした。接続から読み込み直せます。');}}};
+  const exploration={exploredRuns:usingDrive?[]:runs,explorationEnabled:true,maskTiles:driveSource?.maskTiles,onMaskError:()=>{if(!maskErrorShown){maskErrorShown=true;toast('探索範囲を読み込めませんでした。アカウントから読み込み直せます。');void refreshAccount();}}};
     const overlay=$('#map-bottom');
     if(isMobile()&&logExpanded){
       const stage=$('.map-stage').getBoundingClientRect(),card=overlay.querySelector('.running-selection'),analysis=overlay.querySelector('.running-analysis');
@@ -91,6 +105,7 @@ function render(){
     return;
   }
   renderPanel();
+  if(activeSource==='checking'||activeSource==='unavailable')return;
   if(!runsLoaded){if(!runsError)void loadRuns();return;}
   renderMapTop();renderMapBottom();
   if(usingDrive)void loadDriveView();
@@ -107,10 +122,10 @@ window.addEventListener('hashchange',()=>{
 });
 
 
-function openDialog(title,content,wide=false){dialog.className=wide?'dialog-wide':'';dialog.innerHTML=`<div class="dialog-header"><h2 id="dialog-title">${title}</h2><button class="icon-button" data-action="close" aria-label="閉じる">${icon('close')}</button></div><div class="dialog-content">${content}</div>`;if(!dialog.open)dialog.showModal();}
+function openDialog(title,content,wide=false){delete dialog.dataset.view;dialog.className=wide?'dialog-wide':'';dialog.innerHTML=`<div class="dialog-header"><h2 id="dialog-title">${title}</h2><button class="icon-button" data-action="close" aria-label="閉じる">${icon('close')}</button></div><div class="dialog-content">${content}</div>`;if(!dialog.open)dialog.showModal();}
 function closeDialog(){dialog.close();}
 function settingsDialog(){
-  openDialog('マイスペース',`<div class="stack"><form class="form" id="profile-form"><label class="field">呼び名<input name="name" value="${esc(workspaceState.profile.name)}" maxlength="100" required></label><div class="form-actions"><button class="button secondary" type="submit">名前を保存</button></div></form>${themeSettings()}<section class="settings-section"><div class="settings-line"><span>ランニングの接続</span><button class="text-button" data-action="connection">${usingDrive?'Drive プレビュー':'ローカル'} ${icon('arrow')}</button></div></section><section class="settings-section"><div class="settings-line"><span>天気のエリア</span><button class="text-button" data-action="weather-area">変更 ${icon('arrow')}</button></div><div class="settings-line"><span>ローカルデータ</span><button class="text-button" data-action="export">${icon('download')}書き出す</button></div><p class="form-hint">日記と、以前の予定・習慣・ノートを含めて書き出します。</p><button class="text-button" data-action="sources">データと外部サービスについて ${icon('arrow')}</button></section></div>`);
+  openDialog('マイスペース',`<div class="stack"><form class="form" id="profile-form"><label class="field">呼び名<input name="name" value="${esc(workspaceState.profile.name)}" maxlength="100" required></label><div class="form-actions"><button class="button secondary" type="submit">名前を保存</button></div></form>${themeSettings()}<section class="settings-section"><div class="settings-line"><span>天気のエリア</span><button class="text-button" data-action="weather-area">変更 ${icon('arrow')}</button></div><div class="settings-line"><span>ローカルデータ</span><button class="text-button" data-action="export">${icon('download')}書き出す</button></div><p class="form-hint">日記と、以前の予定・習慣・ノートを含めて書き出します。</p><button class="text-button" data-action="sources">データと外部サービスについて ${icon('arrow')}</button></section>${connectionDiagnostics()}<button class="text-button" data-action="account">${icon('left')} アカウントに戻る</button></div>`);
 }
 function weatherAreaDialog(){
   openDialog('天気のエリア',`<div class="stack"><div class="source-box"><strong>現在：${esc(area.areaName)}</strong>現在・今後の予報に使うエリアです。選択しているランの日付とは連動しません。</div><p class="form-hint">記録の周辺を選ぶと、最新の記録の位置を緯度・経度0.1度単位に丸めて、Open-Meteoに送ります。現在地のGPS取得は行いません。</p><div class="form-actions"><button class="button secondary" data-action="weather-area-demo">東京駅周辺</button><button class="button" data-action="weather-area-recorded">記録の周辺</button></div></div>`);
@@ -137,6 +152,7 @@ function sourcesDialog(){
 }
 function download(contents,type,name){const url=URL.createObjectURL(new Blob([contents],{type})),a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
 function ensureArea(){
+  if(activeSource!=='local')return Promise.resolve();
   if(!areaTask)areaTask=api('/api/weather-area').then(value=>{area=value;}).catch(error=>{areaTask=null;throw error;});
   return areaTask;
 }
@@ -181,8 +197,9 @@ document.addEventListener('click',event=>{
   if(d.splitStep){splitPage=Math.max(0,splitPage+Number(d.splitStep));refreshRunningLog(`[data-split-step="${d.splitStep}"]`);return;}
   if(d.weatherHour!==undefined){selectedWeatherHour=Number(d.weatherHour);renderWeatherDialog();return;}
   switch(d.action){
-    case'connection':connectionDialog();break;
-    case'drive-refresh':location.reload();break;
+    case'account':case'connection':accountDialog();break;
+    case'account-retry':refreshAccount();break;
+    case'drive-refresh':closeDialog();resetRunningData();render();break;
     case'drive-logout':logoutDrive();break;
     case'retry-drive-view':driveViewKey='';driveViewError='';render();break;
     case'exploration-help':explorationHelp();break;
@@ -199,7 +216,7 @@ document.addEventListener('click',event=>{
     case'sources':sourcesDialog();break;
     case'weather':weatherDialog();break;
     case'retry-weather':loadWeather();break;
-    case'retry-runs':runsError='';render();break;
+    case'retry-runs':resetRunningData();render();break;
     case'export':download(JSON.stringify({version:2,workspace:workspaceStore.get()},null,2),'application/json',`my-pace-${localDate()}.json`);toast('ローカルデータを書き出しました');break;
   }
 });
@@ -210,7 +227,11 @@ document.addEventListener('submit',event=>{
   catch{toast('入力内容を確認してください。変更は保存されていません。');}
 });
 dialog.addEventListener('click',event=>{if(event.target===dialog){const r=dialog.getBoundingClientRect();if(event.clientX<r.left||event.clientX>r.right||event.clientY<r.top||event.clientY>r.bottom)closeDialog();}});
-window.addEventListener('focus',()=>{if(isRunning()&&runsLoaded)loadWeather();});
+window.addEventListener('focus',()=>{void refreshAccount();if(isRunning()&&runsLoaded)loadWeather();});
+window.addEventListener('online',()=>void refreshAccount());
+window.addEventListener('pageshow',event=>{if(event.persisted)void refreshAccount();});
+window.addEventListener('pagehide',()=>{if(usingDrive){accountVersion++;accountTask=null;account={...account,phase:'checking',authenticated:null};applyAccount();}});
+if(accountChannel)accountChannel.onmessage=event=>{if(event.data==='logout'){accountVersion++;accountTask=null;account={phase:'ready',configured:account.configured,authenticated:false,error:''};applyAccount();}else if(event.data==='login')void refreshAccount();};
 let lastMobile=isMobile(),lastSlotCount=runningSlotCount(),lastSplitPageSize=runningContext().splitPageSize,resizeTimer;
 window.addEventListener('resize',()=>{
   clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{
@@ -286,30 +307,69 @@ document.addEventListener('keydown',event=>{
 function inspectCalendar(event){const cell=event.target.closest?.('[data-calendar-day]'),hint=$('#calendar-inspection');if(cell&&hint)hint.textContent=cell.title;}
 document.addEventListener('pointerover',inspectCalendar);document.addEventListener('focusin',inspectCalendar);
 
+function resetRunningData(){
+  runsVersion++;driveVersion++;runsTask=null;runsLoaded=false;runsError='';
+  driveSource?.clear();driveSource=null;driveRoutes=[];driveViewKey='';driveLoadedKey='';driveViewError='';maskErrorShown=false;
+  runs=[];runDays=new Map();explorationStats=new Map();selectedDay=null;selectedRunId=null;logExpanded=false;splitPage=0;
+  mapView?.destroy();mapView=null;$('#map-top').innerHTML='';$('#map-bottom').innerHTML='';
+}
+function applyAccount(){
+  const next=runningSource(diagnosticSource,account);
+  if(next!==activeSource){
+    activeSource=next;usingDrive=next==='drive';resetRunningData();
+    weatherVersion++;weatherController?.abort();weatherTask=null;weatherBusy=false;weather=null;weatherError='';areaTask=null;
+    area={mode:'demo',areaName:'東京駅周辺（公開サンプル）',center:{lat:35.7,lon:139.8}};
+  }
+  render();
+  if(dialog.open&&dialog.dataset.view==='account')accountDialog();
+}
+function refreshAccount(){
+  if(accountTask||loggingOut)return accountTask;
+  const version=++accountVersion,previous=account;
+  accountTask=readAccount(previous).then(next=>{
+    if(version!==accountVersion)return;
+    account=next;applyAccount();
+    if(next.authenticated===true&&previous.authenticated!==true)accountChannel?.postMessage('login');
+  }).finally(()=>{if(version===accountVersion)accountTask=null;});
+  return accountTask;
+}
+function requireLogin(message){
+  accountVersion++;accountTask=null;account={phase:'ready',configured:true,authenticated:false,error:''};
+  // Also reset when the loss is detected by a route request, not the session check.
+  resetRunningData();applyAccount();toast(message||'もう一度Googleでログインしてください。');
+}
 function loadRuns(){
-  if(runsTask||runsLoaded)return runsTask;
+  if(runsTask||runsLoaded||['checking','unavailable'].includes(activeSource))return runsTask;
+  if(activeSource==='guest'){runsLoaded=true;render();return;}
+  const version=++runsVersion,source=activeSource;
   runsTask=(async()=>{
     try{
-      if(usingDrive){
-        const session=await driveRequest('/api/google-auth');
-        if(!session.authenticated)throw Error('Googleでログインすると、Driveの記録を表示できます。右上の「Drive プレビュー」から接続してください。');
-        driveSource?.clear();driveSource=createDriveRunningSource();
-        const data=await driveSource.load();runDays=indexRunDays(data.runs);explorationStats=data.explorationStats;
+      let data;
+      if(source==='drive'){
+        const reader=createDriveRunningSource();driveSource=reader;
+        data=await reader.load();
       }else{
         const response=await fetch('/data/running.json');
         if(!response.ok)throw new Error('ランニング記録を読み込めませんでした。');
-        const data=await response.json();runDays=indexRunDays(data.days);
+        data={runs:(await response.json()).days};
       }
-      runs=[...runDays.values()].flatMap(day=>day.runs);if(!usingDrive)explorationStats=explorationByRun(runs);selectedDay=[...runDays.keys()].at(-1)||null;
+      if(version!==runsVersion)return;
+      runDays=indexRunDays(data.runs);runs=[...runDays.values()].flatMap(day=>day.runs);
+      explorationStats=source==='drive'?data.explorationStats:explorationByRun(runs);
+      selectedDay=[...runDays.keys()].at(-1)||null;
       runningMonth=initialRunningMonth(runDays);lastSelectedDay=selectedDay||localDate();calendarEnd=runningMonth;
       selectedRunId=runDays.get(selectedDay)?.runs.at(-1)?.id||null;runsLoaded=true;
-    }catch(error){runsError=error.message;}
-    finally{runsTask=null;render();}
+    }catch(error){
+      if(version!==runsVersion)return;
+      if(error.code==='SIGN_IN'){requireLogin(error.message);return;}
+      runsError=error.message;
+    }finally{if(version===runsVersion){runsTask=null;render();}}
   })();
   return runsTask;
 }
 
 render();
+void refreshAccount();
 
 async function loadDriveView() {
   if(!driveSource||!runsLoaded)return;
@@ -325,20 +385,27 @@ async function loadDriveView() {
     driveRoutes=value.routes;driveLoadedKey=selection+'|'+key;render();
   }catch(error){
     if(version!==driveVersion)return;
-    if(error.code==='SIGN_IN'){driveSource.clear();driveRoutes=[];runs=[];runDays=new Map();explorationStats.clear();runsLoaded=false;runsError=error.message;mapView?.destroy();mapView=null;$('#map-top').innerHTML='';$('#map-bottom').innerHTML='';render();}
+    if(error.code==='SIGN_IN')requireLogin(error.message);
     else{driveViewError=error.message;renderMapTop();toast(error.message);}
   }
 }
-async function connectionDialog(){
-  openDialog('ランニングの接続','<p class="form-hint">接続を確認しています…</p>');
-  let session,error;
-  const authError=new URLSearchParams(location.search).get('authError');
-  try{session=await driveRequest('/api/google-auth');}catch(e){error=e.message;}
-  if(!dialog.open)return;
-  if(authError&&!session?.authenticated)error=['OWNER_ONLY','DRIVE_ACCESS'].includes(authError)?'表示用フォルダを所有するGoogleアカウントでログインしてください。':'Googleへの接続を完了できませんでした。もう一度ログインしてください。';
-  openDialog('ランニングの接続',`<div class="stack"><p>Driveの記録は、このフォルダを所有するGoogleアカウントだけが読み込めます。</p>${error?`<p class="form-hint">${esc(error)}</p>${session?.configured?'<a class="button" href="/api/google-auth?start=1">Googleでログイン</a>':''}`:session.authenticated?'<p>Googleに接続済みです。</p>':'<a class="button" href="/api/google-auth?start=1">Googleでログイン</a>'}${session?.authenticated?'<div class="form-actions"><a class="button" href="/?source=drive#records">Driveの記録を開く</a><button class="button secondary" data-action="drive-logout">ログアウト</button></div>':''}${usingDrive?'<button class="button secondary" data-action="drive-refresh">Driveから読み込み直す</button>':''}<a class="text-button" href="/?source=local#records">元の表示方式に戻す ${icon('arrow')}</a><p class="form-hint">この切り替えでDriveのファイルを変更することはありません。日記・呼び名・配色はそのままです。</p></div>`);
+function connectionDiagnostics(){
+  return `<details class="connection-diagnostics"><summary>接続の確認（検証用）</summary><p class="form-hint">表示方式を一時的に固定できます。Driveの内容は変更しません。</p><div class="diagnostic-links"><a href="/#records" ${!diagnosticSource?'aria-current="true"':''}>通常表示（自動）</a><a href="/?source=local#records" ${diagnosticSource==='local'?'aria-current="true"':''}>ローカル</a><a href="/?source=drive#records" ${diagnosticSource==='drive'?'aria-current="true"':''}>Driveプレビュー</a></div></details>`;
+}
+function accountDialog(){
+  const signedIn=account.authenticated===true,name=workspaceState.profile.name;
+  const message=account.phase==='error'?account.error:account.phase==='checking'?'接続を確認しています。':account.configured===false?'Google接続の初回設定がまだ完了していません。':signedIn?(diagnosticSource==='local'?'検証用のローカル表示です。設定から通常表示へ戻せます。':'走った記録をGoogle Driveから読み込みます。'):'記録を保存したGoogleアカウントでログインしてください。';
+  openDialog('アカウント',`<div class="stack account-menu"><div class="account-identity"><span class="account-symbol">${icon('user')}</span><div><strong>${signedIn?esc(name||'マイアカウント'):'MyPaceへようこそ'}</strong><span>${signedIn?'Googleに接続済み':'自分の記録と、いつもの設定'}</span></div></div><p class="form-hint" role="status">${esc(message)}</p>${authError&&!signedIn?`<p class="account-error">${esc(authError)}</p>`:''}${!signedIn&&account.configured===true?'<a class="button google-login" href="/api/google-auth?start=1">Googleでログイン</a>':''}${account.phase==='error'||account.configured===false?'<button class="button secondary" data-action="account-retry">接続を確認する</button>':''}<div class="account-actions"><button data-action="settings">${icon('settings')}<span>設定</span>${icon('chevron')}</button>${signedIn?`<button data-action="drive-refresh">${icon('route')}<span>ランニング記録を更新</span>${icon('chevron')}</button><button data-action="drive-logout" ${loggingOut?'disabled':''}>${icon('logout')}<span>${loggingOut?'ログアウトしています…':'ログアウト'}</span></button>`:''}</div><p class="account-storage-note">${icon('note')}<span>日記・設定はこのブラウザーに保存<br><small>Driveへの同期は、今後対応します。</small></span></p></div>`);
+  dialog.dataset.view='account';
 }
 async function logoutDrive(){
-  try{await driveRequest('/api/google-auth',{action:'logout'});driveSource?.clear();location.assign('/?source=local#records');}
-  catch(error){toast(error.message);}
+  if(loggingOut)return;loggingOut=true;accountDialog();
+  try{
+    await driveRequest('/api/google-auth',{action:'logout'});
+    accountVersion++;accountTask=null;account={phase:'ready',configured:true,authenticated:false,error:''};
+    resetRunningData();accountChannel?.postMessage('logout');
+    activeSource='guest';usingDrive=false;closeDialog();render();
+    // Replacing only an unchanged fragment does not reload the document.
+    history.replaceState(null,'','/#records');location.reload();
+  }catch(error){loggingOut=false;accountDialog();toast(error.message);}
 }

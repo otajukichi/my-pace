@@ -123,13 +123,13 @@ export function createDriveService({ env = process.env, fetchImpl = fetch, oauth
         if (!identity?.email_verified || !identity.sub || !equal(identity.nonce, pending.nonce) || !tokens.refresh_token || !tokens.access_token) throw new AccessError('IDENTITY');
         await folder(c, tokens.access_token);
         cookie(res, c, 'session', { access: tokens.access_token, refresh: tokens.refresh_token, tokenExpires: tokens.expiry_date, sub: identity.sub, context: context(c), expires: Date.now() + 30 * 86400000 });
-        return redirect(res, c.origin + '/?source=drive#records');
+        return redirect(res, c.origin + '/#records');
       }
       try { await session(req, res, c); return send(res, 200, { configured: true, authenticated: true }); }
       catch (error) { if (error.code !== 'SIGN_IN') throw error; return send(res, 200, { configured: true, authenticated: false }); }
     } catch (error) {
       const code = error instanceof AccessError ? error.code : 'SIGN_IN_FAILED';
-      if (c && /[?&](?:code|error)=/.test(req.url)) return redirect(res, c.origin + '/?source=drive&authError=' + encodeURIComponent(code) + '#records');
+      if (c && /[?&](?:code|error)=/.test(req.url)) return redirect(res, c.origin + '/?authError=' + encodeURIComponent(code) + '#records');
       return send(res, error.status || 503, { error: { code } });
     }
   }
