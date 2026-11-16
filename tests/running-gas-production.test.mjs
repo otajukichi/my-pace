@@ -1,0 +1,200 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { writeFile, readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { prepareRunning } from '../processing/running/materialize.mjs';
+import { hash, json } from '../processing/running/cache.mjs';
+import { bundleRunningProduction } from '../scripts/build-running-gas-production.mjs';
+import { productionFixture, prepare, start, until, prop, state, tick, put, folder, replaceBytes, csv, unchangedOriginals, PREFIX, TICK } from './helpers/running-production.mjs';
+
+async function independent(fixture) {
+  const { h, temp } = fixture, sources = [];
+  // The old three source keys are intentionally retained; unknown uploads use GPS hashes.
+  for (const file of Object.values(state(h).committed)) {
+    const path = join(temp, file.id + '.csv'); await writeFile(path, h.files.get(file.id).bytes);
+    let id = /^original-[0-2]$/.test(file.id) ? 'source-' + file.id.slice(-1) : null;
+    if (!id) {
+      const cache = join(temp, 'single-' + file.id);
+      await prepareRunning({ sources: [{ id: 'single', path }], cache, output: cache + '-output' });
+      id = JSON.parse(await readFile(join(cache, hash('single') + '.json'), 'utf8')).value.gpsHash;
+    }
+    sources.push({ id, path });
+  }
+  const result = await prepareRunning({ sources, cache: join(temp, 'full-cache'), output: join(temp, 'full-output') });
+  assert.equal(state(h).catalogHash, hash(json(result.catalog)));
+  const actual = JSON.parse(h.files.get('production-index').bytes);
+  assert.deepEqual(actual, result.catalog);
+  // The catalog addresses every display object by its content hash. Verify
+  // the actual Drive bodies as well as the index, including exploration.
+  for (const [name, id] of Object.entries(state(h).artifacts)) {
+    assert.equal(hash(h.files.get(id).bytes), name.slice(0, -5));
+  }
+}
+
+test('production adopts the uploaded view and passed caches, reads no original CSV, then publishes the independently rebuilt real history', async t => {
+  const f = await productionFixture(t), { h, before, index, baseline } = f;
+  prepare(h);
+  assert.deepEqual(h.files.get('production-index').bytes, index);
+  assert.equal(prop(h, 'METRICS').rawBytesRequested || 0, 0);
+  assert.equal(Object.keys(state(h).committed).length, 4);
+  assert(state(h).cacheImported > 4); assert(!h.triggers.some(t => t.handler === TICK));
+  unchangedOriginals(h, baseline);
+  start(h); assert.equal(prop(h, 'METRICS').rawBytesRequested || 0, 0);
+  assert.equal(Object.keys(state(h).committed).length, 4); await independent(f);
+  unchangedOriginals(h, baseline);
+  const beforeRequests = h.requests.length, beforeMetrics = prop(h, 'METRICS'); tick(h);
+  assert.equal(prop(h, 'STATUS'), 'WATCHING'); assert.equal(prop(h, 'METRICS').rawBytesRequested || 0, 0);
+  assert.equal(prop(h, 'METRICS').publications, beforeMetrics.publications);
+  assert(h.requests.slice(beforeRequests).every(r => !r.range));
+  assert(!h.requests.slice(before).some(r => r.method === 'delete' || r.path.endsWith('/copy')));
+  assert(!/original-folder|original-fourth|management-root|latitude|longitude/.test(JSON.stringify(h.logs.slice(-6))));
+});
+
+test('new and backfilled CSV, content edit, rename and removal update the existing view and exploration together', async t => {
+  const f = await productionFixture(t), { h, baseline } = f; prepare(h); start(h);
+  folder(h, 'nested', 'original-folder');
+  put(h, 'added', 'added.csv', 'nested', Buffer.from(csv(10)), 'text/csv');
+  tick(h); until(h, ['WATCHING']);
+  assert.equal(Object.keys(state(h).committed).length, 5); await independent(f);
+  const bytes = prop(h, 'METRICS').rawBytesRequested;
+  put(h, 'backfilled', 'old.csv', 'nested', Buffer.from(csv(-1)), 'text/csv');
+  tick(h); until(h, ['WATCHING']); await independent(f);
+  assert.equal(prop(h, 'METRICS').rawBytesRequested - bytes, h.files.get('backfilled').bytes.length);
+  const beforeRename = prop(h, 'METRICS'); h.files.get('added').meta.name = 'renamed.csv'; h.files.get('added').meta.version = '2';
+  tick(h); until(h, ['WATCHING']); assert.equal(prop(h, 'METRICS').rawBytesRequested, beforeRename.rawBytesRequested);
+  replaceBytes(h, 'added', Buffer.from(csv(11))); tick(h); until(h, ['WATCHING']); await independent(f);
+  h.files.get('backfilled').meta.trashed = true; tick(h); until(h, ['WATCHING']); await independent(f);
+  unchangedOriginals(h, baseline);
+});
+
+test('a lost index response resumes the same generation and rollback restores the exact working four-record view', async t => {
+  let armed = false, lost = false;
+  const { h, baseline, index } = await productionFixture(t, { afterRequest({ method, path }) {
+    if (armed && !lost && method === 'patch' && path === 'files/production-index') { lost = true; throw Error('private response'); }
+  } });
+  prepare(h); armed = true; start(h); assert(lost);
+  assert.equal([...h.files.values()].filter(f => f.meta.name === 'index.json' && f.meta.parents?.includes('production-derived')).length, 1);
+  h.invoke('rollbackMyPaceRunningToInitial'); assert.equal(prop(h, 'STATUS'), 'ROLLED_BACK');
+  assert.deepEqual(h.files.get('production-index').bytes, index); unchangedOriginals(h, baseline);
+  assert.deepEqual(h.triggers, [{ handler: 'unrelatedExistingTestHandler' }]);
+  const count = h.requests.length; h.invoke(TICK); assert.equal(h.requests.length, count);
+  start(h); assert.equal(prop(h, 'STATUS'), 'WATCHING');
+});
+
+test('daily budget exhaustion pauses and resumes automatically without discarding state or spinning every five minutes', async t => {
+  const { h } = await productionFixture(t); prepare(h); start(h);
+  const budget = prop(h, 'BUDGET'); const hour = Math.max(...Object.keys(budget.hours).map(Number)); budget.hours = { [hour]: 44 * 60000 };
+  h.properties.set(PREFIX + 'BUDGET', JSON.stringify(budget));
+  tick(h); assert.equal(prop(h, 'STATUS'), 'BUDGET_WAIT');
+  assert(h.triggers.some(t => t.handler === 'myPaceRunningWake')); assert(!h.triggers.some(t => t.handler === TICK));
+  const calls = h.requests.length; tick(h); assert.equal(h.requests.length, calls);
+  h.advance(26 * 3600000); h.invoke('myPaceRunningWake');
+  assert.equal(prop(h, 'STATUS'), 'WATCHING'); assert(h.triggers.some(t => t.handler === TICK));
+  assert(!h.triggers.some(t => t.handler === 'myPaceRunningWake'));
+  h.invoke('stopMyPaceRunningProduction'); assert.deepEqual(h.triggers, [{ handler: 'unrelatedExistingTestHandler' }]);
+  h.invoke('prepareMyPaceRunningProduction'); assert.equal(prop(h, 'STATUS'), 'ALREADY_STARTED');
+  assert.equal(prop(h, 'ENABLED'), false); assert.deepEqual(h.triggers, [{ handler: 'unrelatedExistingTestHandler' }]);
+});
+
+test('large CSV resumes after a range failure, preserving original data and the previous index until complete', async t => {
+  let armed = false, lost = false;
+  const { h, index } = await productionFixture(t, { beforeRequest({ path, options }) {
+    if (armed && !lost && path === 'files/large' && /^bytes=1048576-/.test(options.headers?.Range || '')) { lost = true; return { status: 503 }; }
+  } });
+  prepare(h); start(h); const previous = Buffer.from(h.files.get('production-index').bytes);
+  put(h, 'large', 'large.csv', 'original-folder', Buffer.from(csv(12, true)), 'text/csv'); armed = true;
+  tick(h); until(h, ['DRIVE_RETRYABLE']); assert.deepEqual(h.files.get('production-index').bytes, previous);
+  assert.equal(state(h).job.digest.length, 1048576); const at = h.requests.length;
+  tick(h); until(h, ['WATCHING']); assert(lost);
+  assert.match(h.requests.slice(at).find(r => r.range).range, /^bytes=1048576-/);
+  assert.notDeepEqual(h.files.get('production-index').bytes, index);
+});
+
+test('incomplete inventory and sharing changes fail closed; production cannot write a CSV even with broad OAuth scope', async t => {
+  let incomplete = false;
+  const { h, baseline } = await productionFixture(t, { transformList(page, { folder }) { return incomplete && folder === 'original-folder' ? { ...page, incompleteSearch: true } : page; } });
+  prepare(h); start(h); const index = Buffer.from(h.files.get('production-index').bytes);
+  incomplete = true; tick(h); assert.equal(prop(h, 'STATUS'), 'INCOMPLETE_SOURCE_LIST');
+  assert.deepEqual(h.files.get('production-index').bytes, index); assert(!prop(h, 'ENABLED'));
+  incomplete = false; h.files.get('management-root').meta.shared = true;
+  h.invoke('startMyPaceRunningProduction'); assert.equal(prop(h, 'STATUS'), 'OWNER_PRIVATE_REQUIRED');
+  h.files.get('management-root').meta.shared = false;
+  const code = h.code;
+  h.replaceCode(code + '\nfunction forbiddenTest() { pr = { root: ' + JSON.stringify(prop(h, 'ROOT')) + ' }; prWrite("original-0", "original-0.csv", "bad", "original-folder"); }');
+  assert.throws(() => h.invoke('forbiddenTest'), /WRITE_PARENT_FORBIDDEN/); h.replaceCode(code);
+  unchangedOriginals(h, baseline);
+});
+
+test('more than 25 sources are imported in small generations; every intermediate view stays readable', async t => {
+  const f = await productionFixture(t, { listPageSize: 7 }), { h } = f;
+  for (let i = 15; i < 39; i++) put(h, 'history-' + i, 'history-' + i + '.csv', 'original-folder', Buffer.from(csv(i)), 'text/csv');
+  prepare(h); assert.equal(state(h).sourceCount, 28); assert.equal(state(h).pending, 24);
+  h.invoke('startMyPaceRunningProduction');
+  let maximum = 4, generations = 0;
+  for (let i = 0; i < 150 && prop(h, 'STATUS') !== 'WATCHING'; i++) {
+    tick(h);
+    assert(prop(h, 'ENABLED'), JSON.stringify(h.invoke('showMyPaceRunningReport')));
+    if (prop(h, 'STATUS') === 'UPDATED') {
+      const count = Object.keys(state(h).committed).length;
+      assert(count - maximum <= 3); maximum = count; generations++;
+      const catalog = JSON.parse(h.files.get('production-index').bytes);
+      const visit = value => {
+        if (!value || typeof value !== 'object') return;
+        if (value.path) assert(state(h).artifacts[value.path.slice(8)]);
+        else Object.values(value).forEach(visit);
+      }; visit(catalog);
+    }
+  }
+  assert.equal(prop(h, 'STATUS'), 'WATCHING'); assert.equal(maximum, 28); assert.equal(generations, 8);
+  const expectedBytes = [...h.files.values()].filter(f => /^history-/.test(f.meta.id)).reduce((n, f) => n + f.bytes.length, 0);
+  assert.equal(prop(h, 'METRICS').rawBytesRequested, expectedBytes); await independent(f);
+});
+
+test('a chunked import progresses across repeated time slices, even before its source count increases', async t => {
+  let slow = false;
+  const { h } = await productionFixture(t, { beforeRequest({ path, options }) {
+    if (slow && path === 'files/sliced' && options.headers?.Range) h.advance(91000);
+  } });
+  prepare(h); start(h);
+  const bytes = Buffer.from(csv(20, true).replaceAll('x'.repeat(18000), 'x'.repeat(60000)));
+  put(h, 'sliced', 'sliced.csv', 'original-folder', bytes, 'text/csv'); slow = true;
+  tick(h); until(h, ['WATCHING']);
+  assert.equal(prop(h, 'METRICS').rawBytesRequested, bytes.length);
+  assert.equal(Object.keys(state(h).committed).length, 5);
+});
+
+test('external index changes fail closed, and a manual rollback works during budget wait', async t => {
+  const { h, index } = await productionFixture(t); prepare(h); start(h);
+  const before = Buffer.from(h.files.get('production-index').bytes);
+  replaceBytes(h, 'production-index', Buffer.from('{}\n'));
+  put(h, 'after-external', 'new.csv', 'original-folder', Buffer.from(csv(21)), 'text/csv');
+  tick(h); until(h, ['CATALOG_CHANGED_EXTERNALLY']);
+  assert.equal(h.files.get('production-index').bytes.toString(), '{}\n');
+  replaceBytes(h, 'production-index', before);
+  const b = prop(h, 'BUDGET'), hour = Math.max(...Object.keys(b.hours).map(Number)); b.hours = { [hour]: 45 * 60000 }; b.requests = 12000;
+  h.properties.set(PREFIX + 'BUDGET', JSON.stringify(b));
+  h.invoke('startMyPaceRunningProduction'); assert.equal(prop(h, 'STATUS'), 'BUDGET_WAIT');
+  h.invoke('rollbackMyPaceRunningToInitial'); assert.equal(prop(h, 'STATUS'), 'ROLLED_BACK');
+  assert.deepEqual(h.files.get('production-index').bytes, index); assert.deepEqual(h.triggers, [{ handler: 'unrelatedExistingTestHandler' }]);
+});
+
+test('incorrect roots or an unpassed starting catalog stop before creating any production files', async t => {
+  const { h, settings, before } = await productionFixture(t), size = h.files.size;
+  h.replaceCode(await bundleRunningProduction({ ...settings, sourceFolderId: settings.rootFolderId }));
+  h.invoke('prepareMyPaceRunningProduction'); assert.equal(prop(h, 'STATUS'), 'INPUT_OUTPUT_OVERLAP'); assert.equal(h.files.size, size);
+  h.replaceCode(await bundleRunningProduction(settings)); replaceBytes(h, 'production-index', Buffer.from('{}\n'));
+  h.invoke('prepareMyPaceRunningProduction'); assert.equal(prop(h, 'STATUS'), 'CATALOG_SCHEMA'); assert.equal(h.files.size, size);
+  assert(h.requests.slice(before).every(r => r.method === 'get')); assert.equal(prop(h, 'ENABLED'), false);
+});
+
+test('a waking worker that still lacks budget replaces its consumed one-shot trigger', async t => {
+  const { h } = await productionFixture(t); prepare(h); start(h);
+  const b = prop(h, 'BUDGET'), hour = Math.max(...Object.keys(b.hours).map(Number));
+  b.hours = { [hour]: 60000, [hour + 1]: 44 * 60000 };
+  h.properties.set(PREFIX + 'BUDGET', JSON.stringify(b)); tick(h);
+  const oldWake = h.triggers.find(t => t.handler === 'myPaceRunningWake'); assert(oldWake);
+  h.advance(25 * 3600000); h.invoke('myPaceRunningWake');
+  assert.equal(prop(h, 'STATUS'), 'BUDGET_WAIT');
+  const next = h.triggers.filter(t => t.handler === 'myPaceRunningWake'); assert.equal(next.length, 1); assert.notEqual(next[0], oldWake);
+  h.advance(2 * 3600000); h.invoke('myPaceRunningWake'); assert.equal(prop(h, 'STATUS'), 'WATCHING');
+});

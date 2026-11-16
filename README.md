@@ -42,7 +42,7 @@ npm run build:public
 
 未ログイン時はログイン案内を表示し、個人のランニング記録は取得しません。天気は東京駅周辺の公開サンプル地点を使います。右上のアカウントアイコンからGoogleでログインすると、通常URLで本人のDrive記録を自動表示します。ログアウトするとDrive記録の表示を消します。検証用の切替は「設定 → 接続の確認」に残しています。設定と戻し方は [画面接続の手順](processing/running/CONNECT.md) を参照してください。
 
-接続先は `MYPACE_ROOT_FOLDER_ID` で指定するMyPace共通管理フォルダです。その中の `running/derived/index.json` を正式な目次とし、参照する完成済みJSONだけを読みます。旧 `MYPACE_DRIVE_FOLDER_ID` と目次名の設定 `MYPACE_DRIVE_CATALOG` は使いません。今回の接続では検証済みJSONを新構造へコピーし、合格した目次をコピー先で `index.json` に改名します。元のApps Scriptとデータは保持します。コピー先への継続更新や、英語・日記・設定のDrive保存はまだ実装していません。
+接続先は `MYPACE_ROOT_FOLDER_ID` で指定するMyPace共通管理フォルダです。その中の `running/derived/index.json` を正式な目次とし、参照する完成済みJSONだけを読みます。旧 `MYPACE_DRIVE_FOLDER_ID` と目次名の設定 `MYPACE_DRIVE_CATALOG` は使いません。今回の接続では検証済みJSONを新構造へコピーし、合格した目次をコピー先で `index.json` に改名します。元のApps Scriptとデータは保持します。本番の読み取り接続は実機確認済みです。コピー先への継続更新・過去分取り込み用の [Apps Script導入手順](processing/running/gas/PRODUCTION.md) を用意しました。Google上での有効化は利用者の開始操作で行います。英語・日記・設定のDrive保存はまだ実装していません。
 
 日記・呼び名はそのブラウザーに保存され、GitHubやサーバーへは送信しません。ローカル版と公開版のブラウザーデータは自動同期されません。
 

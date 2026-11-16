@@ -90,7 +90,7 @@ export async function gasProbeHarness(config, sourceBytes, { requestMs = 5, befo
     ScriptApp: { getScriptId: () => 'synthetic-probe-project', getOAuthToken: () => 'synthetic-not-a-token',
       getProjectTriggers: () => triggers.map(t => ({ item: t, getHandlerFunction: () => t.handler })),
       deleteTrigger: t => triggers.splice(triggers.indexOf(t.item), 1),
-      newTrigger: handler => ({ timeBased() { return this; }, everyMinutes(n) { if (n !== 5) throw Error('TEST_CADENCE'); return this; }, create() { triggers.push({ handler }); } }) },
+      newTrigger: handler => ({ timeBased() { return this; }, everyMinutes(n) { if (n !== 5) throw Error('TEST_CADENCE'); return this; }, after(milliseconds) { this.delay = milliseconds; return this; }, create() { triggers.push({ handler, ...(this.delay ? { delay: this.delay } : {}) }); } }) },
     console: { log: text => { try { logs.push(JSON.parse(text)); } catch { logs.push({ message: text }); } } },
     Date: class extends Date { static now() { return clock; } },
   };

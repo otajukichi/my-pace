@@ -124,3 +124,9 @@ Official references checked for this design:
 初回3件・差分12段階・24時間アイドル・新CSV1件の取り込みはGoogle実環境で合格済みです。[実測結果](gas/RESULTS.md)を記録し、次の [本人認証付きの画面接続](CONNECT.md) を実装しました。通常URLはログイン済みならDrive記録を自動表示し、従来方式は設定内の検証用切替として残しています。処理コード・キャッシュ・トリガーを変更せず、過去の検証を繰り返す必要もありません。
 
 画面側の接続設定は `MYPACE_ROOT_FOLDER_ID`（MyPace共通管理フォルダ）を起点とし、正式な目次は `running/derived/index.json` に固定しています。`MYPACE_DRIVE_CATALOG` は廃止しました。既存の検証用 `derived` は残し、合格した目次をコピー先で `index.json` に改名して完成JSONを引き継ぎます。これは画面の読取先の整理であり、Apps Scriptの出力先・原本CSV・継続監視設定の変更ではありません。具体的な配置とVercelの設定は [接続手順](CONNECT.md) を参照してください。
+
+### 本番の継続取り込み（2026-11-17）
+
+本人認証付き本番画面とログアウトの実機確認が完了しました。次は [本番導入手順](gas/PRODUCTION.md) に沿って、同じApps Scriptプロジェクトからキャッシュを引き継ぎ、元CSVフォルダの監視と過去分の段階取り込みを開始します。キット生成は `npm run prepare:gas-production`。Webアプリ側のURL・認証・環境変数の変更や、合格済み検証の再実行は不要です。
+
+Apps Scriptは手動配置された目次を更新するためDrive書き込み権限の再承認を必要とします。Google上の設定はまだ変更していません。日記・設定の保存同期は今回の範囲外です。

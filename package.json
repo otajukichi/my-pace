@@ -17,7 +17,8 @@
     "authorize:running": "node scripts/authorize-running-drive.mjs",
     "prepare:gas-probe": "node scripts/build-running-gas-probe.mjs",
     "prepare:gas-incremental": "node scripts/build-running-gas-incremental.mjs",
-    "prepare:gas-discovery": "node scripts/build-running-gas-discovery.mjs"
+    "prepare:gas-discovery": "node scripts/build-running-gas-discovery.mjs",
+    "prepare:gas-production": "node scripts/build-running-gas-production.mjs"
   },
   "dependencies": {
     "google-auth-library": "^11.3.4"
