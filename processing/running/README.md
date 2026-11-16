@@ -122,3 +122,5 @@ Official references checked for this design:
 ## 継続同期の検証へ
 
 初回3件・差分12段階・24時間アイドル・新CSV1件の取り込みはGoogle実環境で合格済みです。[実測結果](gas/RESULTS.md)を記録し、次の [本人認証付きの画面接続](CONNECT.md) を実装しました。通常URLはログイン済みならDrive記録を自動表示し、従来方式は設定内の検証用切替として残しています。処理コード・キャッシュ・トリガーを変更せず、過去の検証を繰り返す必要もありません。
+
+画面側の接続設定は `MYPACE_ROOT_FOLDER_ID`（MyPace共通管理フォルダ）を起点とし、`running/derived` を読みます。既存の検証用 `derived` は残し、完成JSONのコピーで接続を確認します。これは画面の読取先の整理であり、Apps Scriptの出力先・原本CSV・継続監視設定の変更ではありません。具体的な配置とVercelの設定は [接続手順](CONNECT.md) を参照してください。

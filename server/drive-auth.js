@@ -3,18 +3,22 @@ import { OAuth2Client } from 'google-auth-library';
 
 const MAX_BYTES = 131072;
 const SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/drive.readonly'];
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+const FOLDER_FIELDS = 'id,name,mimeType,ownedByMe,shared,trashed,parents';
+// Paths belong to server-side features, never to a browser-supplied Drive ID/path.
+const RUNNING_FOLDERS = ['running', 'derived'];
 export class AccessError extends Error {
   constructor(code, status = 403) { super(code); this.code = code; this.status = status; }
 }
 export function configuration(env = process.env) {
   const origin = env.MYPACE_ORIGIN;
-  if (!origin || !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.MYPACE_SESSION_SECRET || !env.MYPACE_DRIVE_FOLDER_ID) return null;
+  if (!origin || !env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET || !env.MYPACE_SESSION_SECRET || !env.MYPACE_ROOT_FOLDER_ID) return null;
   const url = new URL(origin);
   if (url.origin !== origin || !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new AccessError('CONFIGURATION', 503);
-  if (env.MYPACE_SESSION_SECRET.length < 32 || !/^[\w-]+$/.test(env.MYPACE_DRIVE_FOLDER_ID)) throw new AccessError('CONFIGURATION', 503);
+  if (env.MYPACE_SESSION_SECRET.length < 32 || !/^[\w-]+$/.test(env.MYPACE_ROOT_FOLDER_ID)) throw new AccessError('CONFIGURATION', 503);
   const catalog = env.MYPACE_DRIVE_CATALOG || 'new-csv-index.json';
   if (!/^[a-z0-9-]+\.json$/.test(catalog)) throw new AccessError('CONFIGURATION', 503);
-  return { origin, folder: env.MYPACE_DRIVE_FOLDER_ID, catalog, clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET,
+  return { origin, rootFolder: env.MYPACE_ROOT_FOLDER_ID, catalog, clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET,
     secret: env.MYPACE_SESSION_SECRET, secure: url.protocol === 'https:' };
 }
 export function seal(value, secret, purpose) {
@@ -43,7 +47,7 @@ function cookie(res, c, purpose, value) {
   const prior = res.getHeader('Set-Cookie') || [];
   res.setHeader('Set-Cookie', [...(Array.isArray(prior) ? prior : [prior]), `${name(c, purpose)}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${value ? Math.max(0, Math.floor((value.expires - Date.now()) / 1000)) : 0}${c.secure ? '; Secure' : ''}`]);
 }
-function context(c) { return createHash('sha256').update([c.origin, c.clientId, c.folder, c.catalog].join('\n')).digest('hex'); }
+function context(c) { return createHash('sha256').update(['root-v1', c.origin, c.clientId, c.rootFolder, c.catalog].join('\n')).digest('hex'); }
 function equal(a, b) { return typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b)); }
 export function privateHeaders(res) {
   res.setHeader('Cache-Control', 'private, no-store'); res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
@@ -74,9 +78,32 @@ export function createDriveService({ env = process.env, fetchImpl = fetch, oauth
     const text = Buffer.concat(chunks).toString('utf8');
     try { return raw ? text : JSON.parse(text); } catch { throw new AccessError('DISPLAY_INVALID', 422); }
   }
-  async function folder(c, token) {
-    const f = await drive(token, `files/${c.folder}`, { fields: 'id,mimeType,ownedByMe,shared,trashed' });
-    if (!f.ownedByMe || f.shared !== false || f.trashed || f.mimeType !== 'application/vnd.google-apps.folder') throw new AccessError('OWNER_ONLY');
+  function privateFolder(f) {
+    if (f.ownedByMe !== true || f.shared !== false) throw new AccessError('OWNER_ONLY');
+    if (!/^[\w-]+$/.test(f.id || '') || f.trashed !== false || f.mimeType !== FOLDER_MIME) throw new AccessError('DRIVE_FOLDER_LAYOUT', 422);
+    return f.id;
+  }
+  async function rootFolder(c, token) {
+    const f = await drive(token, `files/${c.rootFolder}`, { fields: FOLDER_FIELDS });
+    if (f.id !== c.rootFolder) throw new AccessError('DRIVE_FOLDER_LAYOUT', 422);
+    return privateFolder(f);
+  }
+  async function runningFolder(c, token) {
+    let parent = await rootFolder(c, token);
+    // Two narrow metadata queries, not a recursive Drive scan. Resolve afresh so
+    // renames, moves and sharing changes cannot leave an authorized ID cached.
+    for (const child of RUNNING_FOLDERS) {
+      const result = await drive(token, 'files', {
+        q: `'${parent}' in parents and name = '${child}' and trashed = false`,
+        fields: `files(${FOLDER_FIELDS}),nextPageToken,incompleteSearch`, pageSize: '2', spaces: 'drive',
+      });
+      if (result.incompleteSearch || result.nextPageToken || result.files?.length > 1) throw new AccessError('DRIVE_FOLDER_AMBIGUOUS', 422);
+      if (result.files?.length !== 1) throw new AccessError('DRIVE_FOLDER_MISSING', 422);
+      const f = result.files[0];
+      if (f.name !== child || f.parents?.length !== 1 || f.parents[0] !== parent) throw new AccessError('DRIVE_FOLDER_LAYOUT', 422);
+      parent = privateFolder(f);
+    }
+    return parent;
   }
   async function session(req, res, c) {
     const s = readCookie(req, c, 'session');
@@ -121,7 +148,7 @@ export function createDriveService({ env = process.env, fetchImpl = fetch, oauth
         const { tokens } = await client.getToken({ code: url.searchParams.get('code'), codeVerifier: pending.verifier });
         const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: c.clientId }), identity = ticket.getPayload();
         if (!identity?.email_verified || !identity.sub || !equal(identity.nonce, pending.nonce) || !tokens.refresh_token || !tokens.access_token) throw new AccessError('IDENTITY');
-        await folder(c, tokens.access_token);
+        await rootFolder(c, tokens.access_token);
         cookie(res, c, 'session', { access: tokens.access_token, refresh: tokens.refresh_token, tokenExpires: tokens.expiry_date, sub: identity.sub, context: context(c), expires: Date.now() + 30 * 86400000 });
         return redirect(res, c.origin + '/#records');
       }
@@ -141,12 +168,12 @@ export function createDriveService({ env = process.env, fetchImpl = fetch, oauth
       sameOrigin(req, c);
       const b = await jsonBody(req), path = b?.path;
       if (Object.keys(b || {}).length !== 1 || typeof path !== 'string' || !(path === 'index.json' || /^objects\/[a-f0-9]{64}\.json$/.test(path))) throw new AccessError('PATH', 400);
-      const s = await session(req, res, c); await folder(c, s.access);
+      const s = await session(req, res, c), derived = await runningFolder(c, s.access);
       const fileName = path === 'index.json' ? c.catalog : path.slice(8);
-      const result = await drive(s.access, 'files', { q: `'${c.folder}' in parents and name = '${fileName}' and trashed = false`, fields: 'files(id,size,mimeType,ownedByMe,shared),nextPageToken', pageSize: '2' });
-      if (result.nextPageToken || result.files?.length !== 1) throw new AccessError('DISPLAY_NOT_UNIQUE', 422);
+      const result = await drive(s.access, 'files', { q: `'${derived}' in parents and name = '${fileName}' and trashed = false`, fields: 'files(id,name,size,mimeType,ownedByMe,shared,trashed,parents),nextPageToken,incompleteSearch', pageSize: '2', spaces: 'drive' });
+      if (result.incompleteSearch || result.nextPageToken || result.files?.length !== 1) throw new AccessError('DISPLAY_NOT_UNIQUE', 422);
       const f = result.files[0];
-      if (!f.ownedByMe || f.shared !== false || f.mimeType !== 'application/json' || !(Number(f.size) > 0 && Number(f.size) <= MAX_BYTES)) throw new AccessError('DISPLAY_INVALID', 422);
+      if (!/^[\w-]+$/.test(f.id || '') || f.name !== fileName || f.parents?.length !== 1 || f.parents[0] !== derived || f.ownedByMe !== true || f.shared !== false || f.trashed !== false || f.mimeType !== 'application/json' || !(Number(f.size) > 0 && Number(f.size) <= MAX_BYTES)) throw new AccessError('DISPLAY_INVALID', 422);
       const body = await drive(s.access, `files/${encodeURIComponent(f.id)}`, { alt: 'media' }, true);
       if (path !== 'index.json' && createHash('sha256').update(body).digest('hex') !== fileName.slice(0, -5)) throw new AccessError('DISPLAY_HASH', 422);
       let value; try { value = JSON.parse(body); } catch { throw new AccessError('DISPLAY_INVALID', 422); }
