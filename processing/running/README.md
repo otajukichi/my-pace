@@ -127,6 +127,8 @@ Official references checked for this design:
 
 ### 本番の継続取り込み（2026-11-17）
 
-本人認証付き本番画面とログアウトの実機確認が完了しました。次は [本番導入手順](gas/PRODUCTION.md) に沿って、同じApps Scriptプロジェクトからキャッシュを引き継ぎ、元CSVフォルダの監視と過去分の段階取り込みを開始します。キット生成は `npm run prepare:gas-production`。Webアプリ側のURL・認証・環境変数の変更や、合格済み検証の再実行は不要です。
+本人認証付き本番画面とログアウトの実機確認が完了しました。次は [本番導入手順](gas/PRODUCTION.md) に沿って、同じApps Scriptプロジェクトからキャッシュを引き継ぎ、共通ルートから特定した `running/raw` の監視と過去分の段階取り込みを開始します。キット生成は `npm run prepare:gas-production`。Webアプリ側のURL・認証・環境変数の変更や、合格済み検証の再実行は不要です。
 
 Apps Scriptは手動配置された目次を更新するためDrive書き込み権限の再承認を必要とします。Google上の設定はまだ変更していません。日記・設定の保存同期は今回の範囲外です。
+
+本番の入力は `my-pace/running/raw`、出力は兄弟の `derived` と `system` に統一しました。Apps Scriptの設定はWebと同じ共通ルートIDだけです。`raw` の原本は現在の場所のまま使い、書き換えません。

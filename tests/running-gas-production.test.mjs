@@ -181,7 +181,7 @@ test('external index changes fail closed, and a manual rollback works during bud
 test('incorrect roots or an unpassed starting catalog stop before creating any production files', async t => {
   const { h, settings, before } = await productionFixture(t), size = h.files.size;
   h.replaceCode(await bundleRunningProduction({ ...settings, sourceFolderId: settings.rootFolderId }));
-  h.invoke('prepareMyPaceRunningProduction'); assert.equal(prop(h, 'STATUS'), 'INPUT_OUTPUT_OVERLAP'); assert.equal(h.files.size, size);
+  h.invoke('prepareMyPaceRunningProduction'); assert.equal(prop(h, 'STATUS'), 'ROOT_ONLY_CONFIG_REQUIRED'); assert.equal(h.files.size, size);
   h.replaceCode(await bundleRunningProduction(settings)); replaceBytes(h, 'production-index', Buffer.from('{}\n'));
   h.invoke('prepareMyPaceRunningProduction'); assert.equal(prop(h, 'STATUS'), 'CATALOG_SCHEMA'); assert.equal(h.files.size, size);
   assert(h.requests.slice(before).every(r => r.method === 'get')); assert.equal(prop(h, 'ENABLED'), false);
@@ -197,4 +197,147 @@ test('a waking worker that still lacks budget replaces its consumed one-shot tri
   assert.equal(prop(h, 'STATUS'), 'BUDGET_WAIT');
   const next = h.triggers.filter(t => t.handler === 'myPaceRunningWake'); assert.equal(next.length, 1); assert.notEqual(next[0], oldWake);
   h.advance(2 * 3600000); h.invoke('myPaceRunningWake'); assert.equal(prop(h, 'STATUS'), 'WATCHING');
+});
+
+test('one root resolves seven raw CSVs and ignores CSVs and shortcuts in output or unrelated folders', async t => {
+  const f = await productionFixture(t), { h } = f;
+  folder(h, 'existing-system', 'production-running', 'system');
+  folder(h, 'raw-year', 'original-folder');
+  put(h, 'raw-five', 'five.csv', 'original-folder', Buffer.from(csv(12)), 'text/csv');
+  put(h, 'raw-six', 'six.csv', 'raw-year', Buffer.from(csv(13)), 'text/csv');
+  put(h, 'raw-seven', 'seven.csv', 'raw-year', Buffer.from(csv(14)), 'text/csv');
+  for (const [i, parent] of ['management-root', 'production-running', 'production-derived', 'existing-system'].entries()) {
+    put(h, 'excluded-' + i, 'excluded.csv', parent, Buffer.from(csv(20 + i)), 'text/csv');
+  }
+  put(h, 'shortcut', 'shortcut.csv', 'original-folder', undefined, 'application/vnd.google-apps.shortcut');
+  h.files.get('shortcut').meta.shortcutDetails = { targetId: 'production-derived' };
+  const baseline = structuredClone([...h.files]), at = h.requests.length;
+  // The old overlap failure happens before ROOT/checkpoint creation. It must
+  // not require deleting properties or replaying the passed experiments.
+  h.properties.set(PREFIX + 'STATUS', JSON.stringify('INPUT_OUTPUT_OVERLAP'));
+  prepare(h); assert.equal(state(h).sourceCount, 7); assert.equal(state(h).pending, 3);
+  assert.equal(prop(h, 'ROOT').system, 'existing-system'); assert.equal(prop(h, 'METRICS').rawBytesRequested || 0, 0);
+  start(h); assert.equal(Object.keys(state(h).committed).length, 7); await independent(f);
+  const reads = h.requests.slice(at).filter(r => r.range);
+  assert.deepEqual([...new Set(reads.map(r => r.path))].sort(), ['files/raw-five', 'files/raw-seven', 'files/raw-six']);
+  assert(!h.requests.slice(at).some(r => r.media && /excluded-|shortcut/.test(r.path)));
+  for (const request of h.requests.slice(at).filter(r => r.method !== 'get')) {
+    assert(['post', 'patch'].includes(request.method));
+    if (request.path.startsWith('files/')) assert(['production-derived', 'existing-system'].includes(h.files.get(request.path.slice(6)).meta.parents[0]));
+  }
+  unchangedOriginals(h, baseline);
+});
+
+test('initial setup rejects shared, unowned, nested, duplicate, missing and shortcut siblings without writes', async t => {
+  const { h } = await productionFixture(t); folder(h, 'existing-system', 'production-running', 'system');
+  const cases = [
+    ['raw shared', 'original-folder', { shared: true }],
+    ['raw unowned', 'original-folder', { ownedByMe: false }],
+    ['derived under raw', 'production-derived', { parents: ['original-folder'] }],
+    ['raw under derived', 'original-folder', { parents: ['production-derived'] }],
+    ['raw renamed', 'original-folder', { name: 'outside' }],
+    ['raw shortcut', 'original-folder', { mimeType: 'application/vnd.google-apps.shortcut' }],
+    ['system shared', 'existing-system', { shared: true }],
+    ['derived unowned', 'production-derived', { ownedByMe: false }],
+  ];
+  for (const [label, id, change] of cases) {
+    const meta = structuredClone(h.files.get(id).meta), at = h.requests.length;
+    Object.assign(h.files.get(id).meta, change); h.invoke('prepareMyPaceRunningProduction');
+    assert.equal(prop(h, 'ENABLED'), false, label); assert.equal(prop(h, 'ROOT'), null, label);
+    assert(h.requests.slice(at).every(r => r.method === 'get' && !r.media), label);
+    h.files.get(id).meta = meta;
+  }
+  folder(h, 'duplicate-raw', 'production-running', 'raw');
+  const at = h.requests.length; h.invoke('prepareMyPaceRunningProduction');
+  assert.equal(prop(h, 'STATUS'), 'FOLDER_OR_FILE_NOT_UNIQUE'); assert(h.requests.slice(at).every(r => r.method === 'get' && !r.media));
+  h.files.delete('duplicate-raw'); prepare(h); assert.equal(prop(h, 'STATUS'), 'READY');
+});
+
+test('every resumed invocation revalidates sibling identity, parent, ownership and privacy before reading the checkpoint', async t => {
+  const { h } = await productionFixture(t); prepare(h); start(h);
+  const root = prop(h, 'ROOT'), index = Buffer.from(h.files.get(root.catalog).bytes);
+  const cases = [
+    ['raw moved outside', root.source, { parents: ['management-root'] }],
+    ['raw moved into derived', root.source, { parents: [root.derived] }],
+    ['raw shared', root.source, { shared: true }],
+    ['raw unowned', root.source, { ownedByMe: false }],
+    ['raw trashed', root.source, { trashed: true }],
+    ['derived moved into raw', root.derived, { parents: [root.source] }],
+    ['system moved into raw', root.system, { parents: [root.source] }],
+    ['system shared', root.system, { shared: true }],
+    ['derived unowned', root.derived, { ownedByMe: false }],
+    ['running moved', root.running, { parents: [root.source] }],
+    ['root shared', root.folder, { shared: true }],
+  ];
+  for (const [label, id, change] of cases) {
+    const meta = structuredClone(h.files.get(id).meta), at = h.requests.length;
+    Object.assign(h.files.get(id).meta, change); h.properties.set(PREFIX + 'ENABLED', 'true'); tick(h);
+    assert.equal(prop(h, 'ENABLED'), false, label);
+    assert(h.requests.slice(at).every(r => r.method === 'get' && !r.media), label);
+    assert.deepEqual(h.files.get(root.catalog).bytes, index, label); h.files.get(id).meta = meta;
+  }
+  // Replacing raw with a new folder of the same name must not silently switch input.
+  h.files.get(root.source).meta.name = 'old-raw'; folder(h, 'replacement-raw', root.running, 'raw');
+  h.properties.set(PREFIX + 'ENABLED', 'true'); const at = h.requests.length; tick(h);
+  assert.equal(prop(h, 'STATUS'), 'FOLDER_LOCATION_CHANGED'); assert(h.requests.slice(at).every(r => r.method === 'get' && !r.media));
+  h.files.delete('replacement-raw'); h.files.get(root.source).meta.name = 'raw'; start(h);
+  assert.equal(prop(h, 'STATUS'), 'WATCHING');
+});
+
+test('resuming an unfinished setup checks raw before creating the reserved system folder', async t => {
+  let fail = false;
+  const { h } = await productionFixture(t, { beforeRequest({ method, options, path }) {
+    if (fail && method === 'post' && path === 'files' && options.contentType === 'application/json') {
+      fail = false; return { status: 503 };
+    }
+  } });
+  fail = true; h.invoke('prepareMyPaceRunningProduction'); assert.equal(prop(h, 'STATUS'), 'DRIVE_RETRYABLE');
+  const root = prop(h, 'ROOT'); assert(root); assert(!h.files.has(root.system));
+  h.files.get(root.source).meta.parents = [root.derived]; const at = h.requests.length; tick(h);
+  assert.equal(prop(h, 'ENABLED'), false); assert(!h.files.has(root.system));
+  assert(h.requests.slice(at).every(r => r.method === 'get' && !r.media));
+  h.files.get(root.source).meta.parents = [root.running]; prepare(h); assert.equal(prop(h, 'STATUS'), 'READY');
+});
+
+test('a saved scan cannot follow a descendant whose ancestor moved outside raw while paused', async t => {
+  let pause = false, scanLists = [];
+  const { h } = await productionFixture(t, { beforeRequest({ method, path, uri }) {
+    if (method === 'get' && path === 'files') {
+      const q = uri.searchParams.get('q'); scanLists.push(q);
+      if (pause && q.startsWith("'deep-input'")) { pause = false; return { status: 503 }; }
+    }
+  } });
+  prepare(h); start(h); folder(h, 'input-year', 'original-folder'); folder(h, 'deep-input', 'input-year');
+  put(h, 'outside-after-move', 'next.csv', 'deep-input', Buffer.from(csv(15)), 'text/csv');
+  pause = true; tick(h); assert.equal(prop(h, 'STATUS'), 'DRIVE_RETRYABLE');
+  assert.equal(state(h).scan.queue[state(h).scan.at].id, 'deep-input');
+  const root = prop(h, 'ROOT'), index = Buffer.from(h.files.get(root.catalog).bytes);
+  h.files.get('input-year').meta.name = 'derived'; scanLists = [];
+  tick(h); assert.equal(prop(h, 'STATUS'), 'OUTPUT_FOLDER_IN_RAW');
+  assert(!scanLists.some(q => q.startsWith("'deep-input'")));
+  h.files.get('input-year').meta.name = 'input-year'; h.properties.set(PREFIX + 'ENABLED', 'true');
+  h.files.get('input-year').meta.parents = [root.derived]; scanLists = []; const at = h.requests.length; tick(h);
+  assert.equal(prop(h, 'STATUS'), 'INPUT_CHANGED_RETRY');
+  assert(!scanLists.some(q => q.startsWith("'deep-input'") || q.startsWith("'input-year'")));
+  assert(!h.requests.slice(at).some(r => r.range)); assert.deepEqual(h.files.get(root.catalog).bytes, index);
+  tick(h); until(h, ['WATCHING']); assert.equal(Object.keys(state(h).committed).length, 4);
+});
+
+test('overlapping saved source/output IDs are refused instead of trusting the checkpoint', async t => {
+  const { h } = await productionFixture(t); prepare(h);
+  const root = prop(h, 'ROOT'); h.properties.set(PREFIX + 'ROOT', JSON.stringify({ ...root, source: root.derived }));
+  const at = h.requests.length; h.invoke('startMyPaceRunningProduction');
+  assert.equal(prop(h, 'STATUS'), 'INPUT_OUTPUT_OVERLAP'); assert.equal(prop(h, 'ENABLED'), false);
+  assert(h.requests.slice(at).every(r => r.method === 'get' && !r.media));
+});
+
+test('unregistered output folders misplaced inside raw are not explored as CSV inputs', async t => {
+  const { h, index } = await productionFixture(t);
+  folder(h, 'misplaced-system', 'original-folder', 'system');
+  put(h, 'misplaced-csv', 'unexpected.csv', 'misplaced-system', Buffer.from(csv(20)), 'text/csv');
+  const at = h.requests.length;
+  h.invoke('prepareMyPaceRunningProduction'); until(h, ['OUTPUT_FOLDER_IN_RAW']);
+  assert.equal(prop(h, 'ENABLED'), false); assert.equal(prop(h, 'METRICS').rawBytesRequested || 0, 0);
+  assert(!h.requests.slice(at).some(r => r.path === 'files/misplaced-csv'));
+  assert.deepEqual(h.files.get('production-index').bytes, index);
 });

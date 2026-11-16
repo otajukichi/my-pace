@@ -4,13 +4,18 @@ function prSignature(files) { return mpHash(MP_SYNC.inventorySignature(files)); 
 function prScanStart() { pr.state.scan = { queue: [{ id: pr.root.source, depth: 0 }], at: 0, token: null, tokens: [], files: {}, seen: [pr.root.source] }; prSave(); }
 function prScanStep() {
   const scan = pr.state.scan, folder = scan.queue[scan.at];
-  prPrivate(prMeta(folder.id), folder.parent, PR_FOLDER); prYield();
+  const meta = prPrivate(prMeta(folder.id), folder.parent, PR_FOLDER);
+  prInputFolder(meta); prYield();
   const page = prApi('files?q=' + encodeURIComponent("'" + folder.id + "' in parents and trashed = false")
     + '&spaces=drive&pageSize=1000&fields=' + encodeURIComponent('files(' + PR_FIELDS + '),nextPageToken,incompleteSearch')
     + (scan.token ? '&pageToken=' + encodeURIComponent(scan.token) : ''));
   prAssert(!page.incompleteSearch && Array.isArray(page.files), 'INCOMPLETE_SOURCE_LIST');
   for (const file of page.files) {
     if (file.mimeType === PR_FOLDER) {
+      prAssert(![pr.root.folder, pr.root.running, pr.root.derived, pr.root.system].includes(file.id), 'INPUT_OUTPUT_OVERLAP');
+      // These names are reserved for outputs, including a misplaced folder
+      // that predates this worker and therefore has no registered ID yet.
+      prAssert(!['derived', 'system'].includes(file.name), 'OUTPUT_FOLDER_IN_RAW');
       prPrivate(file, folder.id, PR_FOLDER); prAssert(folder.depth < 16 && !scan.seen.includes(file.id), 'SOURCE_FOLDER_CYCLE_OR_DEPTH');
       scan.queue.push({ id: file.id, parent: folder.id, depth: folder.depth + 1 }); scan.seen.push(file.id);
     } else if (/\.csv$/i.test(file.name || '') && file.mimeType !== 'application/vnd.google-apps.shortcut') {

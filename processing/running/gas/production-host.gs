@@ -19,14 +19,16 @@ function prSetup() {
     const content = prRead(catalog, folders.derived, 131072), value = JSON.parse(content);
     prAssert(value.schema === 1 && value.kind === 'catalog' && value.algorithm === MP_DERIVE.ALGORITHM, 'CATALOG_SCHEMA');
     prAssert(mpHash(content) === legacy.state.catalogHash, 'CURRENT_CATALOG_DIFFERS_FROM_PASSED_DATA');
-    const system = prChild(folders.running, 'system', true);
-    if (system) { prPrivate(system, folders.running, PR_FOLDER); prAssert(!prChild(system.id, 'checkpoint.json', true), 'EXISTING_PRODUCTION_STATE'); }
+    if (folders.system) prAssert(!prChild(folders.system, 'checkpoint.json', true), 'EXISTING_PRODUCTION_STATE');
     const ids = prReserve(3);
-    pr.root = { ...folders, system: system?.id || ids[0], state: ids[1], initial: ids[2], initialHash: mpHash(content), catalog: catalog.id,
+    pr.root = { ...folders, system: folders.system || ids[0], state: ids[1], initial: ids[2], initialHash: mpHash(content), catalog: catalog.id,
       job: Utilities.getUuid().replace(/-/g, ''), script: ScriptApp.getScriptId(), config: mpHash(prConfig()), createdAt: Date.now(), legacy: legacy.root };
     prSet('ROOT', pr.root); // Reserved IDs survive a lost creation response.
   }
   const r = pr.root;
+  // Also covers a previous execution interrupted after reserving IDs but
+  // before creating system/checkpoint. Validate before any resumed write.
+  prCheckRoots({ allowMissingSystem: true });
   prWrite(r.system, 'system', undefined, r.running, { folder: true });
   const existing = prMeta(r.state, true);
   if (existing) { pr.state = JSON.parse(prRead(existing, r.system)); return; }
@@ -132,8 +134,10 @@ function prRun(command) {
         prBudgetBegin(command === 'rollback');
         if (!pr.root || !prMeta(pr.root.state, true)) {
           prAssert(command === 'prepare' || command === 'tick', 'PREPARE_FIRST'); prSetup();
-        } else pr.state = prValue(pr.root.state, pr.root.system);
-        prCheckRoots();
+        } else {
+          prCheckRoots();
+          pr.state = prValue(pr.root.state, pr.root.system);
+        }
         const s = pr.state;
         beforeProgress = prProgress(s);
         if (command === 'rollback') status = prRollback();

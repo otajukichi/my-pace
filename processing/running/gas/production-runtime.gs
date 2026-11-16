@@ -16,9 +16,9 @@ function prGet(key, fallback = null) { const value = pr.props.getProperty(PR_KEY
 function prSet(key, value) { pr.props.setProperty(PR_KEY + key, JSON.stringify(value)); }
 function prConfig() {
   const c = MYPACE_PRODUCTION_CONFIG;
-  prAssert(c && c.rootFolderId && c.sourceFolderId, 'SET_ROOT_AND_SOURCE_FOLDERS');
-  prId(c.rootFolderId); prId(c.sourceFolderId); prAssert(c.rootFolderId !== c.sourceFolderId, 'INPUT_OUTPUT_OVERLAP');
-  return { rootFolderId: c.rootFolderId, sourceFolderId: c.sourceFolderId };
+  prAssert(c && typeof c === 'object' && !Array.isArray(c) && Object.keys(c).every(k => k === 'rootFolderId'), 'ROOT_ONLY_CONFIG_REQUIRED');
+  prAssert(c.rootFolderId, 'SET_ROOT_FOLDER');
+  return { rootFolderId: prId(c.rootFolderId) };
 }
 function prYield() { if (Date.now() - pr.started >= 90000) throw Error('YIELD'); }
 function prCount(key, n = 1) { pr.metrics[key] = (pr.metrics[key] || 0) + n; }
@@ -84,28 +84,48 @@ function prValue(id, parent) { return JSON.parse(prRead(prMeta(id), parent)); }
 function prValidateRoots() {
   const c = prConfig(); prPrivate(prMeta(c.rootFolderId), null, PR_FOLDER);
   const running = prPrivate(prChild(c.rootFolderId, 'running'), c.rootFolderId, PR_FOLDER);
-  const derived = prPrivate(prChild(running.id, 'derived'), running.id, PR_FOLDER);
-  const source = prPrivate(prMeta(c.sourceFolderId), null, PR_FOLDER);
-  function inside(meta, ancestor) {
-    return MP_SYNC.sourceFolderLocation(meta, ancestor, id => prPrivate(prMeta(id), null, PR_FOLDER)).withinConfiguredFolder;
+  // One listing resolves all siblings, including duplicate names. Never search
+  // the whole Drive, follow shortcuts, or infer an input from a saved job.
+  const children = prList(running.id);
+  function child(name, optional = false) {
+    const matches = children.filter(f => f.name === name);
+    prAssert(matches.length === 1 || optional && !matches.length, 'FOLDER_OR_FILE_NOT_UNIQUE');
+    return matches.length ? prPrivate(matches[0], running.id, PR_FOLDER).id : null;
   }
-  prAssert(!inside(source, c.rootFolderId) && !inside(prMeta(c.rootFolderId), c.sourceFolderId), 'INPUT_OUTPUT_OVERLAP');
-  return { folder: c.rootFolderId, running: running.id, derived: derived.id, source: source.id };
+  const folders = { folder: c.rootFolderId, running: running.id, source: child('raw'), derived: child('derived'), system: child('system', true) };
+  prDistinctRoots(folders); return folders;
 }
-function prCheckRoots() {
+function prDistinctRoots(folders) {
+  const ids = ['folder', 'running', 'source', 'derived', 'system'].map(k => folders[k]).filter(Boolean);
+  prAssert(new Set(ids).size === ids.length, 'INPUT_OUTPUT_OVERLAP');
+}
+function prCheckRoots({ allowMissingSystem = false } = {}) {
   const r = pr.root;
-  prPrivate(prMeta(r.folder), null, PR_FOLDER);
-  for (const [id, parent, name] of [[r.running, r.folder, 'running'], [r.derived, r.running, 'derived'], [r.system, r.running, 'system']]) {
-    prAssert(prPrivate(prMeta(id), parent, PR_FOLDER).name === name, 'OUTPUT_NAME_CHANGED');
+  prDistinctRoots(r);
+  const current = prValidateRoots();
+  for (const key of ['folder', 'running', 'source', 'derived', 'system']) {
+    if (key === 'system' && allowMissingSystem && !current.system) continue;
+    prAssert(current[key] === r[key], 'FOLDER_LOCATION_CHANGED');
   }
-  prPrivate(prMeta(r.source), null, PR_FOLDER);
+}
+function prInputAncestor(id) {
+  prAssert(![pr.root.folder, pr.root.running, pr.root.derived, pr.root.system].includes(id), 'SOURCE_MOVED_OUTSIDE');
+  if (!pr.folders.has(id)) pr.folders.set(id, prPrivate(prMeta(id), null, PR_FOLDER));
+  const meta = pr.folders.get(id);
+  prAssert(!['derived', 'system'].includes(meta.name), 'OUTPUT_FOLDER_IN_RAW');
+  return meta;
+}
+function prInputFolder(meta) {
+  prPrivate(meta, meta.id === pr.root.source ? pr.root.running : null, PR_FOLDER);
+  prAssert(![pr.root.folder, pr.root.running, pr.root.derived, pr.root.system].includes(meta.id), 'INPUT_OUTPUT_OVERLAP');
+  prAssert(!['derived', 'system'].includes(meta.name), 'OUTPUT_FOLDER_IN_RAW');
+  if (meta.id === pr.root.source) prAssert(meta.name === 'raw', 'SOURCE_FOLDER_CHANGED');
+  else prAssert(MP_SYNC.sourceFolderLocation(meta, pr.root.source, prInputAncestor).withinConfiguredFolder, 'SOURCE_MOVED_OUTSIDE');
 }
 function prSource(meta) {
   prPrivate(meta); prAssert(/\.csv$/i.test(meta.name || '') && !meta.mimeType?.startsWith('application/vnd.google-apps.'), 'SOURCE_TYPE_CHANGED');
   MP_SYNC.contentStamp(meta);
-  const location = MP_SYNC.sourceFolderLocation(meta, pr.root.source, id => {
-    if (!pr.folders.has(id)) pr.folders.set(id, prPrivate(prMeta(id), null, PR_FOLDER)); return pr.folders.get(id);
-  });
+  const location = MP_SYNC.sourceFolderLocation(meta, pr.root.source, prInputAncestor);
   prAssert(location.withinConfiguredFolder, 'SOURCE_MOVED_OUTSIDE');
 }
 function prWrite(id, name, text, parent, { folder = false, expected } = {}) {

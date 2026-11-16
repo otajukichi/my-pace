@@ -55,12 +55,15 @@ export async function productionFixture(t, options = {}) {
   const passedState = JSON.parse(h.files.get(passedRoot.state).bytes);
   put(h, 'original-fourth', 'fourth.csv', config.sourceFolder, Buffer.from(csv(9)), 'text/csv');
   folder(h, 'management-root'); folder(h, 'production-running', 'management-root', 'running'); folder(h, 'production-derived', 'production-running', 'derived');
+  // Model the real production layout after the historical probe fixture.
+  // No worker operation moves any original file or folder.
+  Object.assign(h.files.get(config.sourceFolder).meta, { name: 'raw', parents: ['production-running'], trashed: false });
   for (const [id, file] of [...h.files]) if (file.meta.parents?.includes(passedRoot.derived)) {
     if (/^[a-f0-9]{64}\.json$/.test(file.meta.name)) put(h, 'uploaded-' + id, file.meta.name, 'production-derived', file.bytes);
     if (file.meta.name === 'new-csv-index.json') put(h, 'production-index', 'index.json', 'production-derived', file.bytes);
   }
   assert(h.files.has('production-index'));
-  const settings = { rootFolderId: 'management-root', sourceFolderId: config.sourceFolder };
+  const settings = { rootFolderId: 'management-root' };
   h.replaceCode(await bundleRunningProduction(settings)); h.advance(26 * 3600000);
   const baseline = structuredClone([...h.files]), before = h.requests.length, index = Buffer.from(h.files.get('production-index').bytes);
   return { h, temp, settings, baseline, before, index, passedState };
