@@ -7,6 +7,7 @@ const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const FOLDER_FIELDS = 'id,name,mimeType,ownedByMe,shared,trashed,parents';
 // Paths belong to server-side features, never to a browser-supplied Drive ID/path.
 const RUNNING_FOLDERS = ['running', 'derived'];
+const RUNNING_CATALOG = 'index.json';
 export class AccessError extends Error {
   constructor(code, status = 403) { super(code); this.code = code; this.status = status; }
 }
@@ -16,9 +17,7 @@ export function configuration(env = process.env) {
   const url = new URL(origin);
   if (url.origin !== origin || !(url.protocol === 'https:' || url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new AccessError('CONFIGURATION', 503);
   if (env.MYPACE_SESSION_SECRET.length < 32 || !/^[\w-]+$/.test(env.MYPACE_ROOT_FOLDER_ID)) throw new AccessError('CONFIGURATION', 503);
-  const catalog = env.MYPACE_DRIVE_CATALOG || 'new-csv-index.json';
-  if (!/^[a-z0-9-]+\.json$/.test(catalog)) throw new AccessError('CONFIGURATION', 503);
-  return { origin, rootFolder: env.MYPACE_ROOT_FOLDER_ID, catalog, clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET,
+  return { origin, rootFolder: env.MYPACE_ROOT_FOLDER_ID, clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET,
     secret: env.MYPACE_SESSION_SECRET, secure: url.protocol === 'https:' };
 }
 export function seal(value, secret, purpose) {
@@ -47,7 +46,7 @@ function cookie(res, c, purpose, value) {
   const prior = res.getHeader('Set-Cookie') || [];
   res.setHeader('Set-Cookie', [...(Array.isArray(prior) ? prior : [prior]), `${name(c, purpose)}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${value ? Math.max(0, Math.floor((value.expires - Date.now()) / 1000)) : 0}${c.secure ? '; Secure' : ''}`]);
 }
-function context(c) { return createHash('sha256').update(['root-v1', c.origin, c.clientId, c.rootFolder, c.catalog].join('\n')).digest('hex'); }
+function context(c) { return createHash('sha256').update(['root-v1', c.origin, c.clientId, c.rootFolder, RUNNING_CATALOG].join('\n')).digest('hex'); }
 function equal(a, b) { return typeof a === 'string' && typeof b === 'string' && a.length === b.length && timingSafeEqual(Buffer.from(a), Buffer.from(b)); }
 export function privateHeaders(res) {
   res.setHeader('Cache-Control', 'private, no-store'); res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
@@ -169,7 +168,7 @@ export function createDriveService({ env = process.env, fetchImpl = fetch, oauth
       const b = await jsonBody(req), path = b?.path;
       if (Object.keys(b || {}).length !== 1 || typeof path !== 'string' || !(path === 'index.json' || /^objects\/[a-f0-9]{64}\.json$/.test(path))) throw new AccessError('PATH', 400);
       const s = await session(req, res, c), derived = await runningFolder(c, s.access);
-      const fileName = path === 'index.json' ? c.catalog : path.slice(8);
+      const fileName = path === 'index.json' ? RUNNING_CATALOG : path.slice(8);
       const result = await drive(s.access, 'files', { q: `'${derived}' in parents and name = '${fileName}' and trashed = false`, fields: 'files(id,name,size,mimeType,ownedByMe,shared,trashed,parents),nextPageToken,incompleteSearch', pageSize: '2', spaces: 'drive' });
       if (result.incompleteSearch || result.nextPageToken || result.files?.length !== 1) throw new AccessError('DISPLAY_NOT_UNIQUE', 422);
       const f = result.files[0];

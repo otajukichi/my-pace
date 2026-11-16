@@ -58,3 +58,5 @@ Google実環境で確認できたのは、新規検知・追加分の変換・�
 利用者の指定により、Webアプリの接続設定を `MYPACE_ROOT_FOLDER_ID` 起点の `running/derived` へ変更した。元の検証用 `derived` を残し、完成済みJSONを利用者が新構造へコピーして画面接続に使う。アプリURL・UI・OAuthの権限は維持。Google Driveの実データ、Cloud設定、Apps Scriptコード・キャッシュ・トリガーは変更していない。
 
 上記のGoogle実測合格はそのまま引き継ぎ、CSV処理の再検証は依頼しない。今回の変更はサーバーのフォルダ特定と認可の自動テストで確認する。Googleログインからの実画面確認は引き続き利用者の設定後に行う。コピー先は現時点の完成データであり、Apps Scriptによる継続更新先の切り替えは別途扱う。
+
+同日の追加修正：Webアプリの正式な目次を `running/derived/index.json` に固定し、`MYPACE_DRIVE_CATALOG` を廃止した。以前の案内にあった検証専用名を標準接続設定として使う方針を訂正する。引き継ぐ内容は引き続き `NEW_CSV_PASS` の `new-csv-index.json` であり、コピー先で `index.json` に改名する。検証フォルダに元からある古い `index.json` と取り違えない手順へ更新した。合格済みのApps Scriptや既存Driveデータは変更していない。

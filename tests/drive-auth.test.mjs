@@ -16,7 +16,7 @@ function harness() {
   entries.set('synthetic-root', folder('synthetic-root', 'MyPace', 'my-drive'));
   entries.set('synthetic-running', folder('synthetic-running', 'running', 'synthetic-root'));
   entries.set('synthetic-derived', folder('synthetic-derived', 'derived', 'synthetic-running'));
-  for (const [id, name] of [['catalog', 'new-csv-index.json'], ['object', digest + '.json']]) entries.set(id, { ...folder(id, name, 'synthetic-derived'), size: '100', mimeType: 'application/json' });
+  for (const [id, name] of [['catalog', 'index.json'], ['object', digest + '.json']]) entries.set(id, { ...folder(id, name, 'synthetic-derived'), size: '100', mimeType: 'application/json' });
   // Same names elsewhere must never be read, including a catalog at the root.
   entries.set('outside-derived', folder('outside-derived', 'derived', 'elsewhere'));
   entries.set('root-catalog', { ...entries.get('catalog'), id: 'root-catalog', parents: ['synthetic-root'] });
@@ -89,7 +89,7 @@ test('unauthenticated, cross-origin, CSV and arbitrary Drive IDs cannot reach me
   assert.deepEqual(h.reads.filter(r => r.query.has('q')).map(r => r.query.get('q')), [
     "'synthetic-root' in parents and name = 'running' and trashed = false",
     "'synthetic-running' in parents and name = 'derived' and trashed = false",
-    "'synthetic-derived' in parents and name = 'new-csv-index.json' and trashed = false",
+    "'synthetic-derived' in parents and name = 'index.json' and trashed = false",
   ]);
 });
 test('expired access token refreshes, immutable objects verify, errors hide provider details', async () => {
@@ -118,9 +118,29 @@ test('root configuration replaces the derived ID; old cookies and changed roots 
   h.config.MYPACE_ROOT_FOLDER_ID = 'replacement-root';
   assert.equal((await h.read(cookie)).status, 401); assert.equal(h.reads.length, 0);
   h.config.MYPACE_ROOT_FOLDER_ID = env.MYPACE_ROOT_FOLDER_ID;
-  const legacyContext = createHash('sha256').update([env.MYPACE_ORIGIN, env.GOOGLE_CLIENT_ID, env.MYPACE_ROOT_FOLDER_ID, 'new-csv-index.json'].join('\n')).digest('hex');
-  const old = '__Host-mypace-session=' + seal({ expires: Date.now() + 60000, context: legacyContext }, env.MYPACE_SESSION_SECRET, 'session');
-  assert.equal((await h.read(old)).status, 401); assert.equal(h.reads.length, 0);
+  for (const prefix of [[], ['root-v1']]) {
+    const legacyContext = createHash('sha256').update([...prefix, env.MYPACE_ORIGIN, env.GOOGLE_CLIENT_ID, env.MYPACE_ROOT_FOLDER_ID, 'new-csv-index.json'].join('\n')).digest('hex');
+    const old = '__Host-mypace-session=' + seal({ expires: Date.now() + 60000, context: legacyContext }, env.MYPACE_SESSION_SECRET, 'session');
+    assert.equal((await h.read(old)).status, 401); assert.equal(h.reads.length, 0);
+  }
+});
+test('catalog is always index.json, regardless of retired settings or experiment files', async () => {
+  const h = harness(), cookie = cookies(await h.login());
+  h.entries.set('experiment', { ...h.entries.get('catalog'), id: 'experiment', name: 'new-csv-index.json' });
+  for (const retiredValue of ['new-csv-index.json', 'other-index.json', "../invalid'path"]) {
+    h.config.MYPACE_DRIVE_CATALOG = retiredValue;
+    assert.deepEqual(configuration(h.config), configuration(env));
+    h.reads.length = 0;
+    assert.equal((await h.read(cookie)).body, h.catalog);
+    assert(h.reads.some(r => r.query.get('q') === "'synthetic-derived' in parents and name = 'index.json' and trashed = false"));
+    assert.equal(h.reads.filter(r => r.query.get('alt') === 'media').length, 1);
+  }
+  h.reads.length = 0;
+  assert.equal((await h.read(cookie, 'new-csv-index.json')).status, 400);
+  assert.equal(h.reads.length, 0);
+  h.entries.delete('catalog');
+  assert.equal((await h.read(cookie)).status, 422, 'Missing index must not fall back to a test catalog');
+  assert(!h.reads.some(r => r.query.get('alt') === 'media'));
 });
 test('every folder must remain private and owned; incomplete metadata and shortcuts fail closed', async () => {
   for (const id of ['synthetic-root', 'synthetic-running', 'synthetic-derived']) {
@@ -154,7 +174,7 @@ test('missing, renamed, moved or duplicate feature folders never fall back to an
   assert.equal((await h.login()).headers.Location, env.MYPACE_ORIGIN + '/#records', 'Account login belongs to MyPace, independent of individual features');
 });
 test('ambiguous or stale Drive list metadata cannot authorize an out-of-tree file', async () => {
-  for (const name of ['running', 'derived', 'new-csv-index.json']) {
+  for (const name of ['running', 'derived', 'index.json']) {
     for (const change of ['pagination', 'incomplete', 'parent', 'name']) {
       const h = harness(), cookie = cookies(await h.login()); h.reads.length = 0;
       h.listing = (result, queriedName) => {
