@@ -6,7 +6,7 @@ import { privatePath } from '../processing/running/private-path.mjs';
 
 export async function bundleRunningProduction(config = { rootFolderId: '' }) {
   const code = await bundleProbe(config, {
-    hostPaths: ['processing/running/gas/production-runtime.gs', 'processing/running/gas/production-sync.gs', 'processing/running/gas/production-host.gs'],
+    hostPaths: ['processing/running/gas/production-runtime.gs', 'processing/running/gas/production-sync.gs', 'processing/running/gas/production-status.gs', 'processing/running/gas/production-host.gs'],
     extraRoots: { MP_SYNC: 'processing/running/sync-probe.js', MP_MD5: 'processing/running/md5.js' },
   });
   return code.replace('// Generated MyPace three-CSV experiment.', '// Generated MyPace continuous running worker.');

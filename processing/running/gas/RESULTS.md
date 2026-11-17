@@ -78,3 +78,12 @@ Google実環境で確認できたのは、新規検知・追加分の変換・�
 本番設定を `rootFolderId` ひとつにし、`running/raw`・`derived`・`system` を特定する。入力探索は `raw` 以下、書き込みは出力2フォルダに限定し、初回・再開時の配置と所有・非共有状態を確認する。旧検証のキャッシュ、変換計算、目次の最後の更新、予算待ちと復帰は継続利用。Drive実データ、Apps Scriptのコード・トリガー、Vercel本番設定、OAuth権限を開発側から変更していない。導入は [更新した手順](PRODUCTION.md) を使う。
 
 ローカル全174テスト成功。7CSVの `running/raw` 構成で既存キャッシュを引き継ぎ、追加分だけを取得して独立全件再計算と一致。出力フォルダ内のCSVを取得しないこと、初回・再開時の共有・所有・移動・重複・同名置換、未完了の準備や探索キューの再検査を確認した。公開ビルド42ファイルに個人データを含めないことも確認。新キットbuildIdは `gas-7f4917c7d6ce830888f4afa9`、旧 `NEW_CSV_PASS` のbuildIdは変更なし。Google実環境での新構成の確認は利用者の導入後に行う。
+
+
+## 2026-11-18 本番用準備のGoogle実測 `READY`
+
+利用者から `gas-7f4917c7d6ce830888f4afa9` の準備完了報告を受領。`status: READY`、`enabled: false`、`phase: ready`、`sources: 7`、`sourceBytes: 154047850`、`importedSources: 4`、`pendingSources: 3`、`cacheImported: 66`、`rawBytesRequested: 0`、`requests: 1302`、`publications: 0`、`prepared: true`、`legacyCacheCopied: true`、`lastError: null`。累積の自己計測22.59分、内部計上23.76分。これは準備成功の報告であり、残る3件の本番変換・継続監視の実機確認ではない。
+
+この準備は再実行しない。同じルート設定・Script Properties・キャッシュを維持して開始する。利用者の「現在のApps Script枠は原則すべてMyPaceで使用」という方針に合わせ、独自の45分制限を90分基準へ修正。状態通知・画面表示も追加し、Google実機の反映は更新後の開始操作にまとめる。
+
+開発側の更新キット：`gas-ded17975c9506dabec628173`。全体181件成功後、追加1件を含む関連6件も成功。ブラウザーの待機表示・再開予定・表示維持・復旧・状態途絶・ログアウト・PC/スマホ配置を確認。公開ビルド43ファイル、静的GPSは空。これらはローカル確認であり、新コードのGoogle実測結果ではない。

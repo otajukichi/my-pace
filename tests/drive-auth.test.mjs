@@ -42,7 +42,8 @@ function harness() {
     const id = url.pathname.split('/').at(-1);
     if (!url.searchParams.has('alt')) return entries.has(id) ? Response.json(entries.get(id)) : new Response('', { status: 404 });
     assert.equal(url.searchParams.get('alt'), 'media');
-    assert(['catalog', 'object'].includes(id), 'Only authorized prepared files may reach media');
+    assert(['catalog', 'object','sync'].includes(id), 'Only authorized prepared files may reach media');
+    if(id==='sync')return new Response(entries.get('sync').content);
     return new Response(url.pathname.endsWith('/catalog') ? catalog : corrupt ? '{}' : object);
   } });
   async function login({ badState = false } = {}) {
@@ -195,4 +196,20 @@ test('a prepared file must itself be private, owned and in derived, with a bound
     assert.equal((await h.read(cookie)).status, 422, JSON.stringify(patch));
     assert(!h.reads.some(r => r.query.get('alt') === 'media'));
   }
+});
+
+test('sync status uses the same owner boundary and a fixed derived filename; missing status does not break existing records',async()=>{
+ const h=harness();assert.equal((await h.read('','sync-status.json')).status,401);assert.equal(h.reads.length,0);
+ const cookie=cookies(await h.login());
+ assert.deepEqual(JSON.parse((await h.read(cookie,'sync-status.json')).body),{schema:1,kind:'running-sync-status',available:false});
+ assert.equal((await h.read(cookie)).status,200);
+ const value={schema:1,kind:'running-sync-status',updatedAt:Date.now(),status:'BUDGET_WAIT',enabled:true,phase:'watch',sources:7,importedSources:4,pendingSources:3,nextRunAt:Date.now()+86400000,waitReason:'EXECUTION_BUDGET',lastSuccessfulUpdate:null,catalogHash:'a'.repeat(64),budget:{limitMinutes:90,usedMinutes:85,reserveMinutes:6,requestLimit:19800,requests:100},errorCode:null};
+ h.entries.set('sync',{...h.entries.get('catalog'),id:'sync',name:'sync-status.json',content:JSON.stringify(value)});
+ assert.deepEqual(JSON.parse((await h.read(cookie,'sync-status.json')).body),value);
+ assert.equal((await h.read(cookie,'../system/checkpoint.json')).status,400);
+ h.entries.get('sync').shared=true;assert.equal((await h.read(cookie,'sync-status.json')).status,422);
+ h.entries.get('sync').shared=false;h.entries.get('sync').content=JSON.stringify({...value,driveId:'private-id'});
+ assert.equal((await h.read(cookie,'sync-status.json')).status,422);
+ h.entries.get('sync').content=JSON.stringify(value);h.duplicate=true;assert.equal((await h.read(cookie,'sync-status.json')).status,422);
+ h.duplicate=false;h.entries.get('synthetic-running').ownedByMe=false;assert.equal((await h.read(cookie,'sync-status.json')).status,403);
 });

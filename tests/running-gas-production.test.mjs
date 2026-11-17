@@ -83,7 +83,7 @@ test('a lost index response resumes the same generation and rollback restores th
 
 test('daily budget exhaustion pauses and resumes automatically without discarding state or spinning every five minutes', async t => {
   const { h } = await productionFixture(t); prepare(h); start(h);
-  const budget = prop(h, 'BUDGET'); const hour = Math.max(...Object.keys(budget.hours).map(Number)); budget.hours = { [hour]: 44 * 60000 };
+  const budget = prop(h, 'BUDGET'); const hour = Math.max(...Object.keys(budget.hours).map(Number)); budget.hours = { [hour]: 85 * 60000 };
   h.properties.set(PREFIX + 'BUDGET', JSON.stringify(budget));
   tick(h); assert.equal(prop(h, 'STATUS'), 'BUDGET_WAIT');
   assert(h.triggers.some(t => t.handler === 'myPaceRunningWake')); assert(!h.triggers.some(t => t.handler === TICK));
@@ -171,7 +171,7 @@ test('external index changes fail closed, and a manual rollback works during bud
   tick(h); until(h, ['CATALOG_CHANGED_EXTERNALLY']);
   assert.equal(h.files.get('production-index').bytes.toString(), '{}\n');
   replaceBytes(h, 'production-index', before);
-  const b = prop(h, 'BUDGET'), hour = Math.max(...Object.keys(b.hours).map(Number)); b.hours = { [hour]: 45 * 60000 }; b.requests = 12000;
+  const b = prop(h, 'BUDGET'), hour = Math.max(...Object.keys(b.hours).map(Number)); b.hours = { [hour]: 90 * 60000 }; b.requests = 19800;
   h.properties.set(PREFIX + 'BUDGET', JSON.stringify(b));
   h.invoke('startMyPaceRunningProduction'); assert.equal(prop(h, 'STATUS'), 'BUDGET_WAIT');
   h.invoke('rollbackMyPaceRunningToInitial'); assert.equal(prop(h, 'STATUS'), 'ROLLED_BACK');
@@ -190,7 +190,7 @@ test('incorrect roots or an unpassed starting catalog stop before creating any p
 test('a waking worker that still lacks budget replaces its consumed one-shot trigger', async t => {
   const { h } = await productionFixture(t); prepare(h); start(h);
   const b = prop(h, 'BUDGET'), hour = Math.max(...Object.keys(b.hours).map(Number));
-  b.hours = { [hour]: 60000, [hour + 1]: 44 * 60000 };
+  b.hours = { [hour]: 60000, [hour + 1]: 85 * 60000 };
   h.properties.set(PREFIX + 'BUDGET', JSON.stringify(b)); tick(h);
   const oldWake = h.triggers.find(t => t.handler === 'myPaceRunningWake'); assert(oldWake);
   h.advance(25 * 3600000); h.invoke('myPaceRunningWake');
@@ -340,4 +340,49 @@ test('unregistered output folders misplaced inside raw are not explored as CSV i
   assert.equal(prop(h, 'ENABLED'), false); assert.equal(prop(h, 'METRICS').rawBytesRequested || 0, 0);
   assert(!h.requests.slice(at).some(r => r.path === 'files/misplaced-csv'));
   assert.deepEqual(h.files.get('production-index').bytes, index);
+});
+
+function displayedStatus(h){return JSON.parse(h.files.get(prop(h,'ROOT').status).bytes);}
+test('prepared checkpoints upgrade without reimporting, and 45 minutes no longer prevents starting',async t=>{
+ const {h,settings,index}=await productionFixture(t);prepare(h);
+ const root=prop(h,'ROOT'),cacheCount=state(h).cacheImported;
+ // The prepared v1 schema predates the optional status ID. Simulate that state.
+ h.files.delete(root.status);delete root.status;h.properties.set(PREFIX+'ROOT',JSON.stringify(root));
+ const b=prop(h,'BUDGET'),hour=Math.max(...Object.keys(b.hours).map(Number));b.hours={[hour]:45*60000};
+ h.properties.set(PREFIX+'BUDGET',JSON.stringify(b));h.replaceCode(await bundleRunningProduction(settings));
+ assert.deepEqual(h.files.get('production-index').bytes,index);start(h);
+ assert.equal(prop(h,'STATUS'),'WATCHING');assert.equal(state(h).cacheImported,cacheCount);assert.equal(prop(h,'METRICS').rawBytesRequested||0,0);
+ const report=h.invoke('showMyPaceRunningReport');
+ assert.equal(report.budget.usedMinutes,+(Object.values(prop(h,'BUDGET').hours).reduce((a,b)=>a+b,0)/60000).toFixed(2));
+ const status=displayedStatus(h);assert.equal(status.budget.limitMinutes,90);assert.equal(status.budget.reserveMinutes,6);assert.equal(status.budget.requestLimit,19800);
+ assert(!/original-|management-root|latitude|longitude/.test(JSON.stringify(status)));
+});
+test('starting from READY during budget wait preserves start intent and publishes a wait notice without replacing the index',async t=>{
+ const {h,index}=await productionFixture(t);prepare(h);
+ const b=prop(h,'BUDGET'),hour=Math.max(...Object.keys(b.hours).map(Number));b.hours={[hour]:85*60000};
+ h.properties.set(PREFIX+'BUDGET',JSON.stringify(b));h.invoke('startMyPaceRunningProduction');
+ let s=displayedStatus(h);assert.equal(s.status,'BUDGET_WAIT');assert.equal(s.waitReason,'EXECUTION_BUDGET');assert(s.nextRunAt);assert.equal(s.importedSources,4);
+ assert.deepEqual(h.files.get('production-index').bytes,index);
+ h.advance(26*3600000);h.invoke('myPaceRunningWake');until(h,['WATCHING']);
+ assert.equal(prop(h,'ENABLED'),true);assert.equal(state(h).phase,'watch');assert.equal(displayedStatus(h).status,'WATCHING');
+});
+test('request budget waits publish a heartbeat and status-write failure leaves the catalog usable',async t=>{
+ let fail=false;
+ const {h}=await productionFixture(t,{beforeRequest({method,path}){if(fail&&method==='patch'&&h.files.get(path.slice(6))?.meta.name==='sync-status.json')return {status:503};}});
+ prepare(h);start(h);const index=Buffer.from(h.files.get('production-index').bytes);
+ let b=prop(h,'BUDGET');b.requests=19800;h.properties.set(PREFIX+'BUDGET',JSON.stringify(b));tick(h);
+ assert.equal(displayedStatus(h).waitReason,'REQUEST_BUDGET');assert.deepEqual(h.files.get('production-index').bytes,index);
+ h.advance(26*3600000);h.invoke('myPaceRunningWake');until(h,['WATCHING']);
+ fail=true;tick(h);assert.equal(prop(h,'STATUS_WRITE_ERROR'),'DRIVE_RETRYABLE');assert(prop(h,'ENABLED'));assert.deepEqual(h.files.get('production-index').bytes,index);
+ fail=false;tick(h);assert.equal(prop(h,'STATUS_WRITE_ERROR'),null);assert.equal(displayedStatus(h).status,'WATCHING');
+ h.invoke('stopMyPaceRunningProduction');assert.equal(displayedStatus(h).status,'STOPPED');assert.equal(displayedStatus(h).enabled,false);
+});
+
+test('a copied project identity cannot publish a status file, and fatal errors clear a pending start intent',async t=>{
+ const {h}=await productionFixture(t);prepare(h);
+ const root=prop(h,'ROOT'),snapshot=Buffer.from(h.files.get(root.status).bytes);
+ h.properties.set(PREFIX+'ROOT',JSON.stringify({...root,script:'another-script'}));
+ const before=h.requests.length;h.invoke('startMyPaceRunningProduction');
+ assert.equal(prop(h,'STATUS'),'PROJECT_OR_CONFIG_CHANGED');assert.equal(prop(h,'ENABLED'),false);assert.equal(prop(h,'RUN_REQUESTED'),false);
+ assert.equal(h.requests.length,before);assert.deepEqual(h.files.get(root.status).bytes,snapshot);
 });

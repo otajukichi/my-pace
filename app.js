@@ -1,5 +1,6 @@
 import { sourceOverride, runningSource, readAccount, loginErrorMessage } from './lib/account.js';
 import { createDriveRunningSource, driveRequest } from './lib/running-drive.js';
+import { validateSyncStatus, syncPresentation, syncTime } from './lib/running-sync.js';
 import { createStore, localDate } from './lib/state.js';
 import { createDiaryController } from './lib/diary-view.js';
 import { mountMap } from './lib/map.js';
@@ -25,6 +26,7 @@ const authError=loginErrorMessage(new URLSearchParams(location.search).get('auth
 let loggingOut=false;
 const accountChannel=typeof BroadcastChannel==='function'?new BroadcastChannel('mypace-account'):null;
 let driveSource = null, driveRoutes = [], driveViewKey = '', driveLoadedKey = '', driveVersion = 0, driveViewError = '', maskErrorShown = false;
+let syncStatus=null,syncError='',syncTask=null,syncCheckedAt=0,syncVersion=0,displayedHash='',recordsRefreshTask=null,recordsRefreshError='';
 
 let lastSelectedDay=localDate(),calendarEnd=localDate().slice(0,7),calendarMonths=6;
 let area={mode:'demo',areaName:'東京駅周辺（公開サンプル）',center:{lat:35.7,lon:139.8}};
@@ -94,7 +96,7 @@ function render(){
   const running=isRunning();
   document.documentElement.dataset.page=activePage.id;
   document.title=`my pace — ${activePage.label}`;
-  renderHeader();checkStorage();
+  renderHeader();checkStorage();renderSyncStatus();
   $('.sidebar').hidden=!running;$('.map-stage').hidden=!running;
   const page=$('#category-page');page.hidden=running;
   $('.skip-link').href=running?'#context':'#category-page';
@@ -199,7 +201,9 @@ document.addEventListener('click',event=>{
   switch(d.action){
     case'account':case'connection':accountDialog();break;
     case'account-retry':refreshAccount();break;
-    case'drive-refresh':closeDialog();resetRunningData();render();break;
+    case'drive-refresh':closeDialog();if(usingDrive&&runsLoaded)void refreshDriveRecords();else{resetRunningData();render();}break;
+    case'running-sync':syncDialog();break;
+    case'sync-retry':void refreshSyncStatus(true).then(()=>{if(usingDrive&&runsLoaded)return refreshDriveRecords(syncStatus?.catalogHash||'');}).then(()=>{if(dialog.open&&dialog.dataset.view==='sync')syncDialog();});break;
     case'drive-logout':logoutDrive();break;
     case'retry-drive-view':driveViewKey='';driveViewError='';render();break;
     case'exploration-help':explorationHelp();break;
@@ -308,6 +312,7 @@ function inspectCalendar(event){const cell=event.target.closest?.('[data-calenda
 document.addEventListener('pointerover',inspectCalendar);document.addEventListener('focusin',inspectCalendar);
 
 function resetRunningData(){
+  syncVersion++;syncStatus=null;syncError='';syncTask=null;syncCheckedAt=0;displayedHash='';recordsRefreshTask=null;recordsRefreshError='';
   runsVersion++;driveVersion++;runsTask=null;runsLoaded=false;runsError='';
   driveSource?.clear();driveSource=null;driveRoutes=[];driveViewKey='';driveLoadedKey='';driveViewError='';maskErrorShown=false;
   runs=[];runDays=new Map();explorationStats=new Map();selectedDay=null;selectedRunId=null;logExpanded=false;splitPage=0;
@@ -321,6 +326,7 @@ function applyAccount(){
     area={mode:'demo',areaName:'東京駅周辺（公開サンプル）',center:{lat:35.7,lon:139.8}};
   }
   render();
+  void refreshSyncStatus();
   if(dialog.open&&dialog.dataset.view==='account')accountDialog();
 }
 function refreshAccount(){
@@ -363,7 +369,7 @@ function loadRuns(){
       if(version!==runsVersion)return;
       if(error.code==='SIGN_IN'){requireLogin(error.message);return;}
       runsError=error.message;
-    }finally{if(version===runsVersion){runsTask=null;render();}}
+    }finally{if(version===runsVersion){runsTask=null;render();if(usingDrive)void refreshSyncStatus();}}
   })();
   return runsTask;
 }
@@ -409,3 +415,67 @@ async function logoutDrive(){
     history.replaceState(null,'','/#records');location.reload();
   }catch(error){loggingOut=false;accountDialog();toast(error.message);}
 }
+
+function syncModel(){return syncPresentation(syncStatus,{error:syncError,refreshError:recordsRefreshError,refreshing:!!recordsRefreshTask});}
+function renderSyncStatus(){
+  const button=$('#running-sync');button.hidden=!usingDrive;
+  if(!usingDrive)return;
+  const view=syncModel();button.dataset.tone=view.tone;button.title=view.detail;
+  button.innerHTML=`<span class="sync-dot" aria-hidden="true"></span><span role="status">${esc(view.label)}</span>`;
+  if(dialog.open&&dialog.dataset.view==='sync'){
+    // Update the content only; preserve focus on the close/retry controls.
+    const body=dialog.querySelector('.sync-detail');if(body)body.innerHTML=syncDetails();
+  }
+}
+function syncDetails(){
+  const s=syncStatus,view=syncModel();
+  return `<h3>${esc(view.label)}</h3><p>${esc(view.detail)}</p>${s?`<dl class="sync-facts"><dt>反映済みCSV</dt><dd>${s.importedSources} / ${s.sources} 件</dd><dt>未処理の追加・変更</dt><dd>${s.pendingSources} 件</dd><dt>最終通知</dt><dd>${esc(syncTime(s.updatedAt))}</dd><dt>継続取り込みの最終反映</dt><dd>${esc(syncTime(s.lastSuccessfulUpdate))}</dd>${s.nextRunAt?`<dt>自動再開予定</dt><dd>${esc(syncTime(s.nextRunAt))}（日本時間）</dd>`:''}<dt>直近の内部計上</dt><dd>${s.budget.usedMinutes.toFixed(1)} / ${s.budget.limitMinutes} 分</dd></dl><p class="form-hint">監視・取り込み・準備・状態通知を合算した、直近約24〜25時間の目安です。次の実行用に${s.budget.reserveMinutes}分を確保します。Googleが計上する使用量・回復時刻とは一致しない場合があります。CSV数とランの件数は異なることがあります。</p>`:''}<p class="form-hint">ここで示すのはランニングCSVの取り込みです。日記・設定のDrive同期はまだありません。</p>`;
+}
+function syncDialog(){
+  openDialog('ランニングの取り込み',`<div class="stack"><div class="sync-detail">${syncDetails()}</div><button class="button secondary" data-action="sync-retry">状態と表示を再確認</button></div>`);
+  dialog.dataset.view='sync';
+}
+function refreshSyncStatus(force=false){
+  if(!usingDrive||document.hidden||syncTask||!force&&Date.now()-syncCheckedAt<55000)return syncTask||Promise.resolve();
+  const version=syncVersion;syncCheckedAt=Date.now();
+  syncTask=(async()=>{
+    try{
+      const value=validateSyncStatus(await driveRequest('/api/running-drive',{path:'sync-status.json'},(url,options)=>fetch(url,{...options,signal:AbortSignal.timeout(20000)})));
+      if(version!==syncVersion)return;
+      syncStatus=value;syncError='';
+      if(value?.catalogHash&&runsLoaded&&value.catalogHash!==displayedHash)await refreshDriveRecords(value.catalogHash);
+    }catch(error){
+      if(version!==syncVersion)return;
+      if(error.code==='SIGN_IN'){requireLogin(error.message);return;}
+      syncError=error.message;
+    }finally{if(version===syncVersion){syncTask=null;renderSyncStatus();}}
+  })();return syncTask;
+}
+function refreshDriveRecords(hash=''){
+  if(!usingDrive||!runsLoaded||recordsRefreshTask)return recordsRefreshTask||Promise.resolve();
+  const version=runsVersion,selection=JSON.stringify([selectedDay,runningMonth,logExpanded,selectedRunId]);
+  const reader=createDriveRunningSource();recordsRefreshError='';
+  recordsRefreshTask=(async()=>{
+    try{
+      // Keep the current reader, history and map until the replacement is usable.
+      const data=await reader.load();
+      const view=await reader.view({day:selectedDay,month:runningMonth,analysis:logExpanded,runId:selectedRunId});
+      if(version!==runsVersion||selection!==JSON.stringify([selectedDay,runningMonth,logExpanded,selectedRunId])){reader.clear();return;}
+      if(view.detail){const run=data.runs.find(r=>r.id===view.detail.id);if(run)Object.assign(run,view.detail);}
+      driveVersion++;driveSource?.clear();driveSource=reader;
+      runDays=indexRunDays(data.runs);runs=[...runDays.values()].flatMap(day=>day.runs);explorationStats=data.explorationStats;
+      driveRoutes=view.routes;driveViewKey=selection;driveLoadedKey=`${runningMonth}/${selectedDay||'month'}|${selection}`;
+      driveViewError='';runsError='';maskErrorShown=false;displayedHash=hash;
+      // Refresh the exploration tiles as well as the routes for the new generation.
+      mapView?.destroy();mapView=null;render();
+    }catch(error){
+      reader.clear();if(version!==runsVersion)return;
+      if(error.code==='SIGN_IN'){requireLogin(error.message);return;}
+      recordsRefreshError=error.message;
+    }finally{if(version===runsVersion){recordsRefreshTask=null;renderSyncStatus();}}
+  })();renderSyncStatus();return recordsRefreshTask;
+}
+const syncTimer=setInterval(()=>{renderSyncStatus();void refreshSyncStatus();},60000);
+window.addEventListener('focus',()=>{void refreshSyncStatus();});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)void refreshSyncStatus();});
+window.addEventListener('beforeunload',()=>clearInterval(syncTimer));

@@ -101,6 +101,7 @@ function prReport() {
   return { schema: 1, kind: 'running-production', buildId: MYPACE_BUILD_ID, status: prGet('STATUS', 'NOT_PREPARED'),
     enabled: prGet('ENABLED', false), ...summary, nextRunAt: prGet('NEXT_AT'),
     measuredMinutes: +((budget.measuredMs || 0) / 60000).toFixed(2), accountedMinutes: +((budget.accountedMs || 0) / 60000).toFixed(2),
+    budget: prBudgetView(), waitReason: prGet('WAIT_REASON'), statusWriteError: prGet('STATUS_WRITE_ERROR'),
     lastError: prGet('LAST_ERROR'), lastSuccessfulUpdate: prGet('LAST_PUBLICATION') };
 }
 function prRollback() {
@@ -119,17 +120,18 @@ function prRun(command) {
   try {
     pr.root = prGet('ROOT'); pr.metrics = prGet('METRICS', {});
     if (command === 'stop') {
-      prSet('ENABLED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); prSet('NEXT_AT', null); status = 'STOPPED';
+      prSet('ENABLED', false); prSet('RUN_REQUESTED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); prSet('NEXT_AT', null); status = 'STOPPED';
     } else if (command === 'prepare' && prGet('SUMMARY', {}).phase === 'watch') status = 'ALREADY_STARTED';
     else if (command === 'tick' && !prGet('ENABLED', false)) return { status: prGet('STATUS', 'STOPPED') };
     else {
       prConfig();
       if (pr.root) prAssert(pr.root.script === ScriptApp.getScriptId() && pr.root.config === mpHash(prConfig()), 'PROJECT_OR_CONFIG_CHANGED');
       prAssert(!ScriptApp.getProjectTriggers().some(t => ['myPaceIncrementalTick', 'myPaceNewCsvTick'].includes(t.getHandlerFunction())), 'PREVIOUS_PROBE_RUNNING');
-      if (command === 'rollback') { prSet('ENABLED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); prSet('NEXT_AT', null); }
+      if (command === 'rollback') { prSet('ENABLED', false); prSet('RUN_REQUESTED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); prSet('NEXT_AT', null); }
+      if (command === 'start') prSet('RUN_REQUESTED', true);
       if (command === 'prepare' || command === 'start') { prSet('ENABLED', true); prSchedule(); }
       const next = prGet('NEXT_AT');
-      if (command === 'tick' && next && Date.now() < next) { status = 'BUDGET_WAIT'; }
+      if (command === 'tick' && next && Date.now() < next) { status = 'BUDGET_WAIT'; if (prGet('ENABLED', false)) prSleepUntil(next); }
       else {
         prBudgetBegin(command === 'rollback');
         if (!pr.root || !prMeta(pr.root.state, true)) {
@@ -143,7 +145,7 @@ function prRun(command) {
         if (command === 'rollback') status = prRollback();
         else {
           prSchedule();
-          if (command === 'start') { prAssert(['ready', 'watch'].includes(s.phase), 'PREPARATION_NOT_FINISHED'); s.phase = 'watch'; prSave(); }
+          if (command === 'start' || s.phase === 'ready' && prGet('RUN_REQUESTED', false)) { prAssert(['ready', 'watch'].includes(s.phase), 'PREPARATION_NOT_FINISHED'); s.phase = 'watch'; prSave(); }
           while (!status) {
             prYield();
             if (s.phase === 'adopt') prAdopt();
@@ -162,17 +164,16 @@ function prRun(command) {
     status = /^[A-Z][A-Z0-9_]+$/.test(error.message || '') ? error.message : 'UNEXPECTED_ERROR';
     if (status === 'YIELD') status = pr.state?.phase === 'watch' ? 'PROCESSING' : 'PREPARING';
     else if (['BUDGET_WAIT', 'REQUEST_BUDGET_WAIT'].includes(status)) {
-      if (status === 'REQUEST_BUDGET_WAIT') prSet('NEXT_AT', pr.budget.since + 25 * 3600000);
+      if (status === 'REQUEST_BUDGET_WAIT') { prSet('NEXT_AT', pr.budget.since + 25 * 3600000); prSet('WAIT_REASON', 'REQUEST_BUDGET'); }
       status = 'BUDGET_WAIT'; if (prGet('ENABLED', false)) prSleepUntil(prGet('NEXT_AT'));
     } else if (['SOURCE_CHANGED_DURING_READ', 'SOURCE_MOVED_OUTSIDE'].includes(status) && pr.state?.phase === 'watch') {
       pr.state.job = null; pr.state.scan = null; pr.state.observed = null; prSave(); status = 'INPUT_CHANGED_RETRY';
     } else {
       prSet('LAST_ERROR', { code: status, driveReasons: error.driveReasons || [] });
-      if (!['DRIVE_RETRYABLE', 'DRIVE_TRANSPORT_ERROR'].includes(status)) { prSet('ENABLED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); }
+      if (!['DRIVE_RETRYABLE', 'DRIVE_TRANSPORT_ERROR'].includes(status)) { prSet('ENABLED', false); prSet('RUN_REQUESTED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); }
     }
   } finally {
     try {
-      prBudgetEnd(); prSet('METRICS', pr.metrics);
       if (pr.state) {
         const s = pr.state;
         prSet('SUMMARY', { phase: s.phase, sources: s.sourceCount || 0, sourceBytes: s.sourceBytes || 0,
@@ -180,13 +181,29 @@ function prRun(command) {
           rawBytesRequested: pr.metrics.rawBytesRequested || 0, requests: pr.metrics.requests || 0, publications: pr.metrics.publications || 0,
           prepared: ['ready', 'watch'].includes(s.phase), legacyCacheCopied: !s.seed && ['ready', 'watch'].includes(s.phase) });
         if (status === 'UPDATED') { prSet('LAST_PUBLICATION', { at: s.lastPublishedAt, sources: Object.keys(s.committed).length }); prSet('LAST_ERROR', null); }
+        prSet('CATALOG_HASH', s.catalogHash);
         const progress = prProgress(s);
         if (['PROCESSING', 'PREPARING'].includes(status)) {
           const stalled = progress === beforeProgress ? prGet('STALLED', 0) + 1 : 0; prSet('STALLED', stalled);
           if (stalled >= 3) { status = 'PROCESSING_UNIT_TOO_LARGE'; prSet('LAST_ERROR', { code: status }); prSet('ENABLED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); }
         } else prSet('STALLED', 0);
       }
-      if (status) prSet('STATUS', status); console.log(JSON.stringify(prReport()));
+      if (status) {
+        const unchangedWait = status === 'BUDGET_WAIT' && prGet('STATUS') === status && !pr.budget;
+        prSet('STATUS', status);
+        if (['READY', 'WATCHING', 'UPDATED', 'PROCESSING', 'PREPARING', 'SETTLING', 'INPUT_CHANGED_RETRY'].includes(status)) prSet('LAST_ERROR', null);
+        if (status !== 'BUDGET_WAIT') prSet('WAIT_REASON', null);
+        if (!unchangedWait) {
+          // Status failure cannot invalidate a complete catalog or lose progress.
+          // Budget and privacy checks still apply to all Drive writes.
+          try {
+            if (!pr.budget) pr.budget = prGet('BUDGET');
+            prPublishStatus();
+          } catch (error) { prSet('STATUS_WRITE_ERROR', /^[A-Z][A-Z0-9_]+$/.test(error.message || '') ? error.message : 'STATUS_WRITE_FAILED'); }
+        }
+      }
+      prBudgetEnd(); prSet('METRICS', pr.metrics);
+      console.log(JSON.stringify(prReport()));
     } finally { pr = null; lock.releaseLock(); }
   }
   return { status };

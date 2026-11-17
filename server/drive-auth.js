@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { OAuth2Client } from 'google-auth-library';
+import { validateSyncStatus } from '../lib/running-sync.js';
 
 const MAX_BYTES = 131072;
 const SCOPES = ['openid', 'email', 'https://www.googleapis.com/auth/drive.readonly'];
@@ -166,16 +167,23 @@ export function createDriveService({ env = process.env, fetchImpl = fetch, oauth
       if (req.method !== 'POST') throw new AccessError('METHOD', 405);
       sameOrigin(req, c);
       const b = await jsonBody(req), path = b?.path;
-      if (Object.keys(b || {}).length !== 1 || typeof path !== 'string' || !(path === 'index.json' || /^objects\/[a-f0-9]{64}\.json$/.test(path))) throw new AccessError('PATH', 400);
+      if (Object.keys(b || {}).length !== 1 || typeof path !== 'string' || !(['index.json','sync-status.json'].includes(path) || /^objects\/[a-f0-9]{64}\.json$/.test(path))) throw new AccessError('PATH', 400);
       const s = await session(req, res, c), derived = await runningFolder(c, s.access);
-      const fileName = path === 'index.json' ? RUNNING_CATALOG : path.slice(8);
+      const isStatus = path === 'sync-status.json';
+      const fileName = isStatus ? path : path === 'index.json' ? RUNNING_CATALOG : path.slice(8);
       const result = await drive(s.access, 'files', { q: `'${derived}' in parents and name = '${fileName}' and trashed = false`, fields: 'files(id,name,size,mimeType,ownedByMe,shared,trashed,parents),nextPageToken,incompleteSearch', pageSize: '2', spaces: 'drive' });
+      if (isStatus && !result.incompleteSearch && !result.nextPageToken && result.files?.length === 0) return send(res,200,{schema:1,kind:'running-sync-status',available:false});
       if (result.incompleteSearch || result.nextPageToken || result.files?.length !== 1) throw new AccessError('DISPLAY_NOT_UNIQUE', 422);
       const f = result.files[0];
       if (!/^[\w-]+$/.test(f.id || '') || f.name !== fileName || f.parents?.length !== 1 || f.parents[0] !== derived || f.ownedByMe !== true || f.shared !== false || f.trashed !== false || f.mimeType !== 'application/json' || !(Number(f.size) > 0 && Number(f.size) <= MAX_BYTES)) throw new AccessError('DISPLAY_INVALID', 422);
       const body = await drive(s.access, `files/${encodeURIComponent(f.id)}`, { alt: 'media' }, true);
-      if (path !== 'index.json' && createHash('sha256').update(body).digest('hex') !== fileName.slice(0, -5)) throw new AccessError('DISPLAY_HASH', 422);
+      if (!isStatus && path !== 'index.json' && createHash('sha256').update(body).digest('hex') !== fileName.slice(0, -5)) throw new AccessError('DISPLAY_HASH', 422);
       let value; try { value = JSON.parse(body); } catch { throw new AccessError('DISPLAY_INVALID', 422); }
+      if (isStatus) {
+        try { if (Buffer.byteLength(body)>8192 || !validateSyncStatus(value)) throw Error(); }
+        catch { throw new AccessError('SYNC_STATUS_INVALID',422); }
+        return send(res,200,value);
+      }
       if (value.schema !== 1 || (path === 'index.json' ? value.kind !== 'catalog' : !['year', 'month', 'route', 'overview', 'analysis', 'exploration'].includes(value.kind))) throw new AccessError('DISPLAY_INVALID', 422);
       res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(body);
     } catch (error) { send(res, error.status || 503, { error: { code: error instanceof AccessError ? error.code : 'DRIVE_UNAVAILABLE' } }); }

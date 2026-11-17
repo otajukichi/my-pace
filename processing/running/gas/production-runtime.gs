@@ -5,6 +5,9 @@ const MYPACE_BUILD_ID = __MYPACE_BUILD_ID__;
 const PR_KEY = 'MYPACE_RUNNING_V1_', PR_TICK = 'myPaceRunningTick', PR_WAKE = 'myPaceRunningWake';
 const PR_FIELDS = 'id,name,mimeType,size,md5Checksum,version,modifiedTime,parents,trashed,ownedByMe,shared,appProperties';
 const PR_FOLDER = 'application/vnd.google-apps.folder', PR_LIMIT = 4194304;
+// This account is dedicated to MyPace: use the 90-minute consumer allowance.
+// Reserve a full six-minute invocation before starting, not half the daily quota.
+const PR_DAILY_MS = 90 * 60000, PR_RESERVE_MS = 6 * 60000, PR_REQUEST_LIMIT = 19800;
 let pr;
 function prAssert(ok, code) { if (!ok) throw Error(code); }
 function prJson(value) { return JSON.stringify(value) + '\n'; }
@@ -34,7 +37,7 @@ function prFetch(path, options = {}) {
   // All writes require a short-lived permit created AFTER ownership/location
   // validation, with the exact payload. Never accept a caller-supplied URL.
   if (method !== 'get') prAssert(pr.writePermit === path + '\n' + method + '\n' + options.payload, 'WRITE_FORBIDDEN');
-  if (pr.budget && pr.budget.requests >= 12000 && !pr.saving && !pr.recovery) throw Error('REQUEST_BUDGET_WAIT');
+  if (pr.budget && pr.budget.requests >= PR_REQUEST_LIMIT && !pr.saving && !pr.recovery) throw Error('REQUEST_BUDGET_WAIT');
   if (pr.budget) { pr.budget.requests++; prPersistBudget(); }
   prCount('requests');
   let response;
@@ -107,6 +110,7 @@ function prCheckRoots({ allowMissingSystem = false } = {}) {
     if (key === 'system' && allowMissingSystem && !current.system) continue;
     prAssert(current[key] === r[key], 'FOLDER_LOCATION_CHANGED');
   }
+  pr.rootsChecked = true;
 }
 function prInputAncestor(id) {
   prAssert(![pr.root.folder, pr.root.running, pr.root.derived, pr.root.system].includes(id), 'SOURCE_MOVED_OUTSIDE');
@@ -140,8 +144,9 @@ function prWrite(id, name, text, parent, { folder = false, expected } = {}) {
     if (folder) return before;
     if (expected) { const current = mpHash(prRead(before, parent)); prAssert(current === expected || current === mpHash(content), 'CATALOG_CHANGED_EXTERNALLY'); }
     if (before.md5Checksum === prDigest(Utilities.DigestAlgorithm.MD5, prBytes(content))) return before;
-    // Only the checkpoint, cache pages and the one registered catalog mutate.
-    prAssert(id === r.state || /^unit-page-\d+\.json$/.test(name) && parent === r.system || id === r.catalog && name === 'index.json', 'IMMUTABLE_CHANGED');
+    // Only the checkpoint, cache pages, catalog and registered heartbeat mutate.
+    prAssert(id === r.state || /^unit-page-\d+\.json$/.test(name) && parent === r.system || id === r.catalog && name === 'index.json'
+      || id === r.status && name === 'sync-status.json' && parent === r.derived, 'IMMUTABLE_CHANGED');
   }
   const metadata = { id, name, mimeType, parents: [parent], appProperties: { mypaceRunning: r.job, role: folder ? 'folder' : 'managed' } };
   const boundary = 'mypace_running_' + r.job;
@@ -210,17 +215,25 @@ function prBudgetBegin(recovery = false) {
   const used = Object.values(b.hours).reduce((a, n) => a + n, 0);
   // Manual rollback restores one small catalog outside the worker's internal
   // budget. It still cannot bypass Google's actual quota.
-  if (!recovery && (used + 360000 > 45 * 60000 || b.requests >= 12000)) {
-    const next = b.requests >= 12000 ? b.since + 25 * 3600000 : (Math.min(...Object.keys(b.hours).map(Number)) + 25) * 3600000;
+  if (!recovery && (used + PR_RESERVE_MS > PR_DAILY_MS || b.requests >= PR_REQUEST_LIMIT)) {
+    let next = now, remaining = used;
+    for (const h of Object.keys(b.hours).map(Number).sort((a, b) => a - b)) {
+      if (remaining + PR_RESERVE_MS <= PR_DAILY_MS) break;
+      remaining -= b.hours[h]; next = (h + 25) * 3600000;
+    }
+    if (b.requests >= PR_REQUEST_LIMIT) next = Math.max(next, b.since + 25 * 3600000);
+    prSet('WAIT_REASON', b.requests >= PR_REQUEST_LIMIT ? 'REQUEST_BUDGET' : 'EXECUTION_BUDGET');
     prSet('NEXT_AT', Math.max(now + 300000, next)); prPersistBudget(); throw Error('BUDGET_WAIT');
   }
-  const hour = Math.floor(now / 3600000); b.hours[hour] = (b.hours[hour] || 0) + 360000;
+  const hour = Math.floor(now / 3600000); b.hours[hour] = (b.hours[hour] || 0) + PR_RESERVE_MS;
   pr.hour = hour; pr.recovery = recovery; prPersistBudget();
 }
 function prBudgetEnd() {
-  if (pr.hour === undefined) return;
+  if (!pr.budget) return;
   const measured = Date.now() - pr.started, accounted = Math.max(measured + 5000, 5000);
-  pr.budget.hours[pr.hour] += accounted - 360000; pr.budget.measuredMs += measured; pr.budget.accountedMs += accounted; prPersistBudget();
+  const hour = pr.hour ?? Math.floor(Date.now() / 3600000);
+  pr.budget.hours[hour] = (pr.budget.hours[hour] || 0) + accounted - (pr.hour === undefined ? 0 : PR_RESERVE_MS);
+  pr.budget.measuredMs += measured; pr.budget.accountedMs += accounted; pr.budgetSettled = true; prPersistBudget();
 }
 function prDeleteTriggers(handler) { for (const t of ScriptApp.getProjectTriggers()) if (t.getHandlerFunction() === handler) ScriptApp.deleteTrigger(t); }
 function prSchedule() {
