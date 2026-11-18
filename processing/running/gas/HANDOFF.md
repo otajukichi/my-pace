@@ -38,8 +38,8 @@
 GitHubにはコードの原本・テスト・手順だけを置きます。**貼り付け用の設定済みコードは、作業中のPCの次の場所にあります。**
 
 ```text
-/home/jukichi/workspace/my-pace/data/running-gas-probe/Code.gs
-/home/jukichi/workspace/my-pace/data/running-gas-probe/appsscript.json
+data/running-gas-probe/Code.gs
+data/running-gas-probe/appsscript.json
 ```
 
 GitHubにある `probe-host.gs` は部品なので、単体では実行できません。GitHubから取得した直後の別環境にも、私有設定や元CSVはありません。上記の用意済みファイルを使えば、利用者がDrive IDを調べて手入力する必要はありません。

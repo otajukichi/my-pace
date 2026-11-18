@@ -60,8 +60,8 @@ MyPace 差分更新検証 …/
 今回使うファイルは、作業中のPCの次の場所にあります。
 
 ```text
-/home/jukichi/workspace/my-pace/data/running-gas-incremental/Code.gs
-/home/jukichi/workspace/my-pace/data/running-gas-incremental/appsscript.json
+data/running-gas-incremental/Code.gs
+data/running-gas-incremental/appsscript.json
 ```
 
 GitHub上の [incremental-host.gs](incremental-host.gs) は部品で、単体では動きません。設定済み `Code.gs` を使ってください。Driveの個別IDや照合値を含むため、設定済みキットはGitHubにもチャットにも貼りません。照合用データ・キャッシュには実GPSが含まれます。
