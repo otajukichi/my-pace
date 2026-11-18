@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A private, local-first running companion.",
+  "description": "A personal app to support the things you want to keep doing, developed as your needs grow.",
   "engines": {
     "node": ">=20"
   },
