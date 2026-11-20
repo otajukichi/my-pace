@@ -1,0 +1,14 @@
+/* Counter clones inherit the same typography as the original direct children.
+   Only the clone is positioned; the actual metric always reserves its space. */
+.running-month-distance { position: relative; }
+.running-count-source { opacity: 0; }
+.running-month-distance>strong.running-count-overlay {
+  position: absolute;
+  margin: 0;
+  pointer-events: none;
+  white-space: nowrap;
+}
+@media (prefers-reduced-motion: reduce) {
+  .running-count-source { opacity: 1; }
+  .running-count-overlay { display: none; }
+}

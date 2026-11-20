@@ -13,6 +13,7 @@ import { getWeather, weatherLabel, upcomingHours } from './lib/weather.js';
 import { weatherGlyph, weatherTone } from './lib/weather-view.js';
 import { icon, esc, $, shortDate } from './lib/ui.js';
 import { pageForHash, categoryNavigation, placeholderPage } from './lib/navigation.js';
+import { createRunningMotion } from './lib/running-motion.js';
 
 const workspaceStore=createStore();
 let workspaceState=workspaceStore.get();
@@ -27,6 +28,8 @@ let loggingOut=false;
 const accountChannel=typeof BroadcastChannel==='function'?new BroadcastChannel('mypace-account'):null;
 let driveSource = null, driveRoutes = [], driveViewKey = '', driveLoadedKey = '', driveVersion = 0, driveViewError = '', maskErrorShown = false;
 let syncStatus=null,syncError='',syncTask=null,syncCheckedAt=0,syncVersion=0,displayedHash='',recordsRefreshTask=null,recordsRefreshError='';
+const runningMotion=createRunningMotion();
+let routeMotionState={},panelMarkup=null,selectionMarkup=null;
 
 let lastSelectedDay=localDate(),calendarEnd=localDate().slice(0,7),calendarMonths=6;
 let area={mode:'demo',areaName:'東京駅周辺（公開サンプル）',center:{lat:35.7,lon:139.8}};
@@ -59,18 +62,26 @@ function renderHeader(){
 
 function historyPanel(){return runningPanel(runningContext());}
 function historyCard(){return runningSelectionCard(runningContext());}
+function replacePanel(markup){
+  // Weather updates its own section. They must not replace the rest of the
+  // dashboard during a route response, or discard its in-flight animations.
+  const signature=markup.replace(/(<section id="running-weather"[^>]*>)[\s\S]*?(<\/section>)/,'$1$2');
+  if(signature===panelMarkup)return;
+  runningMotion.stop('panel');$('#context').innerHTML=markup;panelMarkup=signature;
+}
+function animateRunningPanel(){runningMotion.rendered({ready:isRunning()&&runsLoaded&&!runsError&&['local','drive'].includes(activeSource),month:runningMonth,calendar:`${calendarEnd}/${calendarMonths}`});}
 function renderPanel(){
   if(!isRunning())return;
   $('#workspace').className=`workspace with-sidebar history ${logExpanded?'log-expanded':''}`;
-  if(activeSource==='checking'){$('#context').innerHTML='<div class="loading"><span class="spinner"></span>アカウントを確認しています</div>';return;}
-  if(activeSource==='unavailable'){$('#context').innerHTML=`<div class="empty">${icon('cloud')}<h2>接続を確認できませんでした</h2><p>${esc(account.error)}</p><button class="button" data-action="account-retry">もう一度確認</button></div>`;return;}
-  if(activeSource==='guest'){$('#context').innerHTML=`<div class="empty account-welcome">${icon('run')}<h2>自分の記録を、ここに。</h2><p>${authError?esc(authError):'Googleでログインすると、走った記録を表示できます。'}</p><button class="button" data-action="account">アカウントを開く</button><small>日記と設定は、このブラウザーに保存されます。</small></div>`;return;}
-  if(runsError){$('#context').innerHTML=`<div class="empty">${icon('note')}<h2>記録を読み込めませんでした</h2><p>${esc(runsError)}</p><button class="button" data-action="retry-runs">読み込み直す</button></div>`;return;}
-  if(!runsLoaded){$('#context').innerHTML='<div class="loading"><span class="spinner"></span>記録を読み込んでいます</div>';return;}
-  $('#context').innerHTML=historyPanel();
+  if(activeSource==='checking'){replacePanel('<div class="loading"><span class="spinner"></span>アカウントを確認しています</div>');return;}
+  if(activeSource==='unavailable'){replacePanel(`<div class="empty">${icon('cloud')}<h2>接続を確認できませんでした</h2><p>${esc(account.error)}</p><button class="button" data-action="account-retry">もう一度確認</button></div>`);return;}
+  if(activeSource==='guest'){replacePanel(`<div class="empty account-welcome">${icon('run')}<h2>自分の記録を、ここに。</h2><p>${authError?esc(authError):'Googleでログインすると、走った記録を表示できます。'}</p><button class="button" data-action="account">アカウントを開く</button><small>日記と設定は、このブラウザーに保存されます。</small></div>`);return;}
+  if(runsError){replacePanel(`<div class="empty">${icon('note')}<h2>記録を読み込めませんでした</h2><p>${esc(runsError)}</p><button class="button" data-action="retry-runs">読み込み直す</button></div>`);return;}
+  if(!runsLoaded){replacePanel('<div class="loading"><span class="spinner"></span>記録を読み込んでいます</div>');return;}
+  replacePanel(historyPanel());
 }
 function renderMapTop(){ $('#map-top').className='map-top history-map-top'; $('#map-top').innerHTML=runningMapHeading(runningContext())+(driveViewError?`<button class="drive-view-retry" data-action="retry-drive-view">${esc(driveViewError)} · 再読込</button>`:''); }
-function renderMapBottom(){ $('#map-bottom').innerHTML=historyCard(); }
+function renderMapBottom(){const markup=historyCard();if(markup===selectionMarkup)return;runningMotion.stop('selection');$('#map-bottom').innerHTML=markup;selectionMarkup=markup;}
 function mapOptions(){
   const padding={top:Math.ceil($('#map-top').getBoundingClientRect().height)+45,right:isMobile()?55:65,bottom:Math.ceil($('#map-bottom').getBoundingClientRect().height)+34,left:isMobile()?22:35};
   const exploration={exploredRuns:usingDrive?[]:runs,explorationEnabled:true,maskTiles:driveSource?.maskTiles,onMaskError:()=>{if(!maskErrorShown){maskErrorShown=true;toast('探索範囲を読み込めませんでした。アカウントから読み込み直せます。');void refreshAccount();}}};
@@ -89,7 +100,9 @@ function mapOptions(){
     padding.top=Math.ceil(top.bottom-stage.top)+(isMobile()?10:18);
     padding.bottom=Math.max(24,Math.ceil(stage.bottom-bottom.top)+(isMobile()?10:22));
     const shown=usingDrive?driveRoutes:selectedRunningRuns();
-    return {...exploration,fitPadding:padding,runs:shown,selectedRunId:selectedDay&&shown.length===1?shown[0].id:null,selectedRunIds:selectedDay?shown.map(r=>r.id):[],speedRoutes:true,overview:!selectedDay,viewportKey:`records:${runningMonth}:${selectedDay||'month'}:${usingDrive?driveLoadedKey:''}`};
+    const routeKey=`${runningMonth}/${selectedDay||'month'}`;
+    const routeReady=isRunning()&&runsLoaded&&!runsError&&['local','drive'].includes(activeSource)&&(!usingDrive||driveLoadedKey.split('|')[0]===routeKey);
+    return {...exploration,fitPadding:padding,runs:shown,selectedRunId:selectedDay&&shown.length===1?shown[0].id:null,selectedRunIds:selectedDay?shown.map(r=>r.id):[],speedRoutes:true,overview:!selectedDay,routeMotionKey:routeReady?routeKey:null,routeMotionEnabled:routeReady,routeMotionState,viewportKey:`records:${runningMonth}:${selectedDay||'month'}:${usingDrive?driveLoadedKey:''}`};
   }
 
 function render(){
@@ -101,6 +114,7 @@ function render(){
   const page=$('#category-page');page.hidden=running;
   $('.skip-link').href=running?'#context':'#category-page';
   if(!running){
+    runningMotion.reset();routeMotionState={};
     mapView?.destroy();mapView=null;
     $('#workspace').className='workspace category-workspace';
     page.innerHTML=placeholderPage(activePage);
@@ -113,6 +127,7 @@ function render(){
   if(usingDrive)void loadDriveView();
   if(mapView)mapView.update(mapOptions());else mapView=mountMap($('#map'),mapOptions());
   void loadWeather();
+  animateRunningPanel();
 }
 
 window.addEventListener('hashchange',()=>{
@@ -192,8 +207,8 @@ document.addEventListener('click',event=>{
   if(d.runningMonth){selectRunningMonth(d.runningMonth);return;}
   if(d.mapMonth){setRunningMode('month',false);selectRunningMonth(d.mapMonth);return;}
   if(d.runningMode){setRunningMode(d.runningMode);return;}
-  if(d.calendarMonths){calendarMonths=Number(d.calendarMonths)===12?12:6;renderPanel();return;}
-  if(d.calendarStep){const next=shiftMonth(calendarEnd,Number(d.calendarStep)*calendarMonths);calendarEnd=next>localDate().slice(0,7)?localDate().slice(0,7):next;renderPanel();return;}
+  if(d.calendarMonths){calendarMonths=Number(d.calendarMonths)===12?12:6;renderPanel();animateRunningPanel();return;}
+  if(d.calendarStep){const next=shiftMonth(calendarEnd,Number(d.calendarStep)*calendarMonths);calendarEnd=next>localDate().slice(0,7)?localDate().slice(0,7):next;renderPanel();animateRunningPanel();return;}
   if(d.runningStep){stepRunningDay(Number(d.runningStep));return;}
   if(d.themeMode){const saved=themeController.set(d.themeMode);const section=$('#theme-settings');if(section)section.outerHTML=themeSettings();if(!saved)toast('配色はこの画面内だけで変更しています');return;}
   if(d.splitStep){splitPage=Math.max(0,splitPage+Number(d.splitStep));refreshRunningLog(`[data-split-step="${d.splitStep}"]`);return;}
@@ -245,13 +260,12 @@ window.addEventListener('resize',()=>{
   },150);
 });
 const mapCardObserver=new ResizeObserver(()=>{if(mapView){mapView.update(mapOptions());mapView.fit();}});mapCardObserver.observe($('#map-bottom'));
-window.addEventListener('beforeunload',()=>{mapCardObserver.disconnect();mapView?.destroy();themeController.destroy();clearTimeout(resizeTimer);weatherController?.abort();});
+window.addEventListener('beforeunload',()=>{mapCardObserver.disconnect();mapView?.destroy();runningMotion.destroy();themeController.destroy();clearTimeout(resizeTimer);weatherController?.abort();});
 
 function runningContext(){return {days:runDays,month:runningMonth,selectedDay,lastSelectedDay,explorationStats,mobile:isMobile(),slotCount:runningSlotCount(),calendarEnd,calendarMonths,logExpanded,splitPage,splitPageSize:!isMobile()&&innerHeight<=620?3:5,selectedRunId,name:workspaceState.profile.name||'',latestRun:runs.at(-1),weather,weatherBusy,weatherError,area};}
 function revealCalendarMonth(month){if(month>calendarEnd||month<shiftMonth(calendarEnd,1-calendarMonths))calendarEnd=month;}
-function selectSlotDate(date,direction=0){
+function selectSlotDate(date){
   selectRunningDay(date);const reel=$('.run-slot-reel');reel?.focus({preventScroll:true});
-  if(direction&&!matchMedia('(prefers-reduced-motion:reduce)').matches)reel?.querySelector('.run-slot-rows')?.animate([{transform:`translateY(${direction*10}px)`,opacity:.7},{transform:'translateY(0)',opacity:1}],{duration:170,easing:'ease-out'});
 }
 mountRunSlotInput($('#context'),{getContext:runningContext,select:selectSlotDate});
 function selectRunningDay(date,restoreFocus=false){
@@ -289,6 +303,8 @@ $('#map-bottom').addEventListener('toggle',event=>{
   disclosure.querySelector('summary').setAttribute('aria-expanded',String(disclosure.open));
   if(logExpanded===disclosure.open)return;
   logExpanded=disclosure.open;
+  // Native <details> changed the DOM without going through renderMapBottom.
+  selectionMarkup=null;
   if(usingDrive)void loadDriveView();
   $('#workspace').classList.toggle('log-expanded',logExpanded);
   // Native details performs the open/close. Map work cannot prevent closing.
@@ -312,6 +328,7 @@ function inspectCalendar(event){const cell=event.target.closest?.('[data-calenda
 document.addEventListener('pointerover',inspectCalendar);document.addEventListener('focusin',inspectCalendar);
 
 function resetRunningData(){
+  runningMotion.reset();routeMotionState={};panelMarkup=null;selectionMarkup=null;
   syncVersion++;syncStatus=null;syncError='';syncTask=null;syncCheckedAt=0;displayedHash='';recordsRefreshTask=null;recordsRefreshError='';
   runsVersion++;driveVersion++;runsTask=null;runsLoaded=false;runsError='';
   driveSource?.clear();driveSource=null;driveRoutes=[];driveViewKey='';driveLoadedKey='';driveViewError='';maskErrorShown=false;
