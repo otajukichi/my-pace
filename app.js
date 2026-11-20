@@ -14,6 +14,7 @@ import { weatherGlyph, weatherTone } from './lib/weather-view.js';
 import { icon, esc, $, shortDate } from './lib/ui.js';
 import { pageForHash, categoryNavigation, placeholderPage } from './lib/navigation.js';
 import { createRunningMotion } from './lib/running-motion.js';
+import { mountEnglish } from './lib/english-view.js';
 
 const workspaceStore=createStore();
 let workspaceState=workspaceStore.get();
@@ -30,6 +31,7 @@ let driveSource = null, driveRoutes = [], driveViewKey = '', driveLoadedKey = ''
 let syncStatus=null,syncError='',syncTask=null,syncCheckedAt=0,syncVersion=0,displayedHash='',recordsRefreshTask=null,recordsRefreshError='';
 const runningMotion=createRunningMotion();
 let routeMotionState={},panelMarkup=null,selectionMarkup=null;
+let englishView=null;
 
 let lastSelectedDay=localDate(),calendarEnd=localDate().slice(0,7),calendarMonths=6;
 let area={mode:'demo',areaName:'東京駅周辺（公開サンプル）',center:{lat:35.7,lon:139.8}};
@@ -117,9 +119,16 @@ function render(){
     runningMotion.reset();routeMotionState={};
     mapView?.destroy();mapView=null;
     $('#workspace').className='workspace category-workspace';
-    page.innerHTML=placeholderPage(activePage);
+    if(activePage.id==='english'){
+      // Account/weather refreshes must not reset a selected room or a handoff.
+      englishView ||= mountEnglish(page);
+    }else{
+      englishView?.destroy();englishView=null;
+      page.innerHTML=placeholderPage(activePage);
+    }
     return;
   }
+  englishView?.destroy();englishView=null;
   renderPanel();
   if(activeSource==='checking'||activeSource==='unavailable')return;
   if(!runsLoaded){if(!runsError)void loadRuns();return;}

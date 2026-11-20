@@ -25,7 +25,8 @@
 - 探索：走った道と囲まれた範囲を明るく表示。その日新しく走った道の距離も推定。
 - Google連携：CSVの差分処理・自動取り込み、本人認証付きの閲覧、処理状況の表示。
 - 日記・設定：ブラウザ内に保存。Drive保存・端末間同期は未実装。
-- 英会話・ホーム：入口のみ。内容はこれから。
+- 英会話：8つのエリアからテーマを選ぶ立体ギャラリー、独立した音読、ChatGPT用の開始文、練習履歴。記録はブラウザー内に保存。Drive同期・ChatGPTからの自動記録は未接続です。
+- ホーム：入口のみ。内容はこれから。
 
 ## ローカル起動
 
@@ -81,6 +82,8 @@ TestingではこのDrive権限の更新トークンは7日で失効します。�
 Webアプリは読み取り専用、Apps Scriptは出力JSONの書き込み権限を使います。OAuth権限自体はDrive全体が対象ですが、コードで入力・出力先を制限しています。[Driveの権限](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)
 
 ## 開発メモ
+
+英会話は `#english` から開きます。表示しているテーマ例は教材の本文を含みません。自分のDrive教材と目次を用意して使います。[英会話の教材設定と確認手順](english/CONNECT.md)。スマホのChatGPT音声モードでDrive教材を参照できるかは、実機での確認が必要です。
 
 画面は `app.js`・`lib/`・CSS、認証と読み込みは `api/`・`server/`、CSV変換は `processing/running/`。確認用コマンドは `npm test` と `npm run build:public` です。
 

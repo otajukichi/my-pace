@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "materials": [
+    {
+      "id": "people-first-meeting",
+      "kind": "conversation",
+      "areaId": "people",
+      "title": "はじめての会話",
+      "description": "初めて会う人と、お互いのことを少しずつ話す。",
+      "durationMinutes": 5
+    }
+  ]
+}
