@@ -1,6 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
   <title>MyPace</title>
   <rect width="40" height="40" rx="12" fill="#b64b32"/>
-  <path d="M8 26V18C8 15.1 9.8 13.5 12.1 13.5S16.2 15.1 16.2 18V26M16.2 19.5C16.2 16.6 18 15 20.3 15S24.4 16.6 24.4 19.5V22.5C24.4 24.8 25.9 26 27.8 26" fill="none" stroke="#fff8ee" stroke-width="3.1" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="32.2" cy="26" r="1.75" fill="#f0c57f"/>
+  <g fill="#fff8ee" transform="rotate(-8 20 20)">
+    <rect x="8" y="9" width="9" height="22" rx="4.5"/>
+    <rect x="20" y="8" width="12" height="10" rx="4.5"/>
+    <rect x="20" y="21" width="11" height="10" rx="4.5"/>
+  </g>
 </svg>
