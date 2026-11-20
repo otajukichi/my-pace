@@ -15,6 +15,7 @@ import { icon, esc, $, shortDate } from './lib/ui.js';
 import { pageForHash, categoryNavigation, placeholderPage } from './lib/navigation.js';
 import { createRunningMotion } from './lib/running-motion.js';
 import { mountEnglish } from './lib/english-view.js';
+import { mountHome } from './lib/home-view.js';
 
 const workspaceStore=createStore();
 let workspaceState=workspaceStore.get();
@@ -32,6 +33,8 @@ let syncStatus=null,syncError='',syncTask=null,syncCheckedAt=0,syncVersion=0,dis
 const runningMotion=createRunningMotion();
 let routeMotionState={},panelMarkup=null,selectionMarkup=null;
 let englishView=null;
+let homeView=null;
+const homeUi={};
 
 let lastSelectedDay=localDate(),calendarEnd=localDate().slice(0,7),calendarMonths=6;
 let area={mode:'demo',areaName:'東京駅周辺（公開サンプル）',center:{lat:35.7,lon:139.8}};
@@ -52,7 +55,7 @@ function selectedRunningRuns(){return selectedDay?(runDays.get(selectedDay)?.run
 function explorationHelp(){openDialog('探索マップ',`<div class="stack"><div class="source-box"><strong>走った道から、地図が開きます</strong>取り込まれたランの記録から、走った道と、その道で囲まれた内側を明るくします。別の日の経路がつながって囲んだ場所も含まれます。日付や月を変えても残ります。</div><p class="form-hint">薄い陰影の場所は、まだこのアプリの記録で開いていない範囲です。実際の訪問歴とは限りません。山や池なども、走った道で囲めば内側が開きます。道の周囲は最大約60mまで柔らかく明るくし、囲みの判定では小さなGPSのずれを吸収します。欠測や250mを超える点の間に直線を補うことはありません。</p><p class="form-hint">「新しく走った道」は、その日より前の記録から約30m以上離れた区間の走行距離を、GPSから推定した値です。月表示では、その月の各日の推定距離を合計します。同じ日の往復や繰り返しも含むため、道路そのものの延長とは異なります。囲んで開いた面積や道路そのものの踏破率ではなく、実際の経路を比較した値で、GPSのずれも含みます。同じ日を何度見ても、同じ道を繰り返しても、地図の範囲は水増ししません。</p><p class="form-hint">探索表示は常に有効です。${usingDrive?'探索範囲と新しく走った距離は、Google側で作成済みの表示用データを使います。':'探索範囲の計算は端末内で行います。'}</p></div>`);}
 function toast(message){clearTimeout(toastTimer);$('#toast').textContent=message;$('#toast').classList.add('visible');toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),3500);}
 function checkStorage(){const errors=[workspaceStore.status().error].filter(Boolean);$('#save-warning').hidden=!errors.length;$('#save-warning').textContent=errors.join(' ');}
-function saveWorkspace(mutator){workspaceState=workspaceStore.update(mutator);checkStorage();}
+function saveWorkspace(mutator){workspaceState=workspaceStore.update(mutator);checkStorage();homeView?.update();}
 function savedNotice(message){toast(workspaceStore.status().available?message:'変更はこの画面内のみです。設定から書き出せます。');}
 async function api(path,body){const options=body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)};const response=await fetch(path,options);let data;try{data=await response.json();}catch{throw new Error('ローカルサーバーを再起動して、もう一度お試しください。');}if(!response.ok){const error=new Error(data.error?.message||'データを取得できませんでした。');error.code=data.error?.code;error.retryAfterSeconds=data.error?.retryAfterSeconds;throw error;}return data;}
 function renderHeader(){
@@ -120,15 +123,26 @@ function render(){
     mapView?.destroy();mapView=null;
     $('#workspace').className='workspace category-workspace';
     if(activePage.id==='english'){
+      homeView?.destroy();homeView=null;page.setAttribute('aria-labelledby','category-title');
       // Account/weather refreshes must not reset a selected room or a handoff.
       englishView ||= mountEnglish(page);
+    }else if(activePage.id==='home'){
+      englishView?.destroy();englishView=null;
+      if(homeView)homeView.update();
+      else homeView=mountHome(page,{getContext:()=>({workspace:workspaceState,name:workspaceState.profile.name,runs,runsLoaded,runsError,source:activeSource}),updateWorkspace:saveWorkspace,openDiary:date=>diary.open(date),openDialog,dialog,ui:homeUi,
+        onRunningDay:date=>{selectRunningDay(date);location.hash='#records';},
+        onRunningMonth:month=>{runningMonth=month;selectedDay=null;selectedRunId=null;revealCalendarMonth(month);logExpanded=false;splitPage=0;location.hash='#records';},
+        openAccount:accountDialog,retryRunning:()=>{if(['checking','unavailable','guest'].includes(activeSource))void refreshAccount();else{resetRunningData();render();}}});
+      if(!runsLoaded&&!runsError&&!['checking','unavailable'].includes(activeSource))void loadRuns();
     }else{
       englishView?.destroy();englishView=null;
+      homeView?.destroy();homeView=null;
       page.innerHTML=placeholderPage(activePage);
     }
     return;
   }
   englishView?.destroy();englishView=null;
+  homeView?.destroy();homeView=null;
   renderPanel();
   if(activeSource==='checking'||activeSource==='unavailable')return;
   if(!runsLoaded){if(!runsError)void loadRuns();return;}
@@ -269,7 +283,7 @@ window.addEventListener('resize',()=>{
   },150);
 });
 const mapCardObserver=new ResizeObserver(()=>{if(mapView){mapView.update(mapOptions());mapView.fit();}});mapCardObserver.observe($('#map-bottom'));
-window.addEventListener('beforeunload',()=>{mapCardObserver.disconnect();mapView?.destroy();runningMotion.destroy();themeController.destroy();clearTimeout(resizeTimer);weatherController?.abort();});
+window.addEventListener('beforeunload',()=>{homeView?.destroy();englishView?.destroy();mapCardObserver.disconnect();mapView?.destroy();runningMotion.destroy();themeController.destroy();clearTimeout(resizeTimer);weatherController?.abort();});
 
 function runningContext(){return {days:runDays,month:runningMonth,selectedDay,lastSelectedDay,explorationStats,mobile:isMobile(),slotCount:runningSlotCount(),calendarEnd,calendarMonths,logExpanded,splitPage,splitPageSize:!isMobile()&&innerHeight<=620?3:5,selectedRunId,name:workspaceState.profile.name||'',latestRun:runs.at(-1),weather,weatherBusy,weatherError,area};}
 function revealCalendarMonth(month){if(month>calendarEnd||month<shiftMonth(calendarEnd,1-calendarMonths))calendarEnd=month;}
