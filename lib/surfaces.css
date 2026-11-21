@@ -10,7 +10,7 @@
   --finish-float: 0 2px 4px var(--finish-shadow), 0 10px 24px color-mix(in srgb, var(--ink) 13%, transparent);
   --finish-face: linear-gradient(160deg, color-mix(in srgb, var(--surface) 98%, var(--ink)), var(--surface) 48%, color-mix(in srgb, var(--surface) 97%, var(--paper)));
 }
-[data-theme="night"] {
+:is([data-theme-scheme="dark"],[data-theme="night"]:not([data-theme-scheme])) {
   --finish-rim: color-mix(in srgb, var(--ink) 12%, transparent);
   --finish-line: color-mix(in srgb, var(--ink) 17%, transparent);
   --finish-shadow: color-mix(in srgb, #030b17 25%, transparent);

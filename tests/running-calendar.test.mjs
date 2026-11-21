@@ -46,7 +46,7 @@ test('theme mode persists explicitly, refreshes on return, and a manual theme st
  try{
   assert.equal(controller.get().active,'morning');now=new Date('2026-11-07T12:00:00+09:00');document.dispatchEvent(new Event('visibilitychange'));assert.equal(controller.get().active,'day');
   assert.equal(controller.set('morning'),true);now=new Date('2026-11-07T20:00:00+09:00');controller.refresh();assert.equal(controller.get().active,'morning');
-  assert.equal(controller.set('auto'),true);assert.equal(controller.get().active,'night');assert.equal(values.get('mypace.theme.v1'),'auto');
+  assert.equal(controller.set('auto'),true);assert.equal(controller.get().active,'night');assert.equal(JSON.parse(values.get('mypace.theme.v2')).mode,'auto');
   assert.equal(controller.set('unknown'),false);assert.equal(controller.get().mode,'auto');assert.deepEqual(changes,['morning','day','morning','night']);
  }finally{controller.destroy();}
 });

@@ -47,6 +47,7 @@
 /* Visited paths and enclosed land remain visible across dates. */
 :root { --map-fog: #506b83; --map-fog-opacity: .28; --map-reveal: #D4E0E8; --map-reveal-opacity: 0; }
 [data-theme="day"] { --map-fog: #655f7e; --map-fog-opacity: .27; }
-[data-theme="night"] { --map-fog: #0b182a; --map-fog-opacity: .32; --map-reveal-opacity: .42; }
-[data-theme="night"] .mp-map.has-exploration .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) grayscale(.85) brightness(1.25) contrast(.58); opacity: .9; }
+:is([data-theme-scheme="dark"],[data-theme="night"]:not([data-theme-scheme])) { --map-fog: #0b182a; --map-fog-opacity: .32; --map-reveal-opacity: .42; }
+.mp-map.has-exploration .leaflet-tile-pane { filter: var(--map-explored-filter,var(--map-filter)); opacity: var(--map-explored-opacity,var(--map-opacity)); }
+:is([data-theme-scheme="dark"],[data-theme="night"]:not([data-theme-scheme])) .mp-map.has-exploration .leaflet-tile-pane { filter: var(--map-explored-filter,invert(1) hue-rotate(180deg) grayscale(.85) brightness(1.25) contrast(.58)); opacity: var(--map-explored-opacity,.9); }
 .exploration-fog-grid .leaflet-tile { opacity: 1 !important; }

@@ -1,7 +1,7 @@
 /* The home calendar projects independent activities into a shared day. */
-.home-page{--home-run:var(--track);--home-english:#548e9c;--home-habits:#b98a37;--home-rule:color-mix(in srgb,var(--line) 76%,transparent)}
-[data-theme="day"] .home-page{--home-english:#6d88a5;--home-habits:#b38a3a}
-[data-theme="night"] .home-page{--home-english:#89bec8;--home-habits:#e7bd77}
+.home-page{--home-run:var(--track);--home-english:var(--activity-english,#548e9c);--home-habits:var(--activity-habits,#b98a37);--home-rule:color-mix(in srgb,var(--line) 76%,transparent)}
+[data-theme="day"] .home-page{--home-english:var(--activity-english,#6d88a5);--home-habits:var(--activity-habits,#b38a3a)}
+:is([data-theme-scheme="dark"],[data-theme="night"]:not([data-theme-scheme])) .home-page{--home-english:var(--activity-english,#89bec8);--home-habits:var(--activity-habits,#e7bd77)}
 #category-page.home-page{display:block;place-items:normal;width:100%;height:100%;min-width:0;padding:24px clamp(22px,3vw,48px);overflow:hidden;background:radial-gradient(ellipse at 86% 0%,color-mix(in srgb,var(--bg) 78%,transparent),transparent 55%),var(--paper)}
 .home-shell{width:100%;max-width:1600px;height:100%;margin:auto;display:grid;grid-template-rows:auto minmax(0,1fr);gap:22px}
 .home-intro{position:relative;display:flex;align-items:center;justify-content:space-between;min-width:0;isolation:isolate}
@@ -77,7 +77,7 @@
 .home-diary-heading{display:flex;justify-content:space-between;gap:8px;font-size:12px;font-weight:550;align-items:center}.home-diary-heading>span{display:flex;align-items:center;gap:8px}.home-diary-heading .icon{width:14px;height:14px}.home-diary-heading>.icon{width:13px;color:var(--muted)}
 .home-diary p{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-bottom:1px solid var(--home-rule);padding-bottom:8px;line-height:1.5}
 .home-diary small{font-size:8px;display:flex;justify-content:space-between;gap:6px;color:var(--muted)}
-.home-ring-help{--home-run:var(--track);--home-english:#548e9c;--home-habits:#b98a37;display:grid;gap:18px;font-size:12px;line-height:1.9}.home-ring-help>div{display:grid;grid-template-columns:8px 70px 1fr;gap:10px;align-items:baseline}.home-ring-help i{align-self:center}.home-ring-help>small{font-size:10px;color:var(--muted)}
+.home-ring-help{--home-run:var(--track);--home-english:var(--activity-english,#548e9c);--home-habits:var(--activity-habits,#b98a37);display:grid;gap:18px;font-size:12px;line-height:1.9}.home-ring-help>div{display:grid;grid-template-columns:8px 70px 1fr;gap:10px;align-items:baseline}.home-ring-help i{align-self:center}.home-ring-help>small{font-size:10px;color:var(--muted)}
 .home-page button:disabled{cursor:default}.home-page button:focus-visible,.home-page a:focus-visible{outline:2px solid var(--primary);outline-offset:2px}
 @media(hover:hover){.home-day:not(:disabled):hover{background:color-mix(in srgb,var(--bg) 60%,var(--surface));border-color:var(--line)}.home-month-nav>button:not(:disabled):hover,.home-section-heading>button:hover{background:var(--soft)}.home-habit-row:hover{background:color-mix(in srgb,var(--surface) 60%,transparent)}.home-habit-edit:hover{opacity:1}.home-diary-open:hover{background:color-mix(in srgb,var(--bg) 35%,transparent)}.home-month-totals>a:hover strong,.home-month-totals>button:hover strong{color:var(--activity-color)}}
 @media(min-width:761px) and (max-height:800px){

@@ -8,7 +8,8 @@ import { explorationByRun } from './lib/exploration.js';
 import { runSlotModel, mountRunSlotInput } from './lib/run-slots.js';
 import { indexRunDays, monthSummary, shiftMonth, shiftDay, dayInMonth, initialRunningMonth } from './lib/running-calendar.js';
 import { runningPanel, runningSelectionCard, runningMapHeading, runningWeather } from './lib/running-view.js';
-import { createThemeController, THEME_NAMES } from './lib/theme.js';
+import { createThemeController } from './lib/theme.js';
+import { themeSettings, themePicker } from './lib/theme-settings.js';
 import { getWeather, weatherLabel, upcomingHours } from './lib/weather.js';
 import { weatherGlyph, weatherTone } from './lib/weather-view.js';
 import { icon, esc, $, shortDate } from './lib/ui.js';
@@ -113,6 +114,7 @@ function mapOptions(){
 function render(){
   const running=isRunning();
   document.documentElement.dataset.page=activePage.id;
+  themeController.setPage(activePage.id);
   document.title=`my pace — ${activePage.label}`;
   renderHeader();checkStorage();renderSyncStatus();
   $('.sidebar').hidden=!running;$('.map-stage').hidden=!running;
@@ -165,7 +167,7 @@ window.addEventListener('hashchange',()=>{
 function openDialog(title,content,wide=false){delete dialog.dataset.view;dialog.className=wide?'dialog-wide':'';dialog.innerHTML=`<div class="dialog-header"><h2 id="dialog-title">${title}</h2><button class="icon-button" data-action="close" aria-label="閉じる">${icon('close')}</button></div><div class="dialog-content">${content}</div>`;if(!dialog.open)dialog.showModal();}
 function closeDialog(){dialog.close();}
 function settingsDialog(){
-  openDialog('マイスペース',`<div class="stack"><form class="form" id="profile-form"><label class="field">呼び名<input name="name" value="${esc(workspaceState.profile.name)}" maxlength="100" required></label><div class="form-actions"><button class="button secondary" type="submit">名前を保存</button></div></form>${themeSettings()}<section class="settings-section"><div class="settings-line"><span>天気のエリア</span><button class="text-button" data-action="weather-area">変更 ${icon('arrow')}</button></div><div class="settings-line"><span>ローカルデータ</span><button class="text-button" data-action="export">${icon('download')}書き出す</button></div><p class="form-hint">日記と、以前の予定・習慣・ノートを含めて書き出します。</p><button class="text-button" data-action="sources">データと外部サービスについて ${icon('arrow')}</button></section>${connectionDiagnostics()}<button class="text-button" data-action="account">${icon('left')} アカウントに戻る</button></div>`);
+  openDialog('マイスペース',`<div class="stack"><form class="form" id="profile-form"><label class="field">呼び名<input name="name" value="${esc(workspaceState.profile.name)}" maxlength="100" required></label><div class="form-actions"><button class="button secondary" type="submit">名前を保存</button></div></form>${themeSettings(themeController.get())}<section class="settings-section"><div class="settings-line"><span>天気のエリア</span><button class="text-button" data-action="weather-area">変更 ${icon('arrow')}</button></div><div class="settings-line"><span>ローカルデータ</span><button class="text-button" data-action="export">${icon('download')}書き出す</button></div><p class="form-hint">日記と、以前の予定・習慣・ノートを含めて書き出します。</p><button class="text-button" data-action="sources">データと外部サービスについて ${icon('arrow')}</button></section>${connectionDiagnostics()}<button class="text-button" data-action="account">${icon('left')} アカウントに戻る</button></div>`);
 }
 function weatherAreaDialog(){
   openDialog('天気のエリア',`<div class="stack"><div class="source-box"><strong>現在：${esc(area.areaName)}</strong>現在・今後の予報に使うエリアです。選択しているランの日付とは連動しません。</div><p class="form-hint">記録の周辺を選ぶと、最新の記録の位置を緯度・経度0.1度単位に丸めて、Open-Meteoに送ります。現在地のGPS取得は行いません。</p><div class="form-actions"><button class="button secondary" data-action="weather-area-demo">東京駅周辺</button><button class="button" data-action="weather-area-recorded">記録の周辺</button></div></div>`);
@@ -233,10 +235,13 @@ document.addEventListener('click',event=>{
   if(d.calendarMonths){calendarMonths=Number(d.calendarMonths)===12?12:6;renderPanel();animateRunningPanel();return;}
   if(d.calendarStep){const next=shiftMonth(calendarEnd,Number(d.calendarStep)*calendarMonths);calendarEnd=next>localDate().slice(0,7)?localDate().slice(0,7):next;renderPanel();animateRunningPanel();return;}
   if(d.runningStep){stepRunningDay(Number(d.runningStep));return;}
-  if(d.themeMode){const saved=themeController.set(d.themeMode);const section=$('#theme-settings');if(section)section.outerHTML=themeSettings();if(!saved)toast('配色はこの画面内だけで変更しています');return;}
+  if(d.themeMode){if(!themeController.set(d.themeMode))toast('配色はこの画面内だけで変更しています');return;}
+  if(d.themePack){if(!themeController.setPack(d.themePack))toast('テーマはこの画面内だけで変更しています');return;}
+  if(d.themePreviewPage){themePreviewPage=d.themePreviewPage;refreshThemeControls(themeController.get());return;}
   if(d.splitStep){splitPage=Math.max(0,splitPage+Number(d.splitStep));refreshRunningLog(`[data-split-step="${d.splitStep}"]`);return;}
   if(d.weatherHour!==undefined){selectedWeatherHour=Number(d.weatherHour);renderWeatherDialog();return;}
   switch(d.action){
+    case'theme-picker':themeDialog();break;
     case'account':case'connection':accountDialog();break;
     case'account-retry':refreshAccount();break;
     case'drive-refresh':closeDialog();if(usingDrive&&runsLoaded)void refreshDriveRecords();else{resetRunningData();render();}break;
@@ -335,11 +340,24 @@ $('#map-bottom').addEventListener('toggle',event=>{
 },true);
 
 function calendarHelp(){openDialog('カレンダーの見方',`<div class="stack"><p class="form-hint">標準では6か月分を表示し、1年表示にも切り替えられます。四角ひとつが1日です。同じ日の記録が複数ある場合は、距離を合計します。月をまたいでも同じ色の基準で比較できます。</p><div class="calendar-help-scale">${['取得済みの記録なし','0 kmを超え、2 km未満','2 km以上、4 km未満','4 km以上、6 km未満','6 km以上'].map((label,i)=>`<span><i class="level-${i}"></i>${label}</span>`).join('')}</div><p class="form-hint">カレンダーの色は距離、地図上の色は速度を示します。目標の達成・未達を示すものではありません。空白の日に走らなかったと断定するものでもありません。</p><p class="form-hint">四角を選ぶとその日の経路、月名を選ぶとその月全体の経路を表示します。地図上の日別・月全体の切替と前後ボタンは、記録のない日や月でも使えます。キーボードでは上下で1日、左右で1週間移動し、Enterで選べます。</p></div>`);}
-function themeSettings(state=themeController.get()){
-  const palettes={morning:['#FAF3E8','#F7D1C7','#D9EBEC','#CB5640','#3A5C88','#F0C57F'],day:['#F7F0E8','#F0D2D4','#F0E9F0','#BA514B','#3F4173','#ECBF53'],night:['#16283F','#203850','#ECD2CE','#D26F4A','#E9EEE7','#EFC477']};
-  return `<section class="theme-settings" id="theme-settings"><div class="between"><h3>配色</h3><span class="form-hint">${state.mode==='auto'?'自動 · ':''}${THEME_NAMES[state.active]}</span></div><div class="theme-options">${['auto','morning','day','night'].map(mode=>`<button class="theme-option ${state.mode===mode?'active':''}" data-theme-mode="${mode}" aria-pressed="${state.mode===mode}">${mode==='auto'?`<span class="theme-auto-icon">${icon('clock')}</span>`:`<span class="theme-swatches" aria-hidden="true">${palettes[mode].map(color=>`<i style="background:${color}"></i>`).join('')}</span>`}${mode==='auto'?'自動':THEME_NAMES[mode]}</button>`).join('')}</div><p class="form-hint">自動では日本時間の朝5–11時、昼11–18時、晩18–翌5時に切り替わります。各配色を選ぶと、その配色で固定できます。</p></section>`;
+let themePreviewPage='home';
+function themeDialog(){
+  const state=themeController.get();themePreviewPage=activePage.id;
+  openDialog('テーマを選ぶ',themePicker(state,{previewPage:themePreviewPage}));
+  dialog.classList.add('theme-dialog');dialog.dataset.view='theme';
+  dialog.querySelector('[data-theme-pack][aria-pressed="true"]')?.focus({preventScroll:true});
 }
-const themeController=createThemeController({onChange:state=>{mapView?.update(mapOptions());const section=$('#theme-settings');if(section)section.outerHTML=themeSettings(state);}});
+function refreshThemeControls(state){
+  const active=document.activeElement;
+  const attribute=['data-theme-pack','data-theme-mode','data-theme-preview-page','data-action'].find(key=>active?.hasAttribute(key));
+  const focus=attribute?`[${attribute}="${CSS.escape(active.getAttribute(attribute))}"]`:null;
+  const scroll=dialog.scrollTop;
+  const section=$('#theme-settings');if(section)section.outerHTML=themeSettings(state);
+  const picker=$('#theme-picker');if(picker)picker.outerHTML=themePicker(state,{previewPage:themePreviewPage});
+  if(focus&&dialog.contains(active)===false)dialog.querySelector(focus)?.focus({preventScroll:true});
+  dialog.scrollTop=scroll;
+}
+const themeController=createThemeController({page:activePage.id,onChange:state=>{if(isRunning())mapView?.update(mapOptions());refreshThemeControls(state);}});
 document.addEventListener('keydown',event=>{
   const cell=event.target.closest?.('[data-calendar-day]');if(!cell)return;
   const deltas={ArrowUp:-1,ArrowDown:1,ArrowLeft:-7,ArrowRight:7};if(!(event.key in deltas)&&!['Home','End'].includes(event.key))return;
