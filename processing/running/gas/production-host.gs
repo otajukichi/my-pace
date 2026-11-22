@@ -102,7 +102,7 @@ function prReport() {
     enabled: prGet('ENABLED', false), ...summary, nextRunAt: prGet('NEXT_AT'),
     measuredMinutes: +((budget.measuredMs || 0) / 60000).toFixed(2), accountedMinutes: +((budget.accountedMs || 0) / 60000).toFixed(2),
     budget: prBudgetView(), waitReason: prGet('WAIT_REASON'), statusWriteError: prGet('STATUS_WRITE_ERROR'),
-    lastError: prGet('LAST_ERROR'), lastSuccessfulUpdate: prGet('LAST_PUBLICATION') };
+    lastError: prGet('LAST_ERROR'), lastFailure: prGet('LAST_FAILURE'), lastSuccessfulUpdate: prGet('LAST_PUBLICATION') };
 }
 function prRollback() {
   const s = pr.state, body = prRead(prMeta(pr.root.initial), pr.root.system, 131072);
@@ -115,45 +115,54 @@ function prRollback() {
 }
 function prRun(command) {
   const lock = LockService.getScriptLock(); if (!lock.tryLock(1000)) return { status: 'BUSY' };
-  pr = { props: PropertiesService.getScriptProperties(), started: Date.now(), pages: new Map(), folders: new Map(), metrics: {}, writePermit: null };
+  pr = { props: PropertiesService.getScriptProperties(), started: Date.now(), pages: new Map(), folders: new Map(), metrics: {}, writePermit: null, step: 'initializing' };
   let status, beforeProgress;
   try {
     pr.root = prGet('ROOT'); pr.metrics = prGet('METRICS', {});
     if (command === 'stop') {
+      pr.step = 'stop';
       prSet('ENABLED', false); prSet('RUN_REQUESTED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); prSet('NEXT_AT', null); status = 'STOPPED';
     } else if (command === 'prepare' && prGet('SUMMARY', {}).phase === 'watch') status = 'ALREADY_STARTED';
     else if (command === 'tick' && !prGet('ENABLED', false)) return { status: prGet('STATUS', 'STOPPED') };
     else {
+      pr.step = 'configuration';
       prConfig();
       if (pr.root) prAssert(pr.root.script === ScriptApp.getScriptId() && pr.root.config === mpHash(prConfig()), 'PROJECT_OR_CONFIG_CHANGED');
+      pr.step = 'trigger_check';
       prAssert(!ScriptApp.getProjectTriggers().some(t => ['myPaceIncrementalTick', 'myPaceNewCsvTick'].includes(t.getHandlerFunction())), 'PREVIOUS_PROBE_RUNNING');
       if (command === 'rollback') { prSet('ENABLED', false); prSet('RUN_REQUESTED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); prSet('NEXT_AT', null); }
       if (command === 'start') prSet('RUN_REQUESTED', true);
-      if (command === 'prepare' || command === 'start') { prSet('ENABLED', true); prSchedule(); }
+      if (command === 'prepare' || command === 'start') { pr.step = 'trigger_setup'; prSet('ENABLED', true); prSchedule(); }
       const next = prGet('NEXT_AT');
       if (command === 'tick' && next && Date.now() < next) { status = 'BUDGET_WAIT'; if (prGet('ENABLED', false)) prSleepUntil(next); }
       else {
+        pr.step = 'budget';
         prBudgetBegin(command === 'rollback');
+        pr.step = 'checkpoint_probe';
         if (!pr.root || !prMeta(pr.root.state, true)) {
-          prAssert(command === 'prepare' || command === 'tick', 'PREPARE_FIRST'); prSetup();
+          prAssert(command === 'prepare' || command === 'tick', 'PREPARE_FIRST'); pr.step = 'prepare'; prSetup();
         } else {
+          pr.step = 'folder_check';
           prCheckRoots();
+          pr.step = 'checkpoint_read';
           pr.state = prValue(pr.root.state, pr.root.system);
         }
         const s = pr.state;
         beforeProgress = prProgress(s);
-        if (command === 'rollback') status = prRollback();
+        if (command === 'rollback') { pr.step = 'rollback'; status = prRollback(); }
         else {
+          pr.step = 'trigger_setup';
           prSchedule();
-          if (command === 'start' || s.phase === 'ready' && prGet('RUN_REQUESTED', false)) { prAssert(['ready', 'watch'].includes(s.phase), 'PREPARATION_NOT_FINISHED'); s.phase = 'watch'; prSave(); }
+          if (command === 'start' || s.phase === 'ready' && prGet('RUN_REQUESTED', false)) { pr.step = 'start'; prAssert(['ready', 'watch'].includes(s.phase), 'PREPARATION_NOT_FINISHED'); s.phase = 'watch'; prSave(); }
           while (!status) {
             prYield();
+            pr.step = ['adopt', 'inventory', 'seed', 'ready'].includes(s.phase) ? s.phase : s.job ? s.job.phase : s.scan ? 'scan' : 'scan_start';
             if (s.phase === 'adopt') prAdopt();
             else if (s.phase === 'inventory') { if (s.scan) prScanStep(); else prSeedPlan(); }
             else if (s.phase === 'seed') { const value = prSeed(); if (value === 'READY') status = value; }
             else if (s.phase === 'ready') status = 'READY';
             else if (s.job) { const value = prPublicationStep(); if (value !== 'PROCESSING') status = value; }
-            else if (s.scan) { prScanStep(); if (!s.scan) status = prPlan(); }
+            else if (s.scan) { prScanStep(); if (!s.scan) { pr.step = 'plan'; status = prPlan(); } }
             else { prScanStart(); }
           }
           if (status === 'READY') { prSet('ENABLED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); }
@@ -161,7 +170,7 @@ function prRun(command) {
       }
     }
   } catch (error) {
-    status = /^[A-Z][A-Z0-9_]+$/.test(error.message || '') ? error.message : 'UNEXPECTED_ERROR';
+    status = prErrorCode(error);
     if (status === 'YIELD') status = pr.state?.phase === 'watch' ? 'PROCESSING' : 'PREPARING';
     else if (['BUDGET_WAIT', 'REQUEST_BUDGET_WAIT'].includes(status)) {
       if (status === 'REQUEST_BUDGET_WAIT') { prSet('NEXT_AT', pr.budget.since + 25 * 3600000); prSet('WAIT_REASON', 'REQUEST_BUDGET'); }
@@ -169,7 +178,10 @@ function prRun(command) {
     } else if (['SOURCE_CHANGED_DURING_READ', 'SOURCE_MOVED_OUTSIDE'].includes(status) && pr.state?.phase === 'watch') {
       pr.state.job = null; pr.state.scan = null; pr.state.observed = null; prSave(); status = 'INPUT_CHANGED_RETRY';
     } else {
-      prSet('LAST_ERROR', { code: status, driveReasons: error.driveReasons || [] });
+      const failure = prFailure(error, status);
+      prSet('LAST_ERROR', failure);
+      // Keep the last failure available after a successful restart or a stop.
+      prSet('LAST_FAILURE', failure);
       if (!['DRIVE_RETRYABLE', 'DRIVE_TRANSPORT_ERROR'].includes(status)) { prSet('ENABLED', false); prSet('RUN_REQUESTED', false); prDeleteTriggers(PR_TICK); prDeleteTriggers(PR_WAKE); }
     }
   } finally {

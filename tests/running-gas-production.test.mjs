@@ -386,3 +386,28 @@ test('a copied project identity cannot publish a status file, and fatal errors c
  assert.equal(prop(h,'STATUS'),'PROJECT_OR_CONFIG_CHANGED');assert.equal(prop(h,'ENABLED'),false);assert.equal(prop(h,'RUN_REQUESTED'),false);
  assert.equal(h.requests.length,before);assert.deepEqual(h.files.get(root.status).bytes,snapshot);
 });
+
+test('an unexpected native error is diagnosed without losing the catalog, and restart reuses the existing cache',async t=>{
+ const {h}=await productionFixture(t);prepare(h);start(h);
+ const root=prop(h,'ROOT'),index=Buffer.from(h.files.get(root.catalog).bytes),units=Object.keys(state(h).units).sort();
+ const before=prop(h,'METRICS').rawBytesRequested||0;
+ let fail=true;
+ h.advance(300000);
+ h.invoke('myPaceRunningTick',{ScriptApp:{
+   getScriptId:()=> 'synthetic-probe-project',getOAuthToken:()=> 'synthetic-not-a-token',
+   getProjectTriggers(){if(fail){fail=false;throw Error('A server error occurred. private@example.com secret-drive-id');}return h.triggers.map(item=>({item,getHandlerFunction:()=>item.handler}));},
+   deleteTrigger:trigger=>h.triggers.splice(h.triggers.indexOf(trigger.item),1),
+ }});
+ assert.equal(prop(h,'STATUS'),'UNEXPECTED_ERROR');assert.equal(prop(h,'ENABLED'),false);
+ assert(!h.triggers.some(trigger=>['myPaceRunningTick','myPaceRunningWake'].includes(trigger.handler)));
+ const failure=prop(h,'LAST_FAILURE');assert.equal(failure.diagnostic.step,'trigger_check');assert.equal(failure.diagnostic.reason,'GOOGLE_SERVICE_ERROR');
+ assert(!/secret-drive|private@/.test(JSON.stringify(h.logs)));
+ assert.deepEqual(h.files.get(root.catalog).bytes,index);
+ const requests=h.requests.length,properties=[...h.properties];
+ const report=h.invoke('showMyPaceRunningReport');assert.deepEqual(JSON.parse(JSON.stringify(report.lastError)),failure);
+ assert.equal(h.requests.length,requests);assert.deepEqual([...h.properties],properties);
+ start(h);assert.equal(prop(h,'STATUS'),'WATCHING');assert.equal(prop(h,'ENABLED'),true);
+ assert.equal(prop(h,'LAST_ERROR'),null);assert.deepEqual(prop(h,'LAST_FAILURE'),failure);
+ assert.equal(prop(h,'METRICS').rawBytesRequested||0,before);assert.deepEqual(Object.keys(state(h).units).sort(),units);
+ assert.deepEqual(h.files.get(root.catalog).bytes,index);
+});

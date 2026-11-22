@@ -22,3 +22,10 @@ test('ready, missing status, connection failure, refresh failure and stopped sta
  assert.match(syncPresentation({...s,status:'STOPPED',enabled:false},opts).label,/停止中/);
  assert.match(syncPresentation({...s,status:'OWNER_PRIVATE_REQUIRED',enabled:false,errorCode:'OWNER_PRIVATE_REQUIRED'},opts).label,/確認が必要/);
 });
+test('an unexpected stopped worker is not presented as budget waiting or a stale enabled monitor',()=>{
+ const s={...sample(),status:'UNEXPECTED_ERROR',enabled:false,errorCode:'UNEXPECTED_ERROR',importedSources:7,pendingSources:0,budget:{...sample().budget,usedMinutes:79.3}};
+ const view=syncPresentation(s,{now:s.updatedAt+3*86400000});
+ assert.match(view.label,/エラーで停止/);assert.match(view.detail,/自動再開待ちではありません/);
+ assert.match(view.detail,/7\/7件反映/);assert.match(view.detail,/そのまま利用/);
+ assert.doesNotMatch(view.label,/上限回復待ち|届いていません/);
+});

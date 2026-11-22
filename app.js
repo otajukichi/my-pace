@@ -487,7 +487,7 @@ function renderSyncStatus(){
 }
 function syncDetails(){
   const s=syncStatus,view=syncModel();
-  return `<h3>${esc(view.label)}</h3><p>${esc(view.detail)}</p>${s?`<dl class="sync-facts"><dt>反映済みCSV</dt><dd>${s.importedSources} / ${s.sources} 件</dd><dt>未処理の追加・変更</dt><dd>${s.pendingSources} 件</dd><dt>最終通知</dt><dd>${esc(syncTime(s.updatedAt))}</dd><dt>継続取り込みの最終反映</dt><dd>${esc(syncTime(s.lastSuccessfulUpdate))}</dd>${s.nextRunAt?`<dt>自動再開予定</dt><dd>${esc(syncTime(s.nextRunAt))}（日本時間）</dd>`:''}<dt>直近の内部計上</dt><dd>${s.budget.usedMinutes.toFixed(1)} / ${s.budget.limitMinutes} 分</dd></dl><p class="form-hint">監視・取り込み・準備・状態通知を合算した、直近約24〜25時間の目安です。次の実行用に${s.budget.reserveMinutes}分を確保します。Googleが計上する使用量・回復時刻とは一致しない場合があります。CSV数とランの件数は異なることがあります。</p>`:''}<p class="form-hint">ここで示すのはランニングCSVの取り込みです。日記・設定のDrive同期はまだありません。</p>`;
+  return `<h3>${esc(view.label)}</h3><p>${esc(view.detail)}</p>${s?`<dl class="sync-facts"><dt>反映済みCSV</dt><dd>${s.importedSources} / ${s.sources} 件</dd><dt>未処理の追加・変更</dt><dd>${s.pendingSources} 件</dd><dt>最終通知</dt><dd>${esc(syncTime(s.updatedAt))}</dd><dt>継続取り込みの最終反映</dt><dd>${esc(syncTime(s.lastSuccessfulUpdate))}</dd>${s.nextRunAt?`<dt>自動再開予定</dt><dd>${esc(syncTime(s.nextRunAt))}（日本時間）</dd>`:''}<dt>最終通知時の内部計上</dt><dd>${s.budget.usedMinutes.toFixed(1)} / ${s.budget.limitMinutes} 分</dd></dl><p class="form-hint">監視・取り込み・準備・状態通知を合算した、直近約24〜25時間の目安です。次の実行用に${s.budget.reserveMinutes}分を確保します。Googleが計上する使用量・回復時刻とは一致しない場合があります。CSV数とランの件数は異なることがあります。</p>`:''}<p class="form-hint">ここで示すのはランニングCSVの取り込みです。日記・設定のDrive同期はまだありません。</p>`;
 }
 function syncDialog(){
   openDialog('ランニングの取り込み',`<div class="stack"><div class="sync-detail">${syncDetails()}</div><button class="button secondary" data-action="sync-retry">状態と表示を再確認</button></div>`);
