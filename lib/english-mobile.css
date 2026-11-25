@@ -65,6 +65,9 @@
     top: 7px; left: calc(50% - 16px); background: var(--line);
   }
   .en-sheet-toggle > .icon { width: 13px; height: 13px; }
+  .en-app[data-screen="conversation"] :is(.en-sheet-toggle,.en-mobile-peek,.en-practice-head) {
+    touch-action: none; user-select: none; -webkit-user-select: none;
+  }
   .en-mobile-peek { flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 0 3px; }
   .en-mobile-peek h2 { margin: 8px 0; font-size: 23px; font-weight: 550; }
   .en-mobile-peek p { font-size: 10px; color: var(--muted); margin: 0; line-height: 1.8; }
