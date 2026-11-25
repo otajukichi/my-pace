@@ -264,3 +264,18 @@
 @media (max-width:760px) {
   .workspace.with-sidebar .mobile-running-history .running-weather { display: block; padding: 0; }
 }
+@media (max-width:760px) {
+  .mobile-run-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px 8px; }
+  .mobile-run-title h2 { white-space: nowrap; }
+  .mobile-run-count { font-size: 9px; }
+  .mobile-run-navigation { display: flex; flex: none; gap: 6px; }
+  .mobile-run-navigation button { display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 1px solid var(--finish-line); border-radius: 10px; background: var(--finish-face); color: var(--anchor); touch-action: manipulation; }
+  .mobile-run-navigation button:active { background: var(--soft); }
+  .mobile-run-navigation button:disabled { opacity: .3; }
+  .mobile-run-navigation .icon { width: 16px; height: 16px; }
+}
+@media (max-width:760px) and (max-height:740px) {
+  .mobile-run-navigation button { width: 34px; height: 32px; border-radius: 9px; }
+  .workspace.history .mobile-run-summary { padding-bottom: 4px; }
+  .workspace.history .mobile-run-metrics { margin-top: 5px; }
+}

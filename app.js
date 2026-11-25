@@ -82,8 +82,8 @@ function replacePanel(markup){
   const signature=markup.replace(/(<section id="running-weather"[^>]*>)[\s\S]*?(<\/section>)/,'$1$2');
   if(signature===panelMarkup)return;
   const focused=document.activeElement;
-  const restore=isMobile()&&$('#context').contains(focused)?focused?.closest('[data-mobile-analysis],[data-mobile-history]'):null;
-  const restoreSelector=restore?.hasAttribute('data-mobile-analysis')?'[data-mobile-analysis]':restore?'[data-mobile-history]':null;
+  const restore=isMobile()&&$('#context').contains(focused)?focused?.closest('[data-mobile-analysis],[data-mobile-history],.mobile-run-navigation button'):null;
+  const restoreSelector=restore?.id?.startsWith('mobile-run-')?`#${restore.id}`:restore?.hasAttribute('data-mobile-analysis')?'[data-mobile-analysis]':restore?'[data-mobile-history]':null;
   runningMotion.stop('panel');$('#context').innerHTML=markup;panelMarkup=signature;
   if(restoreSelector)$(restoreSelector)?.focus({preventScroll:true});
 }
