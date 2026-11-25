@@ -1,0 +1,8 @@
+/* Activity pages share the phone's available viewport, including standalone iOS. */
+@media (max-width:760px) {
+  html:is([data-page="home"],[data-page="english"]) { height: 100%; overflow: hidden; overscroll-behavior-y: none; }
+  html:is([data-page="home"],[data-page="english"]) body { min-height: 0; height: 100dvh; overflow: hidden; display: grid; grid-template-rows: 61px minmax(0,1fr); }
+  html:is([data-page="home"],[data-page="english"]) .header { height: 61px; }
+  html:is([data-page="home"],[data-page="english"]) .workspace.category-workspace { height: 100%; min-height: 0; overflow: hidden; }
+  html:is([data-page="home"],[data-page="english"]) #category-page { height: 100%; min-height: 0; overflow: hidden; }
+}

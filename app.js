@@ -322,6 +322,11 @@ function setRunningMode(mode,redraw=true){
 function stepRunningDay(direction){
   if(![-1,1].includes(direction))return;
   if(!selectedDay){selectRunningMonth(shiftMonth(runningMonth,direction));return;}
+  if(isMobile()){
+    const date=runSlotModel(runningContext())[direction<0?'previous':'next'];
+    if(date)selectRunningDay(date);
+    return;
+  }
   const date=shiftDay(selectedDay,direction);if(date<=localDate())selectRunningDay(date);
 }
 function speedHelp(){openDialog('経路の色と重なり',`<div class="stack"><p class="form-hint">GPSから推定した区間ごとの速度です。青 → 青緑 → 緑 → 黄 → 赤茶へ、速度に応じて色相が変わります。日別・月全体で同じ基準を使います。</p><p class="form-hint">6〜14 km/hの固定スケールで、6 km/h以下は青、14 km/h以上は赤茶です。取得済みの記録は0.5 km/h刻みの速度色を保持しています。色の境目は前後の区間から滑らかに補間しています。GPSの誤差や停止付近の揺れを含む推定値で、補間によって精度が上がるものではありません。速度が不明な区間は灰色で表示します。</p><p class="form-hint">経路は不透明度68%で重ねています。同じ道を走った記録が重なるほど色が深まります。GPS点ごとのつなぎ目で濃い斑点が出ないよう、1回のランをまとめて半透明にしています。異なる速度の記録が重なると色は混ざるため、1回ごとの速度色は日別で確認してください。</p></div>`);}
@@ -346,7 +351,7 @@ $('#map-bottom').addEventListener('toggle',event=>{
   mapView?.update(mapOptions());mapView?.fit();
 },true);
 
-function calendarHelp(){openDialog('カレンダーの見方',`<div class="stack"><p class="form-hint">標準では6か月分を表示し、1年表示にも切り替えられます。四角ひとつが1日です。同じ日の記録が複数ある場合は、距離を合計します。月をまたいでも同じ色の基準で比較できます。</p><div class="calendar-help-scale">${['取得済みの記録なし','0 kmを超え、2 km未満','2 km以上、4 km未満','4 km以上、6 km未満','6 km以上'].map((label,i)=>`<span><i class="level-${i}"></i>${label}</span>`).join('')}</div><p class="form-hint">カレンダーの色は距離、地図上の色は速度を示します。目標の達成・未達を示すものではありません。空白の日に走らなかったと断定するものでもありません。</p><p class="form-hint">四角を選ぶとその日の経路、月名を選ぶとその月全体の経路を表示します。地図上の日別・月全体の切替と前後ボタンは、記録のない日や月でも使えます。キーボードでは上下で1日、左右で1週間移動し、Enterで選べます。</p></div>`);}
+function calendarHelp(){openDialog('カレンダーの見方',`<div class="stack"><p class="form-hint">標準では6か月分を表示し、1年表示にも切り替えられます。四角ひとつが1日です。同じ日の記録が複数ある場合は、距離を合計します。月をまたいでも同じ色の基準で比較できます。</p><div class="calendar-help-scale">${['取得済みの記録なし','0 kmを超え、2 km未満','2 km以上、4 km未満','4 km以上、6 km未満','6 km以上'].map((label,i)=>`<span><i class="level-${i}"></i>${label}</span>`).join('')}</div><p class="form-hint">カレンダーの色は距離、地図上の色は速度を示します。目標の達成・未達を示すものではありません。空白の日に走らなかったと断定するものでもありません。</p><p class="form-hint">四角を選ぶとその日の経路、月名を選ぶとその月全体の経路を表示します。${isMobile()?'スマホの日別の前後ボタンは、記録のある日だけを順に表示します。記録のない日もカレンダーから選べます。月全体では前後の月へ移動します。':'地図上の日別・月全体の切替と前後ボタンは、記録のない日や月でも使えます。'}キーボードでは上下で1日、左右で1週間移動し、Enterで選べます。</p></div>`);}
 let themePreviewPage='home';
 function themeDialog(){
   const state=themeController.get();themePreviewPage=activePage.id;

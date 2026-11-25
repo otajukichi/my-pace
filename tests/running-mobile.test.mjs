@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { indexRunDays } from '../lib/running-calendar.js';
 import { runningMobilePanel } from '../lib/running-mobile-view.js';
+import { runningMapHeading } from '../lib/running-view.js';
 
 const run = (id, date, distanceMeters, durationSeconds) => ({
   id, date,
@@ -99,6 +100,40 @@ test('collapsed sheet keeps the selected summary outside hidden history; expande
     assert.match(html, /id="running-weather"/);
     assert.match(html, /class="running-slot/);
   }
+});
+
+test('phone map and summary step only through recorded days, with matching boundary controls', () => {
+  const stepButton = (html, step) => html.match(new RegExp(`<button[^>]+data-running-step="${step}"[^>]*>`))[0];
+  const disabled = tag => /\sdisabled(?:\s|>)/.test(tag);
+  for (const [selectedDay, previousDisabled, nextDisabled] of [
+    ['2026-09-30', true, false],
+    ['2026-10-05', false, false],
+    ['2026-10-10', false, false], // A blank day selected directly from the calendar.
+    ['2026-10-15', false, true], // Latest record, even though today is later.
+  ]) {
+    for (const mobileExpanded of [false, true]) {
+      const selection = { ...context, selectedDay, mobileExpanded };
+      for (const html of [summary(runningMobilePanel(selection)), runningMapHeading(selection)]) {
+        assert.equal(disabled(stepButton(html, -1)), previousDisabled);
+        assert.equal(disabled(stepButton(html, 1)), nextDisabled);
+        assert.match(stepButton(html, -1), /aria-label="前の走った日"/);
+        assert.match(stepButton(html, 1), /aria-label="次の走った日"/);
+      }
+    }
+  }
+  for (const html of [summary(runningMobilePanel({ ...context, days: new Map() })), runningMapHeading({ ...context, days: new Map() })]) {
+    assert.equal(disabled(stepButton(html, -1)), true);
+    assert.equal(disabled(stepButton(html, 1)), true);
+  }
+  for (const html of [summary(runningMobilePanel({ ...context, selectedDay: null })), runningMapHeading({ ...context, selectedDay: null })]) {
+    assert.match(stepButton(html, -1), /aria-label="前の月"/);
+    assert.match(stepButton(html, 1), /aria-label="次の月"/);
+    assert.equal(disabled(stepButton(html, -1)), false);
+    assert.equal(disabled(stepButton(html, 1)), false);
+  }
+  const desktop = runningMapHeading({ ...context, mobile: false });
+  assert.match(stepButton(desktop, 1), /aria-label="次の日"/);
+  assert.equal(disabled(stepButton(desktop, 1)), false, 'desktop keeps calendar-day navigation');
 });
 
 test('pace disclosure can expose analysis and restore the same history without a page change', () => {
