@@ -29,6 +29,7 @@
   <link rel="stylesheet" href="/lib/english-sphere.css">
   <link rel="stylesheet" href="/lib/home.css">
   <link rel="stylesheet" href="/lib/theme-settings.css">
+  <link rel="stylesheet" href="/lib/running-mobile.css">
   <script src="/assets/vendor/leaflet.js" defer></script>
   <script type="module" src="/app.js"></script>
 </head>
@@ -38,6 +39,7 @@
   <main id="workspace" class="workspace with-sidebar history">
     <section id="category-page" hidden tabindex="-1" aria-labelledby="category-title"></section>
     <aside class="sidebar">
+      <button id="running-sheet-toggle" class="running-sheet-toggle" type="button" aria-controls="context" aria-expanded="false"><i aria-hidden="true"></i><span>カレンダー・ルートを見る</span><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 14 6-6 6 6"/></svg></button>
       <div class="sidebar-toolbar">
         <h1 id="records-heading" class="records-heading">記録</h1>
         <button id="running-sync" class="running-sync" data-action="running-sync" aria-haspopup="dialog" hidden></button>

@@ -17,6 +17,8 @@ import { pageForHash, categoryNavigation, placeholderPage } from './lib/navigati
 import { createRunningMotion } from './lib/running-motion.js';
 import { mountEnglish } from './lib/english-view.js';
 import { mountHome } from './lib/home-view.js';
+import { runningMobilePanel } from './lib/running-mobile-view.js';
+import { mountRunningSheet } from './lib/running-sheet.js';
 
 const workspaceStore=createStore();
 let workspaceState=workspaceStore.get();
@@ -45,13 +47,19 @@ let toastTimer,areaTask=null,weatherTask=null,weatherController=null,weatherVers
 const dialog=$('#dialog');
 const diary=createDiaryController({dialog,openDialog,getState:()=>workspaceState,updateState:saveWorkspace,status:()=>workspaceStore.status()});
 const isMobile=()=>matchMedia('(max-width:760px)').matches;
-const runningSlotCount=()=>!isMobile()?(innerHeight>880?7:innerHeight<=520?3:5):5;
+const runningSlotCount=()=>!isMobile()?(innerHeight>880?7:innerHeight<=520?3:5):(innerHeight>880?5:3);
 const currentOrigin=()=>area.center;
 // Keep old bookmarks useful after retiring the planner.
 function normalizeLocation(){if(location.hash==='#explore')history.replaceState(null,'','#records');}
 normalizeLocation();
 let activePage=pageForHash(location.hash);
 const isRunning=()=>activePage.id==='records';
+const mobileSheet=mountRunningSheet({workspace:$('#workspace'),handle:$('#running-sheet-toggle'),onChange:()=>{
+  renderPanel();
+  if(usingDrive)void loadDriveView();
+  mapView?.update(mapOptions());
+},onSettled:()=>{mapView?.update(mapOptions());mapView?.fit();}});
+const wantsAnalysis=()=>isMobile()?mobileSheet.state.expanded&&mobileSheet.state.analysis:logExpanded;
 function selectedRunningRuns(){return selectedDay?(runDays.get(selectedDay)?.runs||[]):monthSummary(runDays,runningMonth).days.flatMap(day=>day.runs);}
 function explorationHelp(){openDialog('探索マップ',`<div class="stack"><div class="source-box"><strong>走った道から、地図が開きます</strong>取り込まれたランの記録から、走った道と、その道で囲まれた内側を明るくします。別の日の経路がつながって囲んだ場所も含まれます。日付や月を変えても残ります。</div><p class="form-hint">薄い陰影の場所は、まだこのアプリの記録で開いていない範囲です。実際の訪問歴とは限りません。山や池なども、走った道で囲めば内側が開きます。道の周囲は最大約60mまで柔らかく明るくし、囲みの判定では小さなGPSのずれを吸収します。欠測や250mを超える点の間に直線を補うことはありません。</p><p class="form-hint">「新しく走った道」は、その日より前の記録から約30m以上離れた区間の走行距離を、GPSから推定した値です。月表示では、その月の各日の推定距離を合計します。同じ日の往復や繰り返しも含むため、道路そのものの延長とは異なります。囲んで開いた面積や道路そのものの踏破率ではなく、実際の経路を比較した値で、GPSのずれも含みます。同じ日を何度見ても、同じ道を繰り返しても、地図の範囲は水増ししません。</p><p class="form-hint">探索表示は常に有効です。${usingDrive?'探索範囲と新しく走った距離は、Google側で作成済みの表示用データを使います。':'探索範囲の計算は端末内で行います。'}</p></div>`);}
 function toast(message){clearTimeout(toastTimer);$('#toast').textContent=message;$('#toast').classList.add('visible');toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),3500);}
@@ -66,19 +74,24 @@ function renderHeader(){
   $('#records-heading').innerHTML=`${icon('calendar')}記録`;$('.diary-trigger').innerHTML=`${icon('note')}<span>今日の日記</span>`;
 }
 
-function historyPanel(){return runningPanel(runningContext());}
+function historyPanel(){return isMobile()?runningMobilePanel(runningContext()):runningPanel(runningContext());}
 function historyCard(){return runningSelectionCard(runningContext());}
 function replacePanel(markup){
   // Weather updates its own section. They must not replace the rest of the
   // dashboard during a route response, or discard its in-flight animations.
   const signature=markup.replace(/(<section id="running-weather"[^>]*>)[\s\S]*?(<\/section>)/,'$1$2');
   if(signature===panelMarkup)return;
+  const focused=document.activeElement;
+  const restore=isMobile()&&$('#context').contains(focused)?focused?.closest('[data-mobile-analysis],[data-mobile-history]'):null;
+  const restoreSelector=restore?.hasAttribute('data-mobile-analysis')?'[data-mobile-analysis]':restore?'[data-mobile-history]':null;
   runningMotion.stop('panel');$('#context').innerHTML=markup;panelMarkup=signature;
+  if(restoreSelector)$(restoreSelector)?.focus({preventScroll:true});
 }
 function animateRunningPanel(){runningMotion.rendered({ready:isRunning()&&runsLoaded&&!runsError&&['local','drive'].includes(activeSource),month:runningMonth,calendar:`${calendarEnd}/${calendarMonths}`});}
 function renderPanel(){
   if(!isRunning())return;
   $('#workspace').className=`workspace with-sidebar history ${logExpanded?'log-expanded':''}`;
+  mobileSheet.sync();
   if(activeSource==='checking'){replacePanel('<div class="loading"><span class="spinner"></span>アカウントを確認しています</div>');return;}
   if(activeSource==='unavailable'){replacePanel(`<div class="empty">${icon('cloud')}<h2>接続を確認できませんでした</h2><p>${esc(account.error)}</p><button class="button" data-action="account-retry">もう一度確認</button></div>`);return;}
   if(activeSource==='guest'){replacePanel(`<div class="empty account-welcome">${icon('run')}<h2>自分の記録を、ここに。</h2><p>${authError?esc(authError):'Googleでログインすると、走った記録を表示できます。'}</p><button class="button" data-action="account">アカウントを開く</button><small>日記と設定は、このブラウザーに保存されます。</small></div>`);return;}
@@ -87,28 +100,21 @@ function renderPanel(){
   replacePanel(historyPanel());
 }
 function renderMapTop(){ $('#map-top').className='map-top history-map-top'; $('#map-top').innerHTML=runningMapHeading(runningContext())+(driveViewError?`<button class="drive-view-retry" data-action="retry-drive-view">${esc(driveViewError)} · 再読込</button>`:''); }
-function renderMapBottom(){const markup=historyCard();if(markup===selectionMarkup)return;runningMotion.stop('selection');$('#map-bottom').innerHTML=markup;selectionMarkup=markup;}
+function renderMapBottom(){const markup=isMobile()?'':historyCard();if(markup===selectionMarkup)return;runningMotion.stop('selection');$('#map-bottom').innerHTML=markup;selectionMarkup=markup;}
 function mapOptions(){
   const padding={top:Math.ceil($('#map-top').getBoundingClientRect().height)+45,right:isMobile()?55:65,bottom:Math.ceil($('#map-bottom').getBoundingClientRect().height)+34,left:isMobile()?22:35};
   const exploration={exploredRuns:usingDrive?[]:runs,explorationEnabled:true,maskTiles:driveSource?.maskTiles,onMaskError:()=>{if(!maskErrorShown){maskErrorShown=true;toast('探索範囲を読み込めませんでした。アカウントから読み込み直せます。');void refreshAccount();}}};
     const overlay=$('#map-bottom');
-    if(isMobile()&&logExpanded){
-      const stage=$('.map-stage').getBoundingClientRect(),card=overlay.querySelector('.running-selection'),analysis=overlay.querySelector('.running-analysis');
-      if(card&&analysis){
-        const height=card.getBoundingClientRect().height;
-        const summaryHeight=height-analysis.getBoundingClientRect().height-parseFloat(getComputedStyle(analysis).marginTop);
-        // Keep the summary where it was; unfold the analysis below it.
-        // Only lift the card if the expanded content would leave the screen.
-        overlay.style.top=`${Math.min(stage.height-summaryHeight-19,innerHeight-stage.top-height-12)}px`;
-      }
-    }else overlay.style.removeProperty('top');
+    overlay.style.removeProperty('top');
     const stage=$('.map-stage').getBoundingClientRect(),top=$('#map-top').getBoundingClientRect(),bottom=$('#map-bottom').getBoundingClientRect();
     padding.top=Math.ceil(top.bottom-stage.top)+(isMobile()?10:18);
     padding.bottom=Math.max(24,Math.ceil(stage.bottom-bottom.top)+(isMobile()?10:22));
+    // The phone summary is outside the map, so it needs no camera reservation.
+    if(isMobile()){padding.top=Math.ceil(top.bottom-stage.top)+8;padding.bottom=24;padding.left=16;padding.right=48;}
     const shown=usingDrive?driveRoutes:selectedRunningRuns();
     const routeKey=`${runningMonth}/${selectedDay||'month'}`;
     const routeReady=isRunning()&&runsLoaded&&!runsError&&['local','drive'].includes(activeSource)&&(!usingDrive||driveLoadedKey.split('|')[0]===routeKey);
-    return {...exploration,fitPadding:padding,runs:shown,selectedRunId:selectedDay&&shown.length===1?shown[0].id:null,selectedRunIds:selectedDay?shown.map(r=>r.id):[],speedRoutes:true,overview:!selectedDay,routeMotionKey:routeReady?routeKey:null,routeMotionEnabled:routeReady,routeMotionState,viewportKey:`records:${runningMonth}:${selectedDay||'month'}:${usingDrive?driveLoadedKey:''}`};
+    return {...exploration,deferResizeFit:isMobile()&&mobileSheet.state.moving,fitPadding:padding,runs:shown,selectedRunId:selectedDay&&shown.length===1?shown[0].id:null,selectedRunIds:selectedDay?shown.map(r=>r.id):[],speedRoutes:true,overview:!selectedDay,routeMotionKey:routeReady?routeKey:null,routeMotionEnabled:routeReady,routeMotionState,viewportKey:`records:${runningMonth}:${selectedDay||'month'}:${usingDrive?driveLoadedKey:''}`};
   }
 
 function render(){
@@ -288,9 +294,9 @@ window.addEventListener('resize',()=>{
   },150);
 });
 const mapCardObserver=new ResizeObserver(()=>{if(mapView){mapView.update(mapOptions());mapView.fit();}});mapCardObserver.observe($('#map-bottom'));
-window.addEventListener('beforeunload',()=>{homeView?.destroy();englishView?.destroy();mapCardObserver.disconnect();mapView?.destroy();runningMotion.destroy();themeController.destroy();clearTimeout(resizeTimer);weatherController?.abort();});
+window.addEventListener('beforeunload',()=>{homeView?.destroy();englishView?.destroy();mapCardObserver.disconnect();mapView?.destroy();runningMotion.destroy();mobileSheet.destroy();themeController.destroy();clearTimeout(resizeTimer);weatherController?.abort();});
 
-function runningContext(){return {days:runDays,month:runningMonth,selectedDay,lastSelectedDay,explorationStats,mobile:isMobile(),slotCount:runningSlotCount(),calendarEnd,calendarMonths,logExpanded,splitPage,splitPageSize:!isMobile()&&innerHeight<=620?3:5,selectedRunId,name:workspaceState.profile.name||'',latestRun:runs.at(-1),weather,weatherBusy,weatherError,area};}
+function runningContext(){return {mobileAnalysis:mobileSheet.state.analysis,mobileExpanded:mobileSheet.state.expanded,days:runDays,month:runningMonth,selectedDay,lastSelectedDay,explorationStats,mobile:isMobile(),slotCount:runningSlotCount(),calendarEnd,calendarMonths,logExpanded:wantsAnalysis(),splitPage,splitPageSize:isMobile()||innerHeight<=620?3:5,selectedRunId,name:workspaceState.profile.name||'',latestRun:runs.at(-1),weather,weatherBusy,weatherError,area};}
 function revealCalendarMonth(month){if(month>calendarEnd||month<shiftMonth(calendarEnd,1-calendarMonths))calendarEnd=month;}
 function selectSlotDate(date){
   selectRunningDay(date);const reel=$('.run-slot-reel');reel?.focus({preventScroll:true});
@@ -322,6 +328,7 @@ function speedHelp(){openDialog('経路の色と重なり',`<div class="stack"><
 function refreshRunningLog(focusSelector){
   if(usingDrive)void loadDriveView();
   $('#workspace').classList.toggle('log-expanded',logExpanded);
+  if(isMobile())renderPanel();
   renderMapBottom();mapView?.update(mapOptions());mapView?.fit();
   if(focusSelector)$(focusSelector)?.focus({preventScroll:true});
 }
@@ -437,13 +444,13 @@ void refreshAccount();
 
 async function loadDriveView() {
   if(!driveSource||!runsLoaded)return;
-  const key=JSON.stringify([selectedDay,runningMonth,logExpanded,selectedRunId]);
+  const key=JSON.stringify([selectedDay,runningMonth,wantsAnalysis(),selectedRunId]);
   if(driveViewKey===key)return;
   driveViewKey=key;driveViewError='';const version=++driveVersion;
   const previousSelection=driveLoadedKey.split('|')[0], selection=`${runningMonth}/${selectedDay||'month'}`;
   if(previousSelection!==selection)driveRoutes=[];
   try{
-    const value=await driveSource.view({day:selectedDay,month:runningMonth,analysis:logExpanded,runId:selectedRunId});
+    const value=await driveSource.view({day:selectedDay,month:runningMonth,analysis:wantsAnalysis(),runId:selectedRunId});
     if(version!==driveVersion)return;
     if(value.detail){const run=runs.find(r=>r.id===value.detail.id);if(run)Object.assign(run,value.detail);}
     driveRoutes=value.routes;driveLoadedKey=selection+'|'+key;render();
@@ -511,14 +518,14 @@ function refreshSyncStatus(force=false){
 }
 function refreshDriveRecords(hash=''){
   if(!usingDrive||!runsLoaded||recordsRefreshTask)return recordsRefreshTask||Promise.resolve();
-  const version=runsVersion,selection=JSON.stringify([selectedDay,runningMonth,logExpanded,selectedRunId]);
+  const version=runsVersion,selection=JSON.stringify([selectedDay,runningMonth,wantsAnalysis(),selectedRunId]);
   const reader=createDriveRunningSource();recordsRefreshError='';
   recordsRefreshTask=(async()=>{
     try{
       // Keep the current reader, history and map until the replacement is usable.
       const data=await reader.load();
-      const view=await reader.view({day:selectedDay,month:runningMonth,analysis:logExpanded,runId:selectedRunId});
-      if(version!==runsVersion||selection!==JSON.stringify([selectedDay,runningMonth,logExpanded,selectedRunId])){reader.clear();return;}
+      const view=await reader.view({day:selectedDay,month:runningMonth,analysis:wantsAnalysis(),runId:selectedRunId});
+      if(version!==runsVersion||selection!==JSON.stringify([selectedDay,runningMonth,wantsAnalysis(),selectedRunId])){reader.clear();return;}
       if(view.detail){const run=data.runs.find(r=>r.id===view.detail.id);if(run)Object.assign(run,view.detail);}
       driveVersion++;driveSource?.clear();driveSource=reader;
       runDays=indexRunDays(data.runs);runs=[...runDays.values()].flatMap(day=>day.runs);explorationStats=data.explorationStats;
