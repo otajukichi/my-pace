@@ -19,7 +19,7 @@ html[data-theme-pack="illit-seal"] :is(.running-message, .home-day-detail, .en-p
   box-shadow: inset 0 1px 0 var(--finish-rim), 0 5px 22px var(--finish-shadow-wide);
 }
 
-/* One fine four-colour seam echoes the coordinated outfits. */
+/* A fine reflective seam links the clothing and stage-light accents. */
 html[data-theme-pack="illit-seal"] :is(.running-month-summary, .home-day-detail, .en-practice) {
   position: relative;
 }
@@ -32,15 +32,11 @@ html[data-theme-pack="illit-seal"] :is(.running-month-summary, .home-day-detail,
   border-radius: 0 0 2px 2px;
   opacity: .74;
   pointer-events: none;
-  background: linear-gradient(90deg, var(--seal-pink), var(--seal-blue) 36%, var(--seal-lemon) 67%, var(--seal-lilac));
+  background: linear-gradient(90deg, var(--seal-silver), var(--seal-pink) 46%, var(--seal-lilac) 72%, var(--seal-silver));
   mask-image: linear-gradient(90deg, transparent, #000 18% 82%, transparent);
 }
 
 /* A small piece of woven fabric, fading before the greeting text. */
-html[data-theme-pack="illit-seal"] .running-message {
-  background: linear-gradient(110deg, var(--surface), color-mix(in srgb, var(--bg) 80%, var(--surface)) 64%, var(--bg));
-}
-
 html[data-theme-pack="illit-seal"] .running-message::after,
 html[data-theme-pack="illit-seal"] .home-intro::after {
   content: "";
@@ -50,11 +46,6 @@ html[data-theme-pack="illit-seal"] .home-intro::after {
   background:
     repeating-linear-gradient(0deg, var(--seal-weave) 0 7px, transparent 7px 14px),
     repeating-linear-gradient(90deg, var(--seal-weave) 0 7px, transparent 7px 14px);
-}
-
-html[data-theme-pack="illit-seal"] .running-message::after {
-  inset: 0 0 0 48%;
-  mask-image: linear-gradient(90deg, transparent, #000 74%);
 }
 
 html[data-theme-pack="illit-seal"] .message-lanes { display: none; }
@@ -71,19 +62,7 @@ html[data-theme-pack="illit-seal"] #category-page.home-page {
     var(--paper);
 }
 
-html[data-theme-pack="illit-seal"] .home-intro::after {
-  inset: -12px 150px -12px auto;
-  width: min(220px, 30%);
-  mask-image: radial-gradient(ellipse at center, #000, transparent 73%);
-}
-
 html[data-theme-pack="illit-seal"] .home-intro-flourish { display: none; }
-html[data-theme-pack="illit-seal"] .home-day-detail {
-  background:
-    radial-gradient(ellipse at 100% 0%, color-mix(in srgb, var(--seal-pink) 9%, transparent), transparent 64%),
-    linear-gradient(140deg, var(--surface), color-mix(in srgb, var(--surface) 90%, var(--seal-silver)));
-}
-
 /* Light sits behind the sphere, leaving its paths and selectable worlds crisp. */
 html[data-theme-pack="illit-seal"] .en-sphere-wash {
   mask-image: radial-gradient(ellipse 50% 50% at 50% 50%, #000 38%, transparent 100%);
@@ -172,9 +151,6 @@ html[data-theme-pack="illit-seal"] .running-month-summary {
   border-color: color-mix(in srgb, var(--line) 70%, var(--track));
   box-shadow: inset 0 1px 0 var(--finish-rim), inset 0 -1px 0 var(--seal-thread), var(--finish-card);
 }
-html[data-theme-pack="illit-seal"] .running-month-summary::before {
-  background: linear-gradient(90deg, var(--seal-silver), var(--seal-pink) 45%, var(--seal-silver));
-}
 html[data-theme-pack="illit-seal"] .run-slot-row.active {
   background: linear-gradient(110deg, color-mix(in srgb, var(--panel) 65%, var(--surface)), var(--surface));
   border-color: color-mix(in srgb, var(--track) 32%, var(--line));
@@ -214,6 +190,10 @@ html[data-theme-pack="illit-seal"] .workspace.history .map-bottom > .running-sel
   background: linear-gradient(155deg, color-mix(in srgb, var(--preview-surface) 93%, var(--preview-line)), var(--preview-surface));
   box-shadow: inset 0 2px 0 color-mix(in srgb, var(--preview-track) 25%, var(--preview-surface));
 }
+.theme-pack-card[data-theme-pack="illit-seal"] :is(.theme-mini-calendar, .theme-mini-day > span, .theme-mini-room, .theme-mini-stats > i) {
+  border-radius: 7px 7px 2px 7px;
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--preview-line) 60%, var(--preview-surface));
+}
 
 @media (max-width: 760px) {
   html[data-theme-pack="illit-seal"] .home-intro::after { right: 56px; width: 40%; }
@@ -232,4 +212,369 @@ html[data-theme-pack="illit-seal"] .workspace.history .map-bottom > .running-sel
     border-color: color-mix(in srgb, var(--line) 75%, var(--track));
     box-shadow: inset 0 1px 0 var(--finish-rim);
   }
+}
+
+/* A complete material system: milky acetate, satin graphite and a silver edge.
+   The same construction continues through controls, the diary and dialogs. */
+html[data-theme-pack="illit-seal"] {
+  --seal-edge: color-mix(in srgb, var(--seal-silver) 58%, var(--line));
+  --seal-glint: color-mix(in srgb, var(--surface) 88%, white);
+  --seal-face: linear-gradient(148deg, var(--surface), color-mix(in srgb, var(--surface) 96%, var(--seal-silver)) 62%, color-mix(in srgb, var(--surface) 94%, var(--seal-pink)));
+  --seal-raised: inset 0 1px 0 var(--seal-glint), 0 2px 3px color-mix(in srgb, var(--ink) 5%, transparent), 0 9px 22px color-mix(in srgb, var(--ink) 5%, transparent);
+  --seal-corner: 20px 20px 9px 20px;
+}
+html[data-theme-pack="illit-seal"][data-theme-scheme="dark"] {
+  --seal-edge: color-mix(in srgb, var(--seal-silver) 28%, var(--line));
+  --seal-glint: color-mix(in srgb, var(--seal-silver) 24%, var(--surface));
+  --seal-face: linear-gradient(148deg, color-mix(in srgb, var(--surface) 95%, var(--seal-silver)), var(--surface) 52%, color-mix(in srgb, var(--surface) 93%, var(--seal-pink)));
+  --seal-raised: inset 0 1px 0 var(--seal-glint), 0 2px 4px #100b1830, 0 10px 28px #100b182b;
+}
+html[data-theme-pack="illit-seal"] :is(button, a, input, select, textarea):focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 3px;
+}
+html[data-theme-pack="illit-seal"] :is(.home-intro h1, .home-calendar-heading h2, .en-gallery-intro h2, .dialog-header h2, .en-dialog-head h2) {
+  letter-spacing: -.035em;
+  font-weight: 650;
+}
+html[data-theme-pack="illit-seal"] :is(.running-month-distance > strong, .selection-metrics strong, .home-month-totals strong, .home-month-heading strong) {
+  font-variant-numeric: lining-nums tabular-nums;
+  letter-spacing: -.045em;
+}
+
+/* A soft capsule framed in metal; the highlight belongs to a chosen category. */
+html[data-theme-pack="illit-seal"] .top-nav {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--header) 86%, #000);
+  border-color: color-mix(in srgb, var(--seal-silver) 28%, transparent);
+  box-shadow: inset 0 1px 4px #00000026, 0 1px 0 #ffffff0a;
+}
+html[data-theme-pack="illit-seal"] .header .nav-link {
+  position: relative;
+  overflow: hidden;
+  border-radius: 999px;
+}
+html[data-theme-pack="illit-seal"] .header .nav-link.active {
+  background: var(--seal-face);
+  box-shadow: inset 0 1px 0 var(--seal-glint), 0 2px 4px #00000025;
+}
+html[data-theme-pack="illit-seal"] .header .nav-link.active::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(115deg, transparent 36%, #ffffff35 49%, transparent 62%) -130px 0 / 260px 100% no-repeat;
+}
+html[data-theme-pack="illit-seal"] .header .nav-link:focus-visible::after {
+  background-position: 150px 0;
+  transition: background-position 700ms cubic-bezier(.2,.7,.3,1);
+}
+html[data-theme-pack="illit-seal"] .header .avatar {
+  background: linear-gradient(140deg, color-mix(in srgb, var(--header) 68%, var(--seal-silver)), color-mix(in srgb, var(--header) 92%, var(--seal-pink)));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--seal-silver) 45%, transparent), 0 2px 5px #00000020;
+}
+html[data-theme-pack="illit-seal"] .header .brand img {
+  filter: grayscale(1) brightness(1.55) contrast(.9) drop-shadow(0 2px 2px #00000020);
+}
+html[data-theme-pack="illit-seal"] :is(.icon-button, .running-period-nav, .running-view-mode, .mp-map__zoom, .mp-map__fit, .running-speed-legend) {
+  border-color: var(--seal-edge);
+  background: var(--seal-face);
+  box-shadow: var(--seal-raised);
+}
+html[data-theme-pack="illit-seal"] :is(.calendar-range-options, .theme-time-options > button, .en-mode-options > button) {
+  border-color: var(--seal-edge);
+  background: linear-gradient(155deg, color-mix(in srgb, var(--paper) 72%, var(--surface)), var(--surface));
+  box-shadow: inset 0 1px 2px var(--finish-shadow-wide);
+}
+html[data-theme-pack="illit-seal"] :is(.calendar-range-options button[aria-pressed="true"], .theme-time-options > button[aria-pressed="true"], .en-mode-options > button[aria-pressed="true"]) {
+  border-color: color-mix(in srgb, var(--track) 52%, var(--seal-edge));
+  background: linear-gradient(145deg, color-mix(in srgb, var(--panel) 72%, var(--surface)), var(--panel));
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 var(--seal-glint), 0 2px 4px var(--finish-shadow);
+}
+html[data-theme-pack="illit-seal"] :is(.running-slot, .home-calendar, .home-day-detail, .home-diary, .en-practice, .en-history-list) {
+  border-radius: var(--seal-corner);
+  border-color: var(--seal-edge);
+  box-shadow: var(--seal-raised);
+}
+html[data-theme-pack="illit-seal"] :is(.running-slot, .home-calendar, .en-history-list) { background: var(--seal-face); }
+html[data-theme-pack="illit-seal"] :is(.running-month-summary, .workspace.history .map-bottom > .running-selection) { border-radius: var(--seal-corner); }
+html[data-theme-pack="illit-seal"] :is(.running-month-summary, .home-day-detail, .en-practice)::before {
+  left: 24px;
+  right: 24px;
+  background: linear-gradient(90deg, var(--seal-silver), var(--seal-pink) 46%, var(--seal-lilac) 72%, var(--seal-silver));
+  opacity: .8;
+}
+html[data-theme-pack="illit-seal"] .run-slot-row.active {
+  border-radius: 13px 13px 5px 13px;
+  box-shadow: inset 3px 0 0 var(--track), inset 0 1px 0 var(--seal-glint), 0 3px 8px var(--finish-shadow-wide);
+}
+html[data-theme-pack="illit-seal"] .run-slot-thumbnail { filter: drop-shadow(0 2px 1px var(--finish-shadow-wide)); }
+
+/* At home, the calendar is the clear surface; the selected day is a softer one.
+   An interlaced ribbon in the greeting margin carries the pack's fabric motif. */
+html[data-theme-pack="illit-seal"] .home-intro::after {
+  inset: -13px 155px -13px auto;
+  width: min(300px, 30%);
+  background: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20300%20110%22%3E%3Cdefs%3E%3ClinearGradient%20id%3D%22s%22%20x2%3D%221%22%20y2%3D%221%22%3E%3Cstop%20stop-color%3D%22%23aaa9bb%22%2F%3E%3Cstop%20offset%3D%22.43%22%20stop-color%3D%22%23fff8fe%22%2F%3E%3Cstop%20offset%3D%221%22%20stop-color%3D%22%23aaa2b5%22%2F%3E%3C%2FlinearGradient%3E%3Cpattern%20id%3D%22c%22%20width%3D%2210%22%20height%3D%2210%22%20patternUnits%3D%22userSpaceOnUse%22%3E%3Cpath%20fill%3D%22%23d38cad%22%20opacity%3D%22.22%22%20d%3D%22M0%200h5v5H0zM5%205h5v5H5z%22%2F%3E%3Cpath%20fill%3D%22%23d38cad%22%20opacity%3D%22.08%22%20d%3D%22M5%200h5v5H5zM0%205h5v5H0z%22%2F%3E%3C%2Fpattern%3E%3C%2Fdefs%3E%3Cpath%20d%3D%22M54%2064C77%2018%20163%201%20215%2026c41%2019%2023%2049-14%2059-50%2015-89-9-64-34l10%207c-15%2020%2033%2028%2064%2014%2024-11%2019-29-5-38-42-18-119%200-135%2034z%22%20fill%3D%22url%28%23c%29%22%20stroke%3D%22url%28%23s%29%22%20stroke-width%3D%221.1%22%2F%3E%3Cpath%20d%3D%22M28%2085C79-8%20192-6%20235%2036c40%2039-56%2092-98%2047-31-32%207-75%2075-64%22%20stroke%3D%22url%28%23s%29%22%20stroke-width%3D%222.1%22%20fill%3D%22none%22%2F%3E%3Cpath%20d%3D%22M42%2095C104%202%20228-5%20265%2044M93%2023c-48%2050%2021%2090%20132%2059%22%20stroke%3D%22%23d38cad%22%20stroke-width%3D%22.85%22%20fill%3D%22none%22%20opacity%3D%22.75%22%2F%3E%3C%2Fsvg%3E") center / contain no-repeat;
+  mask-image: linear-gradient(90deg, transparent, #000 18% 83%, transparent);
+  opacity: .85;
+}
+html[data-theme-pack="illit-seal"] .home-day-detail {
+  background:
+    radial-gradient(ellipse at 10% 100%, color-mix(in srgb, var(--seal-pink) 9%, transparent), transparent 65%),
+    linear-gradient(145deg, color-mix(in srgb, var(--surface) 65%, var(--panel)), var(--surface) 72%);
+}
+html[data-theme-pack="illit-seal"] .home-day.selected {
+  border-radius: 14px 14px 5px 14px;
+  border-color: color-mix(in srgb, var(--track) 42%, var(--seal-edge));
+  background: linear-gradient(150deg, var(--surface), color-mix(in srgb, var(--surface) 66%, var(--panel)));
+  box-shadow: inset 0 1px 0 var(--seal-glint), 0 3px 9px var(--finish-shadow);
+}
+html[data-theme-pack="illit-seal"] .home-large-disc::before {
+  background: linear-gradient(145deg, var(--surface) 20%, color-mix(in srgb, var(--surface) 93%, var(--seal-silver)) 53%, var(--paper));
+  box-shadow: inset 0 1px 0 var(--seal-glint), inset 0 -1px 0 var(--seal-thread), 0 5px 12px var(--finish-shadow);
+}
+html[data-theme-pack="illit-seal"] .home-month-totals {
+  border-top-color: var(--seal-edge);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--seal-silver) 7%, transparent), transparent 85%);
+}
+html[data-theme-pack="illit-seal"] .home-check-box {
+  border-color: var(--seal-edge);
+  border-radius: 7px 7px 3px 7px;
+  background: var(--seal-face);
+  box-shadow: inset 0 1px 0 var(--seal-glint);
+}
+html[data-theme-pack="illit-seal"] .home-habit-row.is-checked .home-check-box {
+  color: var(--on-primary);
+  background: var(--primary);
+  border-color: var(--primary);
+  box-shadow: inset 0 1px 0 #ffffff30, 0 0 0 3px color-mix(in srgb, var(--track) 10%, transparent);
+}
+html[data-theme-pack="illit-seal"] .home-diary {
+  background: linear-gradient(112deg, color-mix(in srgb, var(--surface) 80%, var(--panel)), var(--surface) 74%);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--seal-silver) 72%, var(--track)), var(--seal-raised);
+}
+html[data-theme-pack="illit-seal"] .home-diary-open::after {
+  width: 105px;
+  height: 105px;
+  right: -40px;
+  bottom: -56px;
+  border-color: var(--seal-edge);
+  border-radius: 11px;
+  transform: rotate(-29deg);
+  background:
+    repeating-linear-gradient(0deg, var(--seal-weave) 0 4px, transparent 4px 8px),
+    repeating-linear-gradient(90deg, var(--seal-weave) 0 4px, transparent 4px 8px);
+  box-shadow: 0 0 0 7px color-mix(in srgb, var(--surface) 50%, transparent), 0 0 0 8px var(--seal-thread);
+  opacity: .55;
+}
+
+/* The English world is luminous; its controls feel like small polished passes. */
+html[data-theme-pack="illit-seal"] .en-app {
+  background: radial-gradient(ellipse at 3% 90%, color-mix(in srgb, var(--seal-pink) 5%, transparent), transparent 55%), var(--paper);
+}
+html[data-theme-pack="illit-seal"] .en-sphere-wash::before {
+  inset: 12% 3% auto auto;
+  width: 27%;
+  height: 23%;
+  transform: rotate(-11deg);
+  mask-image: radial-gradient(ellipse, #000, transparent 72%);
+  opacity: .6;
+}
+html[data-theme-pack="illit-seal"] .en-sphere-wash::after {
+  content: "";
+  position: absolute;
+  inset: 6% 5% 8% 16%;
+  pointer-events: none;
+  border-radius: 50%;
+  border: 1px solid var(--seal-thread);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--seal-silver) 20%, transparent);
+  transform: rotate(-20deg) scaleY(.65);
+  mask-image: linear-gradient(130deg, #000, transparent 35% 65%, #000);
+}
+html[data-theme-pack="illit-seal"] .en-world-label {
+  border-color: var(--seal-edge);
+  background: var(--seal-face);
+  box-shadow: inset 0 1px 0 var(--seal-glint), 0 3px 8px var(--finish-shadow-wide);
+  border-radius: 11px 11px 4px 11px;
+}
+html[data-theme-pack="illit-seal"] .en-world.is-selected .en-world-label {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--primary) 93%, var(--on-primary)), var(--primary));
+  border-color: var(--primary);
+  color: var(--on-primary);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--on-primary) 25%, transparent), 0 3px 12px color-mix(in srgb, var(--track) 24%, transparent);
+  animation: seal-selection-light 600ms ease-out both;
+}
+html[data-theme-pack="illit-seal"] .en-area-dock > button[aria-pressed="true"] {
+  background: var(--seal-face);
+  border-color: var(--seal-edge);
+  border-radius: 10px 10px 4px 10px;
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--track) 65%, transparent), var(--seal-raised);
+}
+html[data-theme-pack="illit-seal"] .en-theme {
+  border-radius: 11px 11px 5px 11px;
+  transition: background-color 180ms, border-color 180ms, box-shadow 180ms;
+}
+html[data-theme-pack="illit-seal"] .en-theme[aria-pressed="true"] {
+  background: linear-gradient(120deg, color-mix(in srgb, var(--panel) 40%, var(--surface)), var(--surface));
+  border-color: var(--seal-edge);
+  box-shadow: inset 0 1px 0 var(--seal-glint), 0 3px 7px var(--finish-shadow-wide);
+}
+html[data-theme-pack="illit-seal"] .en-theme-dot {
+  background: var(--seal-face);
+  box-shadow: inset 0 1px 0 var(--seal-glint);
+  border-color: var(--seal-edge);
+}
+html[data-theme-pack="illit-seal"] :is(.en-primary, .button:not(.secondary):not(.danger)) {
+  border-radius: 11px 11px 5px 11px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--primary) 93%, var(--on-primary)), var(--primary) 70%);
+  color: var(--on-primary);
+  border-color: color-mix(in srgb, var(--primary) 82%, var(--seal-silver));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--on-primary) 25%, transparent), 0 4px 12px color-mix(in srgb, var(--primary) 16%, transparent);
+}
+html[data-theme-pack="illit-seal"] .en-book {
+  background:
+    linear-gradient(90deg, #00000012 0 7px, #ffffff22 8px 9px, transparent 10px),
+    linear-gradient(135deg, var(--anchor) 42%, color-mix(in srgb, var(--anchor) 85%, var(--track)) 72%, var(--anchor));
+  box-shadow: inset 0 1px 0 #ffffff26, inset -1px 0 0 var(--seal-thread), 10px 6px 0 -3px var(--surface), 13px 7px 0 -3px var(--seal-silver), 16px 8px 0 -3px var(--surface), 26px 30px 25px -18px var(--finish-shadow);
+}
+html[data-theme-pack="illit-seal"] .en-book::after {
+  content: "";
+  position: absolute;
+  right: 13px;
+  bottom: 13px;
+  width: 42px;
+  height: 42px;
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--paper) 30%, transparent);
+  border-radius: 9px 9px 3px 9px;
+  background:
+    repeating-linear-gradient(0deg, color-mix(in srgb, var(--paper) 8%, transparent) 0 3px, transparent 3px 6px),
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--paper) 8%, transparent) 0 3px, transparent 3px 6px);
+}
+
+/* The same physical language continues beyond the three main pages. */
+html[data-theme-pack="illit-seal"] :is(dialog, .en-dialog) {
+  border-radius: 24px 24px 12px 24px;
+  border-color: var(--seal-edge);
+  background: var(--seal-face);
+  box-shadow: inset 0 1px 0 var(--seal-glint), 0 8px 22px #2115271c, 0 28px 85px #21152738;
+}
+html[data-theme-pack="illit-seal"] dialog::backdrop {
+  background: color-mix(in srgb, var(--header) 46%, transparent);
+  backdrop-filter: blur(7px);
+}
+html[data-theme-pack="illit-seal"] :is(.dialog-header, .en-dialog-head) {
+  position: relative;
+  background: linear-gradient(120deg, color-mix(in srgb, var(--panel) 22%, transparent), transparent 75%);
+}
+html[data-theme-pack="illit-seal"] :is(.dialog-header, .en-dialog-head)::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  left: 28px;
+  right: 28px;
+  bottom: 5px;
+  height: 1px;
+  background: linear-gradient(90deg, var(--seal-silver), var(--seal-thread) 58%, transparent);
+}
+html[data-theme-pack="illit-seal"] :is(.field input, .field select, .field textarea, #diary-text, .en-theme-search) {
+  border-color: var(--seal-edge);
+  border-radius: 11px 11px 5px 11px;
+  background: color-mix(in srgb, var(--surface) 70%, var(--paper));
+  box-shadow: inset 0 1px 3px var(--finish-shadow-wide), 0 1px 0 var(--seal-glint);
+  transition: border-color 180ms, box-shadow 180ms;
+}
+html[data-theme-pack="illit-seal"] :is(.field input, .field select, .field textarea, #diary-text, .en-theme-search):focus {
+  border-color: var(--primary);
+  box-shadow: inset 0 1px 2px var(--finish-shadow-wide), 0 0 0 3px color-mix(in srgb, var(--track) 12%, transparent);
+}
+html[data-theme-pack="illit-seal"] .diary-date {
+  color: var(--muted);
+  border-bottom-color: var(--seal-edge);
+}
+html[data-theme-pack="illit-seal"] #diary-text {
+  background-image: linear-gradient(90deg, color-mix(in srgb, var(--seal-pink) 7%, transparent), transparent 15%);
+  border-left-color: color-mix(in srgb, var(--track) 50%, var(--seal-silver));
+}
+html[data-theme-pack="illit-seal"] :is(.source-box, .theme-settings-open) {
+  background: var(--seal-face);
+  border-color: var(--seal-edge);
+  border-radius: 13px 13px 5px 13px;
+  box-shadow: inset 0 1px 0 var(--seal-glint), 0 3px 10px var(--finish-shadow-wide);
+}
+html[data-theme-pack="illit-seal"] .account-symbol {
+  border-color: var(--seal-edge);
+  background: linear-gradient(145deg, var(--surface), var(--panel));
+  box-shadow: var(--seal-raised);
+}
+html[data-theme-pack="illit-seal"] .account-actions {
+  border-color: var(--seal-edge);
+  border-radius: 13px 13px 5px 13px;
+  background: var(--seal-face);
+  box-shadow: inset 0 1px 0 var(--seal-glint);
+}
+html[data-theme-pack="illit-seal"] .account-actions > button { border-color: var(--seal-thread); }
+html[data-theme-pack="illit-seal"] .button.secondary {
+  background: var(--seal-face);
+  border-color: var(--seal-edge);
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 var(--seal-glint), 0 2px 6px var(--finish-shadow-wide);
+}
+html[data-theme-pack="illit-seal"] .theme-pack-card.is-selected {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--track) 12%, transparent), inset 0 1px 0 var(--seal-glint), 0 6px 16px var(--finish-shadow);
+}
+
+@media (hover:hover) {
+  html[data-theme-pack="illit-seal"] .header .nav-link.active:hover::after {
+    background-position: 150px 0;
+    transition: background-position 700ms cubic-bezier(.2,.7,.3,1);
+  }
+  html[data-theme-pack="illit-seal"] :is(.button, .en-primary, .theme-settings-open, .home-diary):hover {
+    filter: brightness(1.035);
+    border-color: var(--primary);
+  }
+  html[data-theme-pack="illit-seal"] .en-theme:not([aria-pressed="true"]):hover {
+    background: color-mix(in srgb, var(--surface) 75%, var(--panel));
+    border-color: var(--seal-edge);
+  }
+  html[data-theme-pack="illit-seal"] .run-slot-row:not(.active):hover {
+    background: color-mix(in srgb, var(--surface) 78%, var(--panel));
+    border-color: var(--seal-edge);
+  }
+}
+@media (max-width:760px) {
+  html[data-theme-pack="illit-seal"] { --seal-corner: 16px 16px 7px 16px; }
+  html[data-theme-pack="illit-seal"] :is(.field input, .field select, .field textarea, #diary-text, .en-theme-search) { font-size: 16px; }
+  html[data-theme-pack="illit-seal"] .home-intro::after { right: 57px; width: 34%; opacity: .6; }
+  html[data-theme-pack="illit-seal"] .en-practice { border-radius: 24px 24px 0 0; }
+  html[data-theme-pack="illit-seal"] .en-practice::before { left: 42%; right: 42%; }
+  html[data-theme-pack="illit-seal"] .en-sheet-toggle > i,
+  html[data-theme-pack="illit-seal"] .running-sheet-toggle > i {
+    background: linear-gradient(90deg, var(--seal-silver), color-mix(in srgb, var(--seal-silver) 70%, var(--track)), var(--seal-silver));
+    box-shadow: 0 1px 0 var(--seal-glint);
+  }
+  html[data-theme-pack="illit-seal"] .en-mobile-peek > button { background: var(--seal-face); border-color: var(--seal-edge); box-shadow: var(--seal-raised); }
+  html[data-theme-pack="illit-seal"] .home-diary-open::after { width: 70px; height: 70px; right: -30px; bottom: -40px; }
+  html[data-theme-pack="illit-seal"] .mobile-month-summary { border-radius: 13px 13px 5px 13px; }
+  html[data-theme-pack="illit-seal"] .en-area-dock > button[aria-pressed="true"] { box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--track) 65%, transparent), inset 0 1px 0 var(--seal-glint); }
+}
+@keyframes seal-selection-light { from { box-shadow: 0 0 0 5px color-mix(in srgb, var(--track) 15%, transparent), 0 3px 18px color-mix(in srgb, var(--track) 24%, transparent); } to { box-shadow: inset 0 1px 0 color-mix(in srgb, var(--on-primary) 25%, transparent), 0 3px 12px color-mix(in srgb, var(--track) 24%, transparent); } }
+@media (prefers-reduced-motion:reduce) {
+  html[data-theme-pack="illit-seal"] .header .nav-link.active::after,
+  html[data-theme-pack="illit-seal"] .en-world.is-selected .en-world-label { animation: none; transition: none; }
+  html[data-theme-pack="illit-seal"] :is(.en-theme, .field input, .field select, .field textarea, #diary-text, .en-theme-search) { transition: none; }
+}
+@media (prefers-reduced-transparency:reduce) {
+  html[data-theme-pack="illit-seal"] dialog::backdrop { backdrop-filter: none; }
+}
+@media (prefers-contrast:more) {
+  html[data-theme-pack="illit-seal"] :is(.home-calendar, .home-day-detail, .home-diary, .en-practice, .running-slot, .running-month-summary, dialog, .en-world-label) { border-color: var(--muted); }
+  html[data-theme-pack="illit-seal"] .home-intro::after,
+  html[data-theme-pack="illit-seal"] .running-message::before,
+  html[data-theme-pack="illit-seal"] .running-message::after,
+  html[data-theme-pack="illit-seal"] .en-sphere-wash { opacity: 0; }
 }
