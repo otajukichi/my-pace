@@ -130,6 +130,64 @@ html[data-theme-pack="illit-seal"][data-theme-scheme="dark"] .en-sphere-wash {
     radial-gradient(ellipse at 56% 16%, color-mix(in srgb, var(--seal-lilac) 13%, transparent), transparent 45%);
 }
 
+/* RUNNING: the performance's charcoal silhouettes, silver ties and hot-pink
+   screen light. Blue is present in one shirt, not the basis of the whole stage.
+   The angled silver/check detail belongs to the greeting margin, not the data. */
+html[data-theme-pack="illit-seal"][data-theme-page="records"] .header {
+  background:
+    radial-gradient(ellipse at 80% 0%, color-mix(in srgb, var(--seal-pink) 12%, transparent), transparent 52%),
+    linear-gradient(113deg, color-mix(in srgb, var(--header) 91%, var(--seal-silver)), var(--header) 52%, color-mix(in srgb, var(--header) 94%, var(--seal-pink)));
+  box-shadow: inset 0 1px 0 var(--seal-thread), 0 1px 0 color-mix(in srgb, var(--seal-pink) 18%, var(--line));
+}
+html[data-theme-pack="illit-seal"] .workspace.history .context {
+  background:
+    radial-gradient(ellipse at 100% 0%, color-mix(in srgb, var(--seal-pink) 5%, transparent), transparent 55%),
+    var(--paper);
+}
+html[data-theme-pack="illit-seal"] .running-message {
+  background:
+    radial-gradient(ellipse at 98% 10%, color-mix(in srgb, var(--seal-pink) 16%, transparent), transparent 62%),
+    linear-gradient(115deg, var(--surface), color-mix(in srgb, var(--surface) 88%, var(--seal-silver)) 76%, var(--surface));
+  border-color: color-mix(in srgb, var(--line) 68%, var(--seal-silver));
+  box-shadow: inset 0 1px 0 var(--finish-rim), inset 2px 0 0 color-mix(in srgb, var(--track) 65%, var(--surface)), 0 5px 22px var(--finish-shadow-wide);
+}
+html[data-theme-pack="illit-seal"] .running-message::after {
+  inset: -12px -10px -12px 56%;
+  transform: skewX(-12deg);
+  mask-image: linear-gradient(90deg, transparent, #000 80%);
+}
+html[data-theme-pack="illit-seal"] .running-message::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 62%;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(125deg, transparent 41%, color-mix(in srgb, var(--seal-silver) 38%, transparent) 41.2% 42.2%, var(--finish-rim) 42.5% 43%, transparent 43.2% 52%, color-mix(in srgb, var(--seal-silver) 22%, transparent) 52.2% 56%, transparent 56.2%);
+  mask-image: linear-gradient(90deg, transparent, #000 55%);
+}
+html[data-theme-pack="illit-seal"] .running-month-summary {
+  background:
+    radial-gradient(ellipse at 100% 0%, color-mix(in srgb, var(--seal-pink) 14%, transparent), transparent 72%),
+    linear-gradient(145deg, color-mix(in srgb, var(--panel) 62%, var(--surface)), var(--panel) 72%, color-mix(in srgb, var(--panel) 92%, var(--seal-silver)));
+  border-color: color-mix(in srgb, var(--line) 70%, var(--track));
+  box-shadow: inset 0 1px 0 var(--finish-rim), inset 0 -1px 0 var(--seal-thread), var(--finish-card);
+}
+html[data-theme-pack="illit-seal"] .running-month-summary::before {
+  background: linear-gradient(90deg, var(--seal-silver), var(--seal-pink) 45%, var(--seal-silver));
+}
+html[data-theme-pack="illit-seal"] .run-slot-row.active {
+  background: linear-gradient(110deg, color-mix(in srgb, var(--panel) 65%, var(--surface)), var(--surface));
+  border-color: color-mix(in srgb, var(--track) 32%, var(--line));
+  box-shadow: inset 3px 0 0 var(--track), inset 0 1px 0 var(--finish-rim);
+}
+html[data-theme-pack="illit-seal"] .workspace.history .map-bottom > .running-selection {
+  background:
+    radial-gradient(ellipse at 100% 0%, color-mix(in srgb, var(--seal-pink) 9%, transparent), transparent 70%),
+    linear-gradient(155deg, color-mix(in srgb, var(--surface) 95%, var(--seal-silver)), var(--surface) 62%);
+  border-color: color-mix(in srgb, var(--line) 64%, var(--seal-silver));
+  box-shadow: inset 0 1px 0 var(--finish-rim), inset 0 3px 0 color-mix(in srgb, var(--track) 18%, transparent), var(--finish-float);
+}
+
 /* The picker previews this finish without applying it to the current page. */
 .theme-pack-card[data-theme-pack="illit-seal"] .theme-mini-header {
   background: linear-gradient(115deg, color-mix(in srgb, var(--preview-header) 85%, var(--preview-line)), var(--preview-header) 55%);
@@ -148,7 +206,30 @@ html[data-theme-pack="illit-seal"][data-theme-scheme="dark"] .en-sphere-wash {
     var(--preview-paper);
 }
 
+.theme-pack-card[data-theme-pack="illit-seal"] .theme-mini-running .theme-mini-stats > i {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--preview-panel) 62%, var(--preview-surface)), var(--preview-panel));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--preview-track) 30%, var(--preview-line));
+}
+.theme-pack-card[data-theme-pack="illit-seal"] .theme-mini-running .theme-mini-map > i {
+  background: linear-gradient(155deg, color-mix(in srgb, var(--preview-surface) 93%, var(--preview-line)), var(--preview-surface));
+  box-shadow: inset 0 2px 0 color-mix(in srgb, var(--preview-track) 25%, var(--preview-surface));
+}
+
 @media (max-width: 760px) {
   html[data-theme-pack="illit-seal"] .home-intro::after { right: 56px; width: 40%; }
   html[data-theme-pack="illit-seal"] .running-message::after { left: 62%; }
+  html[data-theme-pack="illit-seal"] .workspace.history .sidebar {
+    background:
+      radial-gradient(ellipse at 100% 0%, color-mix(in srgb, var(--seal-pink) 8%, transparent), transparent 57%),
+      var(--paper);
+    box-shadow: inset 0 1px 0 var(--finish-rim), 0 -8px 26px var(--finish-shadow-wide);
+  }
+  html[data-theme-pack="illit-seal"] .mobile-run-summary {
+    background: radial-gradient(ellipse at 100% 12%, color-mix(in srgb, var(--seal-pink) 5%, transparent), transparent 68%);
+  }
+  html[data-theme-pack="illit-seal"] .mobile-month-summary {
+    background: linear-gradient(150deg, color-mix(in srgb, var(--panel) 65%, var(--surface)), var(--panel));
+    border-color: color-mix(in srgb, var(--line) 75%, var(--track));
+    box-shadow: inset 0 1px 0 var(--finish-rim);
+  }
 }
