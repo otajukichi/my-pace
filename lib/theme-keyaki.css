@@ -1,0 +1,264 @@
+/* Tokyo Dome 2019: tailored uniforms, scarlet parachute fabric, and monumental
+   screen geometry. Original CSS/SVG motifs, not reproduced concert imagery.
+   Costume reference: https://www.keyakizaka46.com/s/k46o/diary/detail/31071
+   Stage reference: https://nlab.itmedia.co.jp/cont/articles/3295717/ */
+html[data-theme-pack="keyaki-dome"] {
+  --dome-rim: color-mix(in srgb, var(--dome-metal) 52%, transparent);
+  --dome-seam: color-mix(in srgb, var(--dome-metal) 22%, transparent);
+  --finish-rim: color-mix(in srgb, var(--dome-metal) 28%, transparent);
+  --finish-float: 0 2px 5px #04080e35, 0 16px 34px #04080e36;
+}
+
+/* Matte framing and a slender metal hem give the whole pack its structure. */
+html[data-theme-pack="keyaki-dome"] .header {
+  background:
+    linear-gradient(112deg, transparent 68%, color-mix(in srgb, var(--dome-cold) 10%, transparent) 68.1%, transparent 84%),
+    linear-gradient(105deg, var(--header), color-mix(in srgb, var(--header) 90%, #000));
+  border-bottom-color: var(--dome-seam);
+  box-shadow: inset 0 1px 0 var(--dome-seam), 0 2px 12px #03060c20;
+}
+html[data-theme-pack="keyaki-dome"] :is(.top-nav, .header .nav-link, .theme-settings-open) { border-radius: 7px; }
+html[data-theme-pack="keyaki-dome"] :is(.home-calendar, .home-day-detail, .home-diary, .en-practice, .running-month-summary, .running-slot) {
+  border-radius: 9px;
+  border-color: var(--dome-seam);
+  box-shadow: inset 0 1px 0 var(--finish-rim), 0 6px 22px #02060b14;
+}
+html[data-theme-pack="keyaki-dome"] :is(.en-area-dock > button > span, .en-handoff-steps > span, .account-error) {
+  color: var(--coral-ink);
+  opacity: 1;
+}
+html[data-theme-pack="keyaki-dome"] :is(.message-lanes, .home-intro-flourish) { display: none; }
+
+/* GLASS: glossy crimson planes, a matte harness and a narrow metallic zip.
+   The dress-like detail remains in the margin, away from numbers and controls. */
+html[data-theme-pack="keyaki-dome"][data-theme-page="records"] .header {
+  background:
+    linear-gradient(112deg, transparent 68%, color-mix(in srgb, var(--dome-red) 12%, transparent) 68.1%, transparent 84%),
+    linear-gradient(105deg, var(--header), color-mix(in srgb, var(--header) 88%, #000));
+}
+html[data-theme-pack="keyaki-dome"] .workspace.history .context {
+  background:
+    radial-gradient(ellipse at 100% 14%, color-mix(in srgb, var(--dome-red) 7%, transparent), transparent 60%),
+    var(--paper);
+}
+html[data-theme-pack="keyaki-dome"] .running-message {
+  border-radius: 7px;
+  border-color: color-mix(in srgb, var(--dome-red) 45%, var(--line));
+  background:
+    linear-gradient(112deg, transparent 57%, color-mix(in srgb, var(--dome-red) 19%, transparent) 57.1%, transparent 76%),
+    linear-gradient(118deg, var(--surface) 33%, color-mix(in srgb, var(--panel) 66%, var(--surface)) 100%);
+  box-shadow: inset 0 1px 0 var(--dome-seam), inset 3px 0 0 var(--dome-red), 0 7px 20px #06040818;
+}
+html[data-theme-pack="keyaki-dome"] .running-message::after {
+  content: "";
+  position: absolute;
+  inset: -22px 34px -22px auto;
+  width: 35px;
+  z-index: -1;
+  pointer-events: none;
+  transform: rotate(16deg);
+  background:
+    linear-gradient(90deg, transparent 5px, var(--dome-seam) 5px 6px, transparent 6px 29px, var(--dome-seam) 29px 30px, transparent 30px),
+    var(--dome-band);
+  box-shadow: 6px 0 0 color-mix(in srgb, var(--dome-band) 30%, transparent);
+  opacity: .7;
+}
+html[data-theme-pack="keyaki-dome"] .running-message::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 57%;
+  z-index: -1;
+  pointer-events: none;
+  opacity: .32;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='260' height='100' viewBox='0 0 260 100'%3E%3Cpath fill='%23d6414e' d='m18 100 82-99 18 52 88-40-66 87zM156 0l104 29v37L211 44l-32 30z'/%3E%3Cg stroke='%23f3f4eb' stroke-width='.7' fill='none' opacity='.55'%3E%3Cpath d='m19 100 81-99 18 52 88-40-66 87M118 53l22 47M100 1l40 99M156 0l55 44 49-15M179 74l32-30 49 22'/%3E%3C/g%3E%3C/svg%3E") right center / cover no-repeat;
+  mask-image: linear-gradient(90deg, transparent, #000 45%);
+}
+html[data-theme-pack="keyaki-dome"] .message-mark {
+  border-radius: 7px;
+  border-color: var(--dome-rim);
+  color: var(--coral-ink);
+  background: linear-gradient(135deg, var(--surface), var(--paper));
+  box-shadow: inset 0 1px 0 var(--dome-seam), 0 2px 5px #00000026;
+}
+html[data-theme-pack="keyaki-dome"] .running-month-summary {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  background:
+    linear-gradient(116deg, transparent 50%, color-mix(in srgb, var(--dome-red) 12%, transparent) 50.2%, transparent 78%),
+    linear-gradient(155deg, color-mix(in srgb, var(--panel) 87%, var(--dome-metal)), var(--panel) 37%, color-mix(in srgb, var(--panel) 82%, #000));
+  border-color: color-mix(in srgb, var(--dome-red) 50%, var(--line));
+}
+html[data-theme-pack="keyaki-dome"] .running-month-summary::after {
+  content: "";
+  position: absolute;
+  inset: 0 9px 0 auto;
+  width: 5px;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 3px, var(--dome-seam) 3px 4px),
+    var(--dome-band);
+  border-inline: 1px solid var(--dome-seam);
+  opacity: .65;
+}
+html[data-theme-pack="keyaki-dome"] .run-slot-row.active {
+  border-color: var(--dome-rim);
+  background: linear-gradient(110deg, color-mix(in srgb, var(--panel) 57%, var(--surface)), var(--surface));
+  box-shadow: inset 3px 0 0 var(--dome-red), inset 0 1px 0 var(--dome-seam);
+}
+html[data-theme-pack="keyaki-dome"] .workspace.history .map-bottom > .running-selection {
+  border-radius: 9px;
+  border-color: var(--dome-rim);
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--panel) 40%, transparent), transparent 55%),
+    var(--surface);
+  box-shadow: inset 0 2px 0 var(--dome-red), inset 0 3px 0 var(--dome-band), var(--finish-float);
+}
+
+/* SILENT MAJORITY: teal/navy tailoring and metal braiding, with floating
+   screen architecture confined to the intro margin. */
+html[data-theme-pack="keyaki-dome"] #category-page.home-page {
+  background:
+    linear-gradient(112deg, transparent 62%, color-mix(in srgb, var(--dome-cold) 5%, transparent) 62.1%, transparent 85%),
+    radial-gradient(ellipse at 100% 0%, color-mix(in srgb, var(--dome-cold) 12%, transparent), transparent 54%),
+    var(--paper);
+}
+html[data-theme-pack="keyaki-dome"] .home-intro::after {
+  content: "";
+  position: absolute;
+  right: 155px;
+  top: -8px;
+  width: min(290px, 29%);
+  height: calc(100% + 16px);
+  z-index: -1;
+  pointer-events: none;
+  opacity: .42;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='290' height='100' viewBox='0 0 290 100'%3E%3Cg fill='none' stroke='%23c9d5d8' stroke-width='.8'%3E%3Cpath d='m36 48 43-20 30 13-44 22-29-15v20l29 14 44-22V41M65 63v19M153 18l48 10 22 26-48-11-22-25v25l22 24 48 11V54M175 43v24M241 60l24-8 19 15-25 9-18-16v13l18 15 25-8V67M259 76v12'/%3E%3C/g%3E%3Cpath fill='%23e6edf0' opacity='.25' d='m36 48 43-20 30 13-44 22zM153 18l48 10 22 26-48-11zM241 60l24-8 19 15-25 9z'/%3E%3Cpath stroke='%23d85b62' stroke-width='1' d='m7 82 126-41m10 48 130-43'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask-image: linear-gradient(90deg, transparent, #000 20% 88%, transparent);
+}
+html[data-theme-pack="keyaki-dome"] .home-calendar {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--surface) 94%, var(--dome-cold)), var(--surface) 64%);
+  box-shadow: inset 0 1px 0 var(--dome-rim), inset 0 4px 0 var(--surface), inset 0 5px 0 var(--dome-seam), 0 6px 26px #02060b20;
+}
+html[data-theme-pack="keyaki-dome"] .home-day-detail {
+  position: relative;
+  background: linear-gradient(135deg, var(--surface), color-mix(in srgb, var(--surface) 80%, var(--panel)));
+  box-shadow: inset 0 1px 0 var(--dome-rim), inset 0 4px 0 var(--surface), inset 0 5px 0 var(--dome-seam), 0 6px 26px #02060b20;
+}
+html[data-theme-pack="keyaki-dome"] .home-diary { background: linear-gradient(135deg, var(--surface), var(--paper)); }
+html[data-theme-pack="keyaki-dome"] .home-day.selected {
+  border-color: var(--dome-rim);
+  border-radius: 8px;
+  box-shadow: inset 0 -2px 0 var(--dome-metal), 0 3px 12px #00000020;
+}
+
+/* AMBIVALENT: white space and muted light passing through ribbed glass.
+   An original interpretation of the MV's pale architectural space, without
+   introducing extra objects that could be mistaken for selectable worlds. */
+html[data-theme-pack="keyaki-dome"][data-theme-page="english"] {
+  --amb-blue: #B8DCE8;
+  --amb-rose: #F0CCD8;
+  --amb-mint: #D4E8DD;
+  --amb-violet: #DFD9EE;
+}
+html[data-theme-pack="keyaki-dome"] .en-app {
+  background:
+    radial-gradient(ellipse at 12% 8%, color-mix(in srgb, var(--amb-blue) 15%, transparent), transparent 54%),
+    radial-gradient(ellipse at 100% 100%, color-mix(in srgb, var(--amb-rose) 11%, transparent), transparent 55%),
+    var(--paper);
+}
+html[data-theme-pack="keyaki-dome"] .en-sphere-wash {
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 25% 30%, color-mix(in srgb, var(--amb-blue) 47%, transparent), transparent 46%),
+    radial-gradient(ellipse at 69% 19%, color-mix(in srgb, var(--amb-rose) 37%, transparent), transparent 42%),
+    radial-gradient(ellipse at 33% 83%, color-mix(in srgb, var(--amb-mint) 40%, transparent), transparent 42%),
+    radial-gradient(ellipse at 83% 74%, color-mix(in srgb, var(--amb-violet) 37%, transparent), transparent 46%);
+  mask-image: radial-gradient(ellipse 55% 55% at 50% 50%, #000 32%, transparent 100%);
+}
+html[data-theme-pack="keyaki-dome"] .en-sphere-wash::before {
+  content: "";
+  position: absolute;
+  inset: 2% 4% 7% 64%;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(90deg, color-mix(in srgb, var(--surface) 63%, transparent) 0 1px, color-mix(in srgb, var(--amb-blue) 18%, transparent) 1px 3px, transparent 3px 13px);
+  mask-image: radial-gradient(ellipse at 55% 46%, #000 5%, transparent 70%);
+  transform: skewY(-9deg);
+}
+html[data-theme-pack="keyaki-dome"] .en-sphere-wash::after {
+  content: "";
+  position: absolute;
+  inset: 11% 61% 16% 12%;
+  pointer-events: none;
+  background: linear-gradient(112deg, transparent 20%, color-mix(in srgb, var(--surface) 64%, transparent) 20.2%, transparent 78%);
+  mask-image: linear-gradient(transparent, #000 28% 71%, transparent);
+}
+html[data-theme-pack="keyaki-dome"] .en-practice {
+  position: relative;
+  border-color: color-mix(in srgb, var(--line) 78%, var(--surface));
+  background:
+    radial-gradient(ellipse at 100% 0%, color-mix(in srgb, var(--amb-blue) 15%, transparent), transparent 57%),
+    radial-gradient(ellipse at 0% 100%, color-mix(in srgb, var(--amb-rose) 11%, transparent), transparent 56%),
+    linear-gradient(150deg, var(--surface), color-mix(in srgb, var(--surface) 94%, var(--paper)));
+  box-shadow: inset 0 1px 0 #ffffffb8, inset 0 -3px 0 var(--surface), inset 0 -4px 0 var(--dome-seam), 0 8px 24px #26334409;
+}
+html[data-theme-pack="keyaki-dome"] .en-mode-options > button,
+html[data-theme-pack="keyaki-dome"] .en-theme,
+html[data-theme-pack="keyaki-dome"] .en-primary { border-radius: 5px; }
+html[data-theme-pack="keyaki-dome"] .en-primary {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--on-primary) 18%, transparent), 0 3px 9px #00000014;
+}
+/* Fukyouwaon's screen: a white core and sparse cyan/magenta angular rays. */
+html[data-theme-pack="keyaki-dome"][data-theme="night"] .home-intro::after {
+  content: "";
+  position: absolute;
+  inset: -36px 145px auto auto;
+  width: min(360px, 34%);
+  height: 150px;
+  pointer-events: none;
+  opacity: .42;
+  background: radial-gradient(ellipse at 50% 46%, color-mix(in srgb, var(--dome-screen) 19%, transparent), transparent 25%), url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='700' height='440' viewBox='0 0 700 440'%3E%3Cg stroke='%2368b6cd' stroke-width='.9' fill='none' opacity='.65'%3E%3Cpath d='m350 183-137-96 29 68L120 55m238 125 173-99-64 81 174-35M345 246l-160 115 69-97-139 51m280-61 96 125-12-99 142 107M291 198 118 185l89 42-144 32M402 210l138 14 103-35'/%3E%3C/g%3E%3Cg fill='%239ad6e3' opacity='.22'%3E%3Cpath d='m213 87 29 68 108 28zM358 180l173-99-64 81zM395 254l96 125-12-99z'/%3E%3C/g%3E%3Cg stroke='%23d88da7' stroke-width='1.2' fill='none' opacity='.75'%3E%3Cpath d='m184 145 83 34-62-88M465 270l97 44-29-70M483 96l60-31M181 292l-70 37'/%3E%3C/g%3E%3C/svg%3E") center / contain no-repeat;
+}
+html[data-theme-pack="keyaki-dome"][data-theme="night"] .home-day-detail {
+  box-shadow: inset 0 1px 0 var(--dome-rim), inset 3px 0 0 color-mix(in srgb, var(--dome-red) 72%, var(--surface)), 0 6px 26px #02060b24;
+}
+
+/* A recognisable preview, without applying the pack to surrounding settings. */
+.theme-pack-card[data-theme-pack="keyaki-dome"] .theme-mini-app { border-radius: 7px; }
+.theme-pack-card[data-theme-pack="keyaki-dome"] .theme-mini-header {
+  background: linear-gradient(110deg, var(--preview-header) 65%, color-mix(in srgb, var(--preview-header) 70%, var(--preview-line)) 65.5%, var(--preview-header) 84%);
+  box-shadow: inset 0 -1px 0 var(--preview-gold);
+}
+.theme-pack-card[data-theme-pack="keyaki-dome"] :is(.theme-mini-day > span, .theme-mini-stats > i) {
+  border-radius: 3px;
+  background: linear-gradient(115deg, var(--preview-panel) 67%, var(--preview-header) 67.5% 76%, var(--preview-panel) 76.5%);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--preview-gold) 60%, transparent);
+}
+.theme-pack-card[data-theme-pack="keyaki-dome"] .theme-mini-room {
+  border-radius: 4px;
+  box-shadow: inset 0 -1px 0 var(--preview-line), inset 0 -3px 0 var(--preview-surface), inset 0 -4px 0 var(--preview-line);
+}
+
+
+.theme-pack-card[data-theme-pack="keyaki-dome"] .theme-mini-english {
+  background:
+    radial-gradient(ellipse at 20% 25%, #cce5ef99, transparent 60%),
+    radial-gradient(ellipse at 77% 35%, #f2dbe799, transparent 57%),
+    radial-gradient(ellipse at 35% 90%, #ddece299, transparent 52%),
+    var(--preview-paper);
+}
+
+@media (max-width: 760px) {
+  html[data-theme-pack="keyaki-dome"] .home-intro::after { right: 62px; width: 24%; opacity: .25; }
+  html[data-theme-pack="keyaki-dome"][data-theme="night"] .home-intro::after { inset: -27px 64px auto auto; width: 28%; height: 90px; opacity: .3; }
+  html[data-theme-pack="keyaki-dome"] .running-message::after { right: 22px; width: 23px; opacity: .45; }
+  html[data-theme-pack="keyaki-dome"] .mobile-run-summary {
+    border-top: 1px solid var(--dome-rim);
+    background:
+      linear-gradient(110deg, color-mix(in srgb, var(--panel) 56%, transparent), transparent 66%),
+      linear-gradient(var(--dome-band) 0 3px, transparent 3px);
+    box-shadow: inset 0 1px 0 var(--dome-red);
+  }
+  html[data-theme-pack="keyaki-dome"] .en-practice { border-radius: 16px 16px 0 0; }
+}
